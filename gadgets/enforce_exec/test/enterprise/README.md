@@ -1,7 +1,16 @@
 # A0 metadata-only copy-route discovery fixture
 
-**Test-only, default disabled, compile-validated only. Native execution needs a
-separate execution review; it has NOT been run or approved by these tests.**
+**Test-only and default disabled. The revised candidate is locally validated
+only; another native execution needs a fresh, separate execution review.**
+
+The first candidate was tried once on the authenticated Rocky GA target. Loading
+`copy_exit` was rejected for unbounded map-value pointer arithmetic, before any
+attachment or synthetic helper execution. That run was **NOT_READY**, not a
+platform gap or evidence of enforcement. The revision captures the full-width
+map depth once, validates that same scalar before subtraction/indexing, and
+retains the eight-frame LIFO and fault behavior. No masks, narrowing, or wrapped
+indices accept invalid depths. Local regression and compilation do **not** prove
+that the revised program loads or attaches; it has not been rerun natively.
 
 Target: authenticated Rocky 8.10 GA `4.18.0-553.el8_10.x86_64`, not a production
 patch recommendation. See `.omx/plans/ig15-enterprise-copy-completion-gatea.md`.
@@ -103,7 +112,7 @@ retain external supervision/recovery for that case.
 
 ## Local checks
 
-Ordinary tests skip both opt-in entrypoints before any compiler/subprocess/BPF
+Ordinary tests skip all opt-in entrypoints before any compiler/subprocess/BPF
 operation. Existing approved root dependencies only; no module changes.
 
 ```
@@ -119,6 +128,19 @@ IG_ENTERPRISE_A0_REPORT_ONLY_TEST=1 \
 IG_ENTERPRISE_A0_REFERENCE_ELF=/absolute/authenticated/vmlinux.elf \
 IG_ENTERPRISE_A0_CLANG=/absolute/trusted/clang \
 go test -v -run '^TestA0CompileOnly$' ./gadgets/enforce_exec/test/enterprise
+```
+
+The opt-in pure C regression compiles the actual production callback bodies and
+type declarations with deterministic userspace stubs, then runs them with
+undefined-behavior/bounds sanitizers. It covers depths 0, 1, 7, 8, 9, 2^32 and
+UINT64_MAX, eight-frame LIFO, task mismatch, copy faults, and permanent unknown
+origin. This does not execute BPF, kernel helpers, or `exec_target`. Ordinary
+tests still skip compiler/subprocess operations unless explicitly opted in.
+
+```
+IG_ENTERPRISE_A0_REPORT_ONLY_TEST=1 \
+IG_ENTERPRISE_A0_CLANG=/absolute/trusted/clang \
+go test -v -run '^TestA0CopyDepthCRegression$' ./gadgets/enforce_exec/test/enterprise
 ```
 
 The current compile profile uses Clang19, x86-64 Linux system/libbpf headers,

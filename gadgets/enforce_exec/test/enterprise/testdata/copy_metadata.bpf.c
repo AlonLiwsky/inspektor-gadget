@@ -99,8 +99,9 @@ int BPF_PROG(copy_enter, void *to, const void *from, unsigned long n)
 {
  struct counters *c=0; struct pending *s=current(&c);
  if (!s || !s->attempt) return 0;
- if (s->task!=bpf_get_current_task() || s->depth>=8) { __sync_fetch_and_add(&c->faults,1); return 0; }
+ // Keep the checked full-width scalar through indexing; do not reload map depth.
  __u64 depth=s->depth;
+ if (s->task!=bpf_get_current_task() || depth>=8) { __sync_fetch_and_add(&c->faults,1); return 0; }
  struct frame *f=&s->frame[depth];
  f->call=__sync_fetch_and_add(&c->calls,1)+1; f->to=(__u64)to; f->n=n;
  s->depth=depth+1;
@@ -122,8 +123,10 @@ int BPF_PROG(copy_exit, void *to, const void *from, unsigned long n, unsigned lo
 {
  struct counters *c=0; struct pending *s=current(&c);
  if (!s || !s->attempt) return 0;
- if (s->task!=bpf_get_current_task() || !s->depth || s->depth>8) { __sync_fetch_and_add(&c->faults,1); return 0; }
- __u64 depth=s->depth-1;
+ // Validate before subtraction: invalid depth must fault, never wrap or mask.
+ __u64 depth=s->depth;
+ if (s->task!=bpf_get_current_task() || !depth || depth>8) { __sync_fetch_and_add(&c->faults,1); return 0; }
+ depth-=1;
  struct frame *f=&s->frame[depth];
  struct record *r=reserve(c,s,2);
  if (r) {

@@ -4,10 +4,15 @@
 package enterprise_test
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -346,5 +351,153 @@ func TestA0FirstDetachErrorCannotBeClearedByNilRetry(t *testing.T) {
 	// Demonstrate the fake really models a false-success retry; owner never calls it.
 	if err := closer.Close(); err != nil {
 		t.Fatal("fake did not implement error-then-nil behavior")
+	}
+}
+
+// a0CSection extracts production C, rather than a Go model of its indexing.
+func a0CSection(t *testing.T, source, start, end string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(source, start)
+	if !ok {
+		t.Fatalf("missing C section start %q", start)
+	}
+	body, _, ok := strings.Cut(rest, end)
+	if !ok {
+		t.Fatalf("missing C section end %q", end)
+	}
+	return start + body
+}
+
+func a0CopySource(t *testing.T) string {
+	t.Helper()
+	source, err := os.ReadFile("testdata/copy_metadata.bpf.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(source)
+}
+
+func TestA0CopyDepthSingleValidatedCapture(t *testing.T) {
+	source := a0CopySource(t)
+	for _, callback := range []struct{ start, end, guard string }{
+		{"int BPF_PROG(copy_enter,", `SEC("fexit/_copy_from_user")`, "depth>=8"},
+		{"int BPF_PROG(copy_exit,", `SEC("fentry/security_bprm_check")`, "!depth || depth>8"},
+	} {
+		body := a0CSection(t, source, callback.start, callback.end)
+		// One full-width map load and one final store. Checking map memory and
+		// then reloading it for arithmetic loses the checked scalar identity.
+		if strings.Count(body, "s->depth") != 2 {
+			t.Errorf("%s must read depth once and write it once", callback.start)
+		}
+		capture := strings.Index(body, "__u64 depth=s->depth;")
+		guard := strings.Index(body, callback.guard)
+		index := strings.Index(body, "&s->frame[depth]")
+		if capture < 0 || guard <= capture || index <= guard {
+			t.Errorf("%s must validate the captured 64-bit depth before indexing", callback.start)
+		}
+	}
+}
+
+func TestA0CopyDepthCRegression(t *testing.T) {
+	if !a0Enabled(os.Getenv(a0Flag)) {
+		t.Skip("A0 pure C regression disabled")
+	}
+	clang := os.Getenv("IG_ENTERPRISE_A0_CLANG")
+	if !filepath.IsAbs(clang) {
+		t.Fatal("absolute trusted IG_ENTERPRISE_A0_CLANG required")
+	}
+	source := a0CopySource(t)
+	types := a0CSection(t, source, "struct config {", "struct { __uint")
+	callbacks := a0CSection(t, source, `SEC("fentry/_copy_from_user")`, `SEC("fentry/security_bprm_check")`)
+	// Ordinary process memory only: no kernel helpers, maps, attachments,
+	// namespace operations, or synthetic exec_target are invoked.
+	harness := `
+#include <stdint.h>
+#include <assert.h>
+#include <string.h>
+typedef uint64_t __u64;
+#define SEC(name)
+#define BPF_PROG(name, ...) name(void *ctx, __VA_ARGS__)
+` + types + `
+static struct pending state;
+static struct counters counts;
+static struct record observed;
+static struct pending *current(struct counters **c) { *c=&counts; return &state; }
+static __u64 bpf_get_current_task(void) { return 7; }
+static long bpf_get_stack(void *ctx, void *stack, unsigned long size, int flags) { return 16; }
+static struct record *reserve(struct counters *c, struct pending *s, __u64 kind) {
+ memset(&observed,0,sizeof(observed)); observed.kind=kind; c->records++; return &observed;
+}
+` + callbacks + `
+static void reset(__u64 depth) {
+ memset(&state,0,sizeof(state)); memset(&counts,0,sizeof(counts));
+ memset(&observed,0,sizeof(observed)); state.task=7; state.attempt=1; state.depth=depth;
+ for (unsigned i=0;i<8;i++) state.frame[i]=(struct frame){i+1,100+i,16+i};
+}
+int main(void) {
+ const __u64 depths[]={0,1,7,8,9,UINT64_MAX,UINT64_C(1)<<32};
+ for (unsigned i=0;i<sizeof(depths)/sizeof(depths[0]);i++) {
+  __u64 depth=depths[i];
+  reset(depth);
+  struct pending before=state;
+  copy_enter(0,(void *)100,0,16);
+  if (depth>=8) {
+   assert(counts.faults==1 && counts.calls==0 && counts.records==0);
+   assert(memcmp(&before,&state,sizeof(state))==0);
+  } else {
+   assert(counts.faults==0 && counts.calls==1 && counts.records==1);
+   assert(state.depth==depth+1 && observed.depth==depth+1 && observed.unknown==2);
+   assert(state.frame[depth].call==observed.call && state.frame[depth].to==100);
+  }
+  reset(depth); before=state;
+  if (!depth || depth>8) {
+   copy_exit(0,(void *)100,0,16,0);
+   assert(counts.faults==1 && counts.records==0);
+   assert(memcmp(&before,&state,sizeof(state))==0);
+  } else {
+   copy_exit(0,(void *)(uintptr_t)(100+depth-1),0,16+depth-1,0);
+   assert(counts.faults==0 && counts.records==1 && state.depth==depth-1);
+   assert(observed.call==depth && observed.depth==depth && observed.unknown==2);
+  }
+ }
+ reset(0);
+ for (__u64 i=0;i<8;i++) copy_enter(0,(void *)(uintptr_t)(100+i),0,16+i);
+ assert(state.depth==8 && counts.faults==0);
+ for (__u64 i=8;i>0;i--) {
+  copy_exit(0,(void *)(uintptr_t)(100+i-1),0,16+i-1,0);
+  assert(state.depth==i-1 && observed.call==i && observed.depth==i && observed.unknown==2);
+ }
+ assert(counts.calls==8 && counts.records==16 && counts.faults==0);
+ reset(1); state.task=8;
+ struct pending before=state;
+ copy_enter(0,(void *)100,0,16); copy_exit(0,(void *)100,0,16,0);
+ assert(counts.faults==2 && counts.records==0 && memcmp(&before,&state,sizeof(state))==0);
+ reset(1); copy_exit(0,(void *)101,0,16,0);
+ assert(counts.faults==1 && observed.unknown==10 && state.depth==0);
+ reset(1); copy_exit(0,(void *)100,0,17,0);
+ assert(counts.faults==1 && observed.unknown==10);
+ reset(1); copy_exit(0,(void *)100,0,16,1);
+ assert(counts.faults==1 && observed.unknown==10);
+ return 0;
+}
+`
+	dir := t.TempDir()
+	input, binary := filepath.Join(dir, "depth.c"), filepath.Join(dir, "depth")
+	if err := os.WriteFile(input, []byte(harness), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), maxDuration)
+	defer cancel()
+	for _, args := range [][]string{
+		{"-std=c11", "-O2", "-Wall", "-Werror", "-fsanitize=undefined,bounds", "-fno-sanitize-recover=all", input, "-o", binary},
+		nil,
+	} {
+		command := clang
+		if args == nil {
+			command = binary
+		}
+		if output, err := exec.CommandContext(ctx, command, args...).CombinedOutput(); err != nil {
+			t.Fatalf("pure C depth regression: %v: %s", err, output)
+		}
 	}
 }
