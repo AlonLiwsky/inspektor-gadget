@@ -1,7 +1,7 @@
 # A0 metadata-only copy-route discovery fixture
 
-**Test-only and default disabled. The revised candidate is locally validated
-only; another native execution needs a fresh, separate execution review.**
+**Test-only and default disabled. Four isolated candidates remain NOT_READY;
+any new native execution needs a fresh, separate execution review.**
 
 Two candidates have each been tried once on the authenticated Rocky GA target:
 the original and the single-captured-depth revision. Both runs rejected
@@ -15,8 +15,21 @@ selected for another native run. The frame-map revision was tried once: collecti
 load and typed `start` attachment succeeded, then typed `copy_enter` attachment
 failed with EBUSY before helper launch. This remains **NOT_READY**.
 
-The new mixed-hook candidate below is **LOCAL_ONLY** and has not been run
-natively. Compilation/regression results do not establish kernel admission.
+The mixed-hook candidate was tried once on 2026-10-31 at 19:23:17 UTC, using
+published revision `073ac0d8` (the explicit BPF-helper-header include fixed the
+older libbpf userspace regression; complete guest preflight then passed). All six
+maps and five programs loaded, and typed `start` attached. Canonical
+`copy_enter` failed opening its PMU event with EINVAL, before config publication
+or helper launch; later hooks were not attempted. Sticky attachment uncertainty
+kept the process in quarantine until whole-VM deletion. Exact owned VM, firewall,
+temporary key and tag absence were confirmed; no run resources remain.
+
+Exact-vendor source/config research identifies the shared trace-kprobe notrace
+guard as the strongest explanation, **not a captured live-branch proof**.
+PMU and tracefs both reach that guard; changing transport alone is not a remedy.
+Do not repeat the unchanged attempt or disable protections. This is one failed
+hookpoint candidate, not a platform gap or full-enforcement result. No owned
+copy observations, pairing/loss proof or A0 completion were obtained.
 
 Target: authenticated Rocky 8.10 GA `4.18.0-553.el8_10.x86_64`, not a production
 patch recommendation. See `.omx/plans/ig15-enterprise-copy-completion-gatea.md`.
