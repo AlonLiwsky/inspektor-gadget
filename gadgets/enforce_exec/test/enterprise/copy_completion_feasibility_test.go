@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -31,14 +32,17 @@ import (
 // Test-only limits, never an enforcement decision. Well-formed metadata does
 // not authenticate direct origin or completeness.
 const (
-	a0Flag      = "IG_ENTERPRISE_A0_REPORT_ONLY_TEST"
-	a0Target    = "4.18.0-553.el8_10.x86_64"
-	maxTasks    = 4
-	maxAttempts = 16
-	maxDepth    = 8
-	maxRecords  = 4096
-	maxCPUs     = 64
-	maxDuration = 30 * time.Second
+	a0Flag                = "IG_ENTERPRISE_A0_REPORT_ONLY_TEST"
+	a0Target              = "4.18.0-553.el8_10.x86_64"
+	maxTasks              = 4
+	maxAttempts           = 16
+	maxDepth              = 8
+	maxRecords            = 4096
+	maxCPUs               = 64
+	maxDuration           = 30 * time.Second
+	maxReturnInstances    = 128
+	copyCandidateUnknown  = uint64(2 | 32 | 64)
+	returnSnapshotUnknown = copyCandidateUnknown | 128
 )
 
 type a0Bounds struct {
@@ -56,13 +60,22 @@ func (b a0Bounds) validate() error {
 }
 
 // This guard must precede every compiler, subprocess, map, program, probe,
-// or collection operation, including both opt-in tests.
+// or collection operation, including all opt-in tests.
 func a0Enabled(value string) bool { return value == "1" }
 
-type a0Report struct{ Discovery, KernelProbe, Completeness string }
+type a0Report struct {
+	Discovery, KernelProbe, Completeness                                string
+	CopyEntry, CopyReturn, ReturnArguments, Pairing, ReturnInstanceLoss string
+	RetprobeMaxActive                                                   int
+}
 
 func offlineReport(valid bool) a0Report {
-	report := a0Report{Discovery: "METADATA_INVALID", KernelProbe: "NOT_RUN", Completeness: "NOT_READY"}
+	report := a0Report{
+		Discovery: "METADATA_INVALID", KernelProbe: "NOT_RUN", Completeness: "NOT_READY",
+		CopyEntry: "canonical_kprobe", CopyReturn: "canonical_kretprobe",
+		ReturnArguments: "entry_snapshot", Pairing: "LIFO_candidate",
+		ReturnInstanceLoss: "UNKNOWN", RetprobeMaxActive: maxReturnInstances,
+	}
 	if valid {
 		report.Discovery = "METADATA_STRUCTURALLY_VALID"
 	}
@@ -156,6 +169,31 @@ func validateTargetBTF(spec *btf.Spec) error {
 	if len(checks) != 0 {
 		return errors.New("missing bprm fields")
 	}
+	var regs *btf.Struct
+	if err := spec.TypeByName("pt_regs", &regs); err != nil {
+		return fmt.Errorf("amd64 pt_regs: %w", err)
+	}
+	return validateA0RegisterLayout(regs)
+}
+
+// Authenticated vendor pt_regs uses di/si/dx/ax; included amd64 UAPI uses
+// rdi/rsi/rdx/rax. C static assertions bind that UAPI layout to these BTF facts.
+func validateA0RegisterLayout(regs *btf.Struct) error {
+	if regs == nil || regs.Size != 168 {
+		return errors.New("amd64 pt_regs size mismatch")
+	}
+	expected := map[string]btf.Bits{"di": 112 * 8, "si": 104 * 8, "dx": 96 * 8, "ax": 80 * 8}
+	for _, m := range regs.Members {
+		if offset, ok := expected[m.Name]; ok {
+			if m.Offset != offset || m.BitfieldSize != 0 || !unsignedLong(m.Type) {
+				return fmt.Errorf("amd64 register %s mismatch", m.Name)
+			}
+			delete(expected, m.Name)
+		}
+	}
+	if len(expected) != 0 {
+		return errors.New("missing amd64 register layout")
+	}
 	return nil
 }
 
@@ -189,6 +227,9 @@ func targetBTF(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer elfFile.Close()
+	if elfFile.Class != elf.ELFCLASS64 || elfFile.Data != elf.ELFDATA2LSB || elfFile.Machine != elf.EM_X86_64 {
+		return nil, errors.New("reference is not little-endian amd64 ELF64")
+	}
 	sec := elfFile.Section(".BTF")
 	if sec == nil || sec.Size > 16<<20 {
 		return nil, errors.New("missing or oversized reference BTF")
@@ -251,6 +292,9 @@ func TestA0CompileOnly(t *testing.T) {
 
 func runA0(t *testing.T) {
 	t.Helper()
+	if runtime.GOARCH != "amd64" {
+		t.Fatal("NOT_READY: canonical register adapter requires amd64")
+	}
 	_, hasDeadline := t.Deadline()
 	if err := validateA0NativeDeadline(hasDeadline); err != nil {
 		t.Fatal(err)
@@ -308,19 +352,24 @@ func runA0(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NOT_READY: native load eligibility: %v", err)
 	}
-	owner := &a0NativeOwner{collection: collection}
+	owner := &a0NativeOwner{collection: collection, namespace: anchor}
 	defer owner.cleanup(t)
-	for _, name := range []string{"start", "copy_enter", "copy_exit", "check", "finish"} {
-		p := collection.Programs[name]
-		if p == nil {
-			t.Fatalf("missing program %s", name)
+	if err := attachA0Plan(owner, func(spec a0AttachSpec) (io.Closer, error) {
+		p := collection.Programs[spec.Name]
+		if p == nil || p.Type() != spec.ProgramType {
+			return nil, fmt.Errorf("missing/wrong program %s", spec.Name)
 		}
-		l, err := link.AttachTracing(link.TracingOptions{Program: p})
-		if err != nil {
-			t.Fatalf("NOT_READY: attach %s: %v", name, err)
+		if spec.ProgramType == ebpf.Tracing {
+			return link.AttachTracing(link.TracingOptions{Program: p})
 		}
-		owner.links = append(owner.links, l)
+		if spec.Return {
+			return link.Kretprobe(spec.Symbol, p, &spec.Options)
+		}
+		return link.Kprobe(spec.Symbol, p, &spec.Options)
+	}); err != nil {
+		t.Fatalf("NOT_READY: mixed attachment: %v", err)
 	}
+
 	var now unix.Timespec
 	if err = unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
 		t.Fatal(err)
@@ -411,6 +460,9 @@ func runA0(t *testing.T) {
 		records = append(records, r)
 		t.Logf("OWNER_ONLY_METADATA record=%+v", r)
 	}
+	report := offlineReport(validateNativeRecords(records, tgid) == nil)
+	report.KernelProbe = "METADATA_COLLECTED"
+	t.Logf("A0 observation limits: %+v", report)
 	if err = validateNativeRecords(records, tgid); err != nil {
 		t.Errorf("metadata structure: %v", err)
 	}
@@ -449,7 +501,7 @@ func validateNativeRecords(records []nativeRecord, tgid uint32) error {
 				return errors.New("uncertain typed start")
 			}
 		case 1:
-			if r.Unknown != 2 || r.To == 0 || r.N == 0 || r.Call == 0 || calls[r.Call] || r.Depth != uint64(len(stack)+1) || len(stack) >= maxDepth || r.StackBytes == 0 || r.StackBytes >= 128 || r.StackBytes%8 != 0 {
+			if r.Unknown != copyCandidateUnknown || r.To == 0 || r.N == 0 || r.Call == 0 || calls[r.Call] || r.Depth != uint64(len(stack)+1) || len(stack) >= maxDepth || r.StackBytes == 0 || r.StackBytes >= 128 || r.StackBytes%8 != 0 {
 				return errors.New("uncertain copy entry")
 			}
 			calls[r.Call] = true
@@ -459,7 +511,7 @@ func validateNativeRecords(records []nativeRecord, tgid uint32) error {
 				return errors.New("missing copy entry")
 			}
 			e := stack[len(stack)-1]
-			if r.Unknown != 2 || r.Call != e.Call || r.Depth != e.Depth || r.To != e.To || r.N != e.N || r.Remaining != 0 {
+			if r.Unknown != returnSnapshotUnknown || r.Call != e.Call || r.Depth != e.Depth || r.To != e.To || r.N != e.N || r.Remaining != 0 {
 				return errors.New("copy pair mismatch")
 			}
 			stack = stack[:len(stack)-1]
@@ -639,23 +691,72 @@ func validateA0ChildIdentity(childPID, childParent, ownedPID, ownPID uint32) err
 	return nil
 }
 
+type a0AttachSpec struct {
+	Name        string
+	ProgramType ebpf.ProgramType
+	Symbol      string
+	Return      bool
+	Options     link.KprobeOptions
+}
+
+func a0AttachmentPlan() [5]a0AttachSpec {
+	return [5]a0AttachSpec{
+		{Name: "start", ProgramType: ebpf.Tracing},
+		{Name: "copy_enter", ProgramType: ebpf.Kprobe, Symbol: "_copy_from_user", Options: link.KprobeOptions{ExactSymbol: true, Offset: 0}},
+		{Name: "copy_exit", ProgramType: ebpf.Kprobe, Symbol: "_copy_from_user", Return: true, Options: link.KprobeOptions{ExactSymbol: true, Offset: 0, RetprobeMaxActive: maxReturnInstances}},
+		{Name: "check", ProgramType: ebpf.Tracing},
+		{Name: "finish", ProgramType: ebpf.Tracing},
+	}
+}
+
+// No retries or continuation after any error, including nil-link anomalies.
+// Error plus returned handle still transfers that handle into retained ownership.
+func attachA0Plan(owner *a0NativeOwner, attach func(a0AttachSpec) (io.Closer, error)) error {
+	for _, spec := range a0AttachmentPlan() {
+		l, err := attach(spec)
+		present := l != nil
+		if present {
+			v := reflect.ValueOf(l)
+			if v.Kind() == reflect.Pointer && v.IsNil() {
+				present = false
+			}
+		}
+		if present {
+			owner.links = append(owner.links, l)
+		}
+		if err != nil || !present {
+			if err == nil {
+				err = errors.New("attachment returned nil link")
+			}
+			owner.attachErr = errors.Join(owner.attachErr, fmt.Errorf("%s attachment/hidden rollback uncertain: %w", spec.Name, err))
+			return owner.attachErr
+		}
+	}
+	return nil
+}
+
 type a0NativeOwner struct {
-	collection *ebpf.Collection
-	links      []io.Closer
-	detachErr  error
-	child      *exec.Cmd
-	registered uint32
-	files      []*os.File
-	timer      *time.Timer
+	collection      *ebpf.Collection
+	namespace       *a0Namespace
+	attachErr       error
+	detachAttempted bool
+	links           []io.Closer
+	detachErr       error
+	child           *exec.Cmd
+	registered      uint32
+	files           []*os.File
+	timer           *time.Timer
 }
 
 // A failed FD Close may disown its raw FD before returning an error. Retrying
 // Close can then return nil without any syscall; that is NOT stop evidence.
 func (o *a0NativeOwner) detach() error {
-	if o.detachErr != nil {
+	if o.detachAttempted {
 		return o.detachErr
 	}
-	var errs []error
+	o.detachAttempted = true
+	// Separate attach uncertainty: it must not suppress the reverse close pass.
+	errs := []error{o.attachErr}
 	for i := len(o.links) - 1; i >= 0; i-- {
 		if err := o.links[i].Close(); err != nil {
 			errs = append(errs, err)
@@ -683,7 +784,7 @@ func (o *a0NativeOwner) cleanup(t *testing.T) {
 		detach: o.detach,
 		quarantine: func(err error) {
 			t.Errorf("A0 cleanup: %v", err)
-			t.Log("UNCERTAIN: retaining native resources and unreaped child; isolated whole-VM supervisor must recover this test process")
+			t.Log("UNCERTAIN: retaining native resources and unreaped child; isolated whole-VM supervisor must retire this VM; hidden unreturned handles are not accounted for")
 			// Returning would allow process exit to release ownership. This timed loop
 			// keeps the owner/namespace FD strongly reachable without deadlock auto-exit.
 			for {

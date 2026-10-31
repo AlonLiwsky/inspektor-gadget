@@ -11,9 +11,12 @@ gaps or evidence of enforcement.
 
 A pointer-return switch and a per-slot field-copy switch were also assessed
 offline; ordinary Clang19 output still merged their offsets, so neither was
-selected for another native run. The current local candidate instead stores
-each frame as a separate ARRAY-map value. It has not been run natively.
-Compilation and regression results do **not** establish load/attach acceptance.
+selected for another native run. The frame-map revision was tried once: collection
+load and typed `start` attachment succeeded, then typed `copy_enter` attachment
+failed with EBUSY before helper launch. This remains **NOT_READY**.
+
+The new mixed-hook candidate below is **LOCAL_ONLY** and has not been run
+natively. Compilation/regression results do not establish kernel admission.
 
 Target: authenticated Rocky 8.10 GA `4.18.0-553.el8_10.x86_64`, not a production
 patch recommendation. See `.omx/plans/ig15-enterprise-copy-completion-gatea.md`.
@@ -32,7 +35,7 @@ The exact reference ELF SHA256 is
 - No LSM programs, result changes, denial, roles, production readiness, pins or
   changes to security settings. No fallback to guessed kprobe offsets/clone ABI.
 
-`copy_metadata.bpf.c` is a fentry/fexit hypothesis, not verifier/attachability
+`copy_metadata.bpf.c` is a mixed typed/kprobe hypothesis, not kernel-admission
 proof. The loader validates the actual reference and running BTF signatures for
 `security_bprm_creds_for_exec`, `_copy_from_user`, `security_bprm_check` and
 `free_bprm`, plus the scalar `linux_binprm` fields it reads. All bprm dereferences
@@ -41,8 +44,9 @@ identity comparisons only, never dereferenced later.
 
 Pending metadata begins only after a successful credentials boundary. Explicit
 attempt/call IDs, physical task-address comparisons, nesting and typed lifecycle
-records bound the experiment. `_copy_from_user` entry and return collect pointer,
-length and remaining-count metadata; entry also collects a bounded kernel stack.
+records bound the experiment. `_copy_from_user` entry records opaque To and
+scalar N plus a bounded stack. Return reads only the ax Remaining scalar;
+its To/N values are retained **ENTRY SNAPSHOTS**, not fresh return arguments.
 A full/truncated stack, lost pair, identity mismatch, read fault or overflow
 invalidates structural completeness. A registered PID alone is not production
 identity or direct-caller provenance.
@@ -54,7 +58,41 @@ All-path copy coverage, direct return-frame attribution and mapping lifetime are
 experiment outputs requiring independent interpretation, not assumptions hidden
 in prerequisites. Metadata cannot prove destination-byte readability for A1.
 
-## Frame storage revision (local-only)
+## Canonical mixed attachment and uncertainty
+
+Attachment order is explicit: typed `start`, canonical entry kprobe
+`copy_enter`, canonical return kretprobe `copy_exit`, typed `check`, typed
+`finish`. Both copy hooks request exactly `_copy_from_user`, offset zero and
+`ExactSymbol=true` through the already-pinned fork. No fixture-level retry,
+symbol alias, offset search or post-failure mechanism fallback is performed.
+The dependency can use its same-symbol PMU-to-tracefs transport fallback.
+
+The return hook requests fixed `RetprobeMaxActive=128`; it is never auto-grown.
+Return instances and perf/tracefs handles add kernel resources beyond the six
+maps. A 16 MiB memlock setting is a prerequisite, not measured total-memory
+proof. Foreign calls can consume return instances before owned-task filtering.
+On this vendor kernel, readable zero in `kprobe_profile` is not proof of zero
+return-instance misses; ambiguous/unavailable diagnostics cannot upgrade it.
+No such counter is used as a losslessness certificate.
+
+C static assertions bind the actual included amd64 UAPI registers
+rdi/rsi/rdx/rax to offsets 112/104/96/80 and 64-bit fields in a 168-byte
+`pt_regs`. Before native setup, authenticated target BTF must independently
+match vendor di/si/dx/ax at those offsets/types, and the reference must be
+little-endian amd64 ELF64. Real included tracing macros are tested with distinct
+64-bit registers and poisoned return argument registers. This is normal
+function ABI, not syscall-wrapper ABI. No argument-buffer contents are read.
+
+The 256-byte record layout is unchanged. Entry Unknown bits are
+`2|32|64` (UNKNOWN_DIRECT_ORIGIN, LIFO candidate, unknown return-instance loss);
+return additionally requires `128` (entry snapshots). Fault bits stay additive.
+The Go validator and actual-C regression check these representations together.
+Machine-checked reports permanently carry `return_arguments=entry_snapshot`,
+`pairing=LIFO_candidate`, `return_instance_loss=UNKNOWN` and
+`completeness=NOT_READY`, even for balanced records. Internal call IDs and
+matching snapshots are not proof of actual entry/return invocation identity.
+
+## Fixed frame storage
 
 The captured authenticated owner slot is checked once as a 32-bit value below
 four and reused unchanged for pending-state and frame selection. Entry depth
@@ -68,15 +106,16 @@ This replaces the eight-frame array inside each `pending` value: pending values
 shrink from 224 to 32 bytes. Total frame payload remains 32 × 24 = 768 bytes,
 but a sixth map adds a collection-owned FD and kernel allocation/accounting
 overhead. The existing collection load/close and uncertain-detach retention
-own this extra map too; no Go native control or cleanup path changes.
-Record layout and zero-payload/unknown-origin semantics remain unchanged.
+own this extra map too. The mixed-attachment revision preserves that ownership,
+but extends sticky attachment uncertainty as described below.
 
 Actual-C userspace regression covers all 32 keys and interleaved owners,
 including real production ownership lookup and capture, invalid slots/depths,
 zero-initialized frames, and failed lookups without mutation. This is **not**
 live four-owner proof: the native harness still uses one child and slot zero.
 The opt-in offline map-layout test parses the compiled object without loading
-it and checks six maps plus the frames/pending sizes.
+it and checks six maps, frames/pending sizes, and exactly two Kprobe plus three
+Tracing programs.
 
 ## Ownership and cleanup
 
@@ -115,6 +154,20 @@ reads have a deadline. A native invocation must use `go test -timeout=0`; the ha
 normal test timeout because it creates no native resources. A process-kill
 `timeout` wrapper is **not** a replacement for whole-VM supervision.
 
+All five attachments must finish before config publication/freeze, helper
+creation/handshake, owned registration or gate release. Every returned handle
+is retained immediately, including a handle returned alongside an error.
+
+**Any attachment error or nil-link anomaly is sticky uncertainty**, because
+the dependency can hide failed rollback closes. Cleanup still attempts every
+available returned handle exactly once in reverse order, including when
+attachment uncertainty is already set. Successful closes do not clear that
+uncertainty. Every close error is retained; later nil Close results are not
+stop evidence. Collection, namespace anchor and all available handle references
+remain held in fail-stop quarantine, before any helper launch on attach failure.
+Unreturned library-internal handles cannot honestly be claimed retained or
+accounted for; whole-VM retirement is mandatory for this case.
+
 Normal cleanup positively detaches every producer **before** unregistering or
 reaping the child. Only then are maps/descriptors released. Failure to delete an
 inactive ownership entry still reports an error, but cannot expose a reused PID
@@ -122,7 +175,7 @@ to stopped producers. The first detach error is permanently sticky: a later `Clo
 cannot clear it, since the approved FD wrapper disowns the descriptor before
 the close syscall and may subsequently return nil without a syscall. Link
 references are retained on any uncertainty; no in-process recovery proof exists.
-If any detach is uncertain, cleanup does **not** unregister,
+If attachment or detach is uncertain, cleanup does **not** unregister,
 reap, release resources or return: it emits UNCERTAIN and retains strong references
 in a timed fail-stop loop. The child may be killed at deadline, but remains
 unreaped. Injected pure tests exercise this ordering without running the loop.
@@ -161,7 +214,11 @@ The opt-in pure C regression compiles the actual production ownership/frame
 lookup, callback bodies and type declarations with deterministic userspace stubs, then runs them with
 undefined-behavior/bounds sanitizers. It covers every slot and depths 0 through 9, 2^32 and
 UINT64_MAX, eight-frame LIFO, task mismatch, stack/copy faults, and permanent unknown
-origin. This does not execute BPF, kernel helpers, or `exec_target`. Ordinary
+origin. It also exercises actual register adapters and poisoned return arguments.
+Pure attachment tests inject errors at all five positions, nil-link anomalies
+and close-error combinations, proving one reverse close pass and no resource
+release on uncertainty; a source-order check guards activation ordering.
+This does not execute BPF, kernel helpers, or `exec_target`. Ordinary
 tests still skip compiler/subprocess operations unless explicitly opted in.
 
 ```

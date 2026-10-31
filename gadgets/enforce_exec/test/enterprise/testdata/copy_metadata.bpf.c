@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Report-only experiment. No LSM program, no payload reads, no result changes.
 #include <linux/bpf.h>
+#include <asm/ptrace.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
@@ -11,6 +12,30 @@ struct linux_binprm {
  unsigned long p;
  int argc;
 } __attribute__((preserve_access_index));
+
+// Canonical amd64 function ABI, not a syscall-wrapper ABI. These UAPI names
+// map to authenticated vendor pt_regs di/si/dx/ax offsets checked in Go BTF.
+#if !defined(__TARGET_ARCH_x86)
+#error "A0 canonical copy adapters require amd64"
+#endif
+_Static_assert(sizeof(unsigned long)==8 && sizeof(struct pt_regs)==168,"amd64 pt_regs layout");
+_Static_assert(__builtin_offsetof(struct pt_regs,rdi)==112 && sizeof(((struct pt_regs *)0)->rdi)==8,"di layout");
+_Static_assert(__builtin_offsetof(struct pt_regs,rsi)==104 && sizeof(((struct pt_regs *)0)->rsi)==8,"si layout");
+_Static_assert(__builtin_offsetof(struct pt_regs,rdx)==96 && sizeof(((struct pt_regs *)0)->rdx)==8,"dx layout");
+_Static_assert(__builtin_offsetof(struct pt_regs,rax)==80 && sizeof(((struct pt_regs *)0)->rax)==8,"ax layout");
+struct a0_copy_args { __u64 to, from, n; };
+static __always_inline struct a0_copy_args copy_entry_args(struct pt_regs *ctx)
+{
+ return (struct a0_copy_args){PT_REGS_PARM1(ctx),PT_REGS_PARM2(ctx),PT_REGS_PARM3(ctx)};
+}
+static __always_inline __u64 copy_return_value(struct pt_regs *ctx)
+{
+ return PT_REGS_RC(ctx);
+}
+// Permanent uncertainty bits: direct origin, candidate-only LIFO, unknown
+// return-instance loss. Return To/N are entry snapshots, not fresh arguments.
+#define A0_COPY_UNKNOWN (2 | 32 | 64)
+#define A0_RETURN_UNKNOWN (A0_COPY_UNKNOWN | 128)
 
 struct config { __u64 deadline, ns_dev, ns_ino; };
 struct counters { __u64 records, attempts, calls, faults; };
@@ -106,9 +131,11 @@ int BPF_PROG(start, struct linux_binprm *bprm, int ret)
  return 0;
 }
 
-SEC("fentry/_copy_from_user")
-int BPF_PROG(copy_enter, void *to, const void *from, unsigned long n)
+SEC("kprobe/_copy_from_user")
+int copy_enter(struct pt_regs *ctx)
 {
+ struct a0_copy_args args=copy_entry_args(ctx);
+ __u64 to=args.to, n=args.n;
  struct counters *c=0; __u32 slot=0; struct pending *s=current(&c,&slot);
  if (!s || !s->attempt) return 0;
  // Keep the checked full-width scalar through indexing; do not reload map depth.
@@ -123,7 +150,7 @@ int BPF_PROG(copy_enter, void *to, const void *from, unsigned long n)
   r->call=f->call; r->depth=depth+1; r->to=f->to; r->n=n;
   // UNKNOWN_DIRECT_ORIGIN stays set. Stack contents are diagnostic candidates,
   // never proof from an ancestor match. No user or destination contents read.
-  r->unknown=2;
+  r->unknown=A0_COPY_UNKNOWN;
   long bytes=bpf_get_stack(ctx,r->stack,sizeof(r->stack),0);
   if (bytes<=0 || bytes>=sizeof(r->stack) || bytes%8) { r->unknown|=4; __sync_fetch_and_add(&c->faults,1); }
   r->stack_bytes=bytes;
@@ -131,9 +158,10 @@ int BPF_PROG(copy_enter, void *to, const void *from, unsigned long n)
  return 0;
 }
 
-SEC("fexit/_copy_from_user")
-int BPF_PROG(copy_exit, void *to, const void *from, unsigned long n, unsigned long remaining)
+SEC("kretprobe/_copy_from_user")
+int copy_exit(struct pt_regs *ctx)
 {
+ __u64 remaining=copy_return_value(ctx);
  struct counters *c=0; __u32 slot=0; struct pending *s=current(&c,&slot);
  if (!s || !s->attempt) return 0;
  // Validate before subtraction: invalid depth must fault, never wrap or mask.
@@ -144,8 +172,10 @@ int BPF_PROG(copy_exit, void *to, const void *from, unsigned long n, unsigned lo
  if (!f) { __sync_fetch_and_add(&c->faults,1); return 0; }
  struct record *r=reserve(c,s,2);
  if (r) {
-  r->call=f->call; r->depth=depth+1; r->to=(__u64)to; r->n=n; r->remaining=remaining; r->unknown=2;
-  if (f->to!=(__u64)to || f->n!=n || remaining) { r->unknown|=8; __sync_fetch_and_add(&c->faults,1); }
+  // To/N are retained ENTRY SNAPSHOTS. No return argument-register reads
+  // or tautological fresh-argument comparison can establish call identity.
+  r->call=f->call; r->depth=depth+1; r->to=f->to; r->n=f->n; r->remaining=remaining; r->unknown=A0_RETURN_UNKNOWN;
+  if (remaining) { r->unknown|=8; __sync_fetch_and_add(&c->faults,1); }
  }
  s->depth=depth;
  return 0;

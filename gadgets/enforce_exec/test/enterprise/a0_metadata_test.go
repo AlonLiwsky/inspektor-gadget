@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -75,12 +76,13 @@ func nativeSample() []nativeRecord {
 	entry.Depth = 1
 	entry.To = 100
 	entry.N = 16
-	entry.Unknown = 2
+	entry.Unknown = copyCandidateUnknown
 	entry.StackBytes = 16
 	entry.Stack[0] = 101
 	entry.Stack[1] = 102
 	ret := entry
 	ret.Kind = 2
+	ret.Unknown = returnSnapshotUnknown
 	ret.StackBytes = 0
 	ret.Stack = [16]uint64{}
 	check := base
@@ -381,8 +383,8 @@ func a0CopySource(t *testing.T) string {
 func TestA0CopyDepthSingleValidatedCapture(t *testing.T) {
 	source := a0CopySource(t)
 	for _, callback := range []struct{ start, end, guard, operation string }{
-		{"int BPF_PROG(copy_enter,", `SEC("fexit/_copy_from_user")`, "depth>=8", "frame_at(slot,depth)"},
-		{"int BPF_PROG(copy_exit,", `SEC("fentry/security_bprm_check")`, "!depth || depth>8", "frame_at(slot,depth)"},
+		{"int copy_enter(", `SEC("kretprobe/_copy_from_user")`, "depth>=8", "frame_at(slot,depth)"},
+		{"int copy_exit(", `SEC("fentry/security_bprm_check")`, "!depth || depth>8", "frame_at(slot,depth)"},
 	} {
 		body := a0CSection(t, source, callback.start, callback.end)
 		// One full-width map load and one final store. Checking map memory and
@@ -409,20 +411,32 @@ func TestA0CopyDepthCRegression(t *testing.T) {
 	}
 	source := a0CopySource(t)
 
+	adapters := a0CSection(t, source, "// Canonical amd64 function ABI,", "struct config {")
 	types := a0CSection(t, source, "struct config {", "struct { __uint")
 	lookup := a0CSection(t, source, "static __always_inline struct pending *current(", "static __always_inline struct record *reserve(")
-	callbacks := a0CSection(t, source, `SEC("fentry/_copy_from_user")`, `SEC("fentry/security_bprm_check")`)
+	callbacks := a0CSection(t, source, `SEC("kprobe/_copy_from_user")`, `SEC("fentry/security_bprm_check")`)
 	// Actual production identity/slot lookup and copy callbacks, with userspace
 	// map/helper stubs only. This does not load BPF or execute exec_target.
 	harness := `
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
-typedef uint64_t __u64;
-typedef uint32_t __u32;
-#define SEC(name)
-#define BPF_PROG(name, ...) name(void *ctx, __VA_ARGS__)
-` + types + `
+#include <linux/bpf.h>
+#include <asm/ptrace.h>
+// Include the real installed register macros. Rename only syscall helper
+// declarations so the actual callback code can call deterministic test stubs.
+#define bpf_map_lookup_elem unused_header_map_lookup
+#define bpf_get_ns_current_pid_tgid unused_header_pidns
+#define bpf_ktime_get_ns unused_header_time
+#define bpf_get_current_task unused_header_task
+#define bpf_get_stack unused_header_stack
+#include <bpf/bpf_tracing.h>
+#undef bpf_map_lookup_elem
+#undef bpf_get_ns_current_pid_tgid
+#undef bpf_ktime_get_ns
+#undef bpf_get_current_task
+#undef bpf_get_stack
+` + adapters + types + `
 static int owned, pending, config, counters, frames;
 static struct pending states[4];
 static struct frame frame_values[32];
@@ -434,7 +448,6 @@ static unsigned frame_lookups;
 static int fail_frames, change_slot;
 static long stack_result=16;
 #define state states[active]
-struct bpf_pidns_info { __u32 pid,tgid; };
 static int bpf_get_ns_current_pid_tgid(__u64 dev,__u64 ino,struct bpf_pidns_info *p,unsigned long size) {
  assert(dev==1 && ino==2); p->pid=42+active; p->tgid=p->pid; return 0;
 }
@@ -454,6 +467,14 @@ static struct record *reserve(struct counters *c, struct pending *s, __u64 kind)
  memset(&observed,0,sizeof(observed)); observed.kind=kind; c->records++; return &observed;
 }
 ` + lookup + callbacks + `
+static void enter(void *ctx,void *to,const void *from,unsigned long n) {
+ struct pt_regs regs={.rdi=(uintptr_t)to,.rsi=(uintptr_t)from,.rdx=n,.rax=0xaabbccdd11223344ULL};
+ copy_enter(&regs);
+}
+static void leave(void *ctx,void *to,const void *from,unsigned long n,unsigned long remaining) {
+ struct pt_regs regs={.rdi=(uintptr_t)to,.rsi=0x9988776655443322ULL,.rdx=n,.rax=remaining};
+ copy_exit(&regs);
+}
 static void reset(__u32 slot,__u64 depth) {
  memset(states,0,sizeof(states)); memset(frame_values,0,sizeof(frame_values));
  memset(&counts,0,sizeof(counts)); memset(&observed,0,sizeof(observed));
@@ -467,6 +488,20 @@ static void expect_unchanged(struct pending *before,struct frame *prior) {
  assert(memcmp(frame_values,prior,sizeof(frame_values))==0);
 }
 int main(void) {
+ // Exercise actual installed PT_REGS macros via the production adapters.
+ struct pt_regs regs={.rdi=0x1122334455667788ULL,.rsi=0x2233445566778899ULL,
+  .rdx=0x33445566778899aaULL,.rax=0x445566778899aabbULL};
+ struct a0_copy_args args=copy_entry_args(&regs);
+ assert(args.to==regs.rdi && args.from==regs.rsi && args.n==regs.rdx);
+ assert(copy_return_value(&regs)==regs.rax);
+ reset(0,0);
+ copy_enter(&regs);
+ regs.rdi=0xdeadbeefdeadbeefULL;regs.rsi=0xbadbadbadbadbadULL;regs.rdx=0x9999999999999999ULL;
+ regs.rax=0x1122334455667788ULL;
+ copy_exit(&regs);
+ assert(observed.to==args.to && observed.n==args.n && observed.remaining==regs.rax);
+ assert(observed.unknown==(A0_RETURN_UNKNOWN|8) && counts.faults==1);
+
  _Static_assert(sizeof(struct pending)==32,"pending no longer holds frames");
  _Static_assert(sizeof(struct frame)==24,"frame payload changed");
  reset(0,0);
@@ -479,13 +514,13 @@ int main(void) {
    reset(owner,depth);
    struct pending before[4]; struct frame prior[32];
    memcpy(before,states,sizeof(states)); memcpy(prior,frame_values,sizeof(frame_values));
-   copy_enter(0,(void *)100,0,16);
+   enter(0,(void *)100,0,16);
    if (depth>=8) {
     assert(counts.faults==1 && counts.calls==0 && counts.records==0 && frame_lookups==0);
     expect_unchanged(before,prior);
    } else {
     assert(counts.faults==0 && counts.calls==1 && counts.records==1);
-    assert(state.depth==depth+1 && observed.depth==depth+1 && observed.unknown==2);
+    assert(state.depth==depth+1 && observed.depth==depth+1 && observed.unknown==A0_COPY_UNKNOWN);
     assert(last_frame_key==owner*8+depth && frame_lookups==1);
     assert(frame_values[last_frame_key].call==observed.call && frame_values[last_frame_key].to==100);
     for (__u32 k=0;k<32;k++) if(k!=last_frame_key) assert(memcmp(&frame_values[k],&prior[k],sizeof(zero))==0);
@@ -493,13 +528,13 @@ int main(void) {
    reset(owner,depth);
    if(depth && depth<=8) frame_values[owner*8+depth-1]=(struct frame){depth,100,16};
    memcpy(before,states,sizeof(states)); memcpy(prior,frame_values,sizeof(frame_values));
-   copy_exit(0,(void *)100,0,16,0);
+   leave(0,(void *)100,0,16,0);
    if (!depth || depth>8) {
     assert(counts.faults==1 && counts.records==0 && frame_lookups==0);
     expect_unchanged(before,prior);
    } else {
     assert(counts.faults==0 && counts.records==1 && state.depth==depth-1);
-    assert(last_frame_key==owner*8+depth-1 && observed.call==depth && observed.depth==depth && observed.unknown==2);
+    assert(last_frame_key==owner*8+depth-1 && observed.call==depth && observed.depth==depth && observed.unknown==A0_RETURN_UNKNOWN);
    }
   }
  }
@@ -507,14 +542,14 @@ int main(void) {
  reset(0,0);
  for (__u64 depth=0;depth<8;depth++) for(__u32 owner=0;owner<4;owner++) {
   active=owned_slot=owner;
-  copy_enter(0,(void *)(uintptr_t)(100+owner*8+depth),0,16+depth);
+  enter(0,(void *)(uintptr_t)(100+owner*8+depth),0,16+depth);
   assert(state.depth==depth+1);
  }
  for (__u64 depth=8;depth>0;depth--) for(__u32 owner=0;owner<4;owner++) {
   active=owned_slot=owner;
-  copy_exit(0,(void *)(uintptr_t)(100+owner*8+depth-1),0,16+depth-1,0);
+  leave(0,(void *)(uintptr_t)(100+owner*8+depth-1),0,16+depth-1,0);
   assert(state.depth==depth-1 && observed.call==(depth-1)*4+owner+1);
-  assert(observed.depth==depth && observed.unknown==2);
+  assert(observed.depth==depth && observed.unknown==A0_RETURN_UNKNOWN);
  }
  assert(counts.calls==32 && counts.records==64 && counts.faults==0);
  // Invalid authenticated-slot map values are refused by actual current().
@@ -523,41 +558,42 @@ int main(void) {
   reset(0,1); owned_slot=invalid_slots[i];
   struct pending before[4]; struct frame prior[32];
   memcpy(before,states,sizeof(states)); memcpy(prior,frame_values,sizeof(frame_values));
-  copy_enter(0,(void *)100,0,16); copy_exit(0,(void *)100,0,16,0);
+  enter(0,(void *)100,0,16); leave(0,(void *)100,0,16,0);
   assert(counts.calls==0 && counts.records==0 && frame_lookups==0);
   expect_unchanged(before,prior);
  }
  // Mutate the owned-map value AFTER capture: both lookups still use original slot.
- reset(1,0); change_slot=1; copy_enter(0,(void *)100,0,16);
+ reset(1,0); change_slot=1; enter(0,(void *)100,0,16);
  assert(last_frame_key==8 && states[1].depth==1 && states[3].depth==0);
  // Missing frame value must fault before call ID/frame/depth mutation.
  for(int exiting=0;exiting<2;exiting++) {
   reset(2,exiting ? 1 : 0); fail_frames=1;
   struct pending before[4]; struct frame prior[32];
   memcpy(before,states,sizeof(states)); memcpy(prior,frame_values,sizeof(frame_values));
-  if(exiting) copy_exit(0,(void *)100,0,16,0); else copy_enter(0,(void *)100,0,16);
+  if(exiting) leave(0,(void *)100,0,16,0); else enter(0,(void *)100,0,16);
   assert(counts.faults==1 && counts.calls==0 && counts.records==0 && frame_lookups==1);
   expect_unchanged(before,prior);
  }
  const long bad_stack[]={-1,0,15,128};
  for(unsigned i=0;i<4;i++) {
-  reset(0,0); stack_result=bad_stack[i]; copy_enter(0,(void *)100,0,16);
-  assert(counts.faults==1 && observed.unknown==6 && state.depth==1);
+  reset(0,0); stack_result=bad_stack[i]; enter(0,(void *)100,0,16);
+  assert(counts.faults==1 && observed.unknown==(A0_COPY_UNKNOWN|4) && state.depth==1);
  }
  reset(0,1); state.task=8;
  struct pending before[4]; struct frame prior[32];
  memcpy(before,states,sizeof(states)); memcpy(prior,frame_values,sizeof(frame_values));
- copy_enter(0,(void *)100,0,16); copy_exit(0,(void *)100,0,16,0);
+ enter(0,(void *)100,0,16); leave(0,(void *)100,0,16,0);
  assert(counts.faults==2 && counts.records==0 && frame_lookups==0); expect_unchanged(before,prior);
  for(unsigned fault=0;fault<3;fault++) {
   reset(0,1); frame_values[0]=(struct frame){1,100,16};
-  copy_exit(0,(void *)(uintptr_t)(fault==0 ? 101 : 100),0,fault==1 ? 17 : 16,fault==2);
-  assert(counts.faults==1 && observed.unknown==10 && state.depth==0);
+  leave(0,(void *)(uintptr_t)(fault==0 ? 101 : 100),0,fault==1 ? 17 : 16,fault==2);
+  assert(counts.faults==(fault==2) && observed.unknown==(A0_RETURN_UNKNOWN|(fault==2 ? 8 : 0)) && state.depth==0);
  }
  return 0;
 }
 `
 
+	harness += fmt.Sprintf("\n_Static_assert(A0_COPY_UNKNOWN==%d, \"entry uncertainty wire bits\");\n_Static_assert(A0_RETURN_UNKNOWN==%d, \"return uncertainty wire bits\");\n", copyCandidateUnknown, returnSnapshotUnknown)
 	dir := t.TempDir()
 	input, binary := filepath.Join(dir, "depth.c"), filepath.Join(dir, "depth")
 	if err := os.WriteFile(input, []byte(harness), 0o600); err != nil {
@@ -566,7 +602,7 @@ int main(void) {
 	ctx, cancel := context.WithTimeout(context.Background(), maxDuration)
 	defer cancel()
 	for _, args := range [][]string{
-		{"-std=c11", "-O2", "-Wall", "-Werror", "-fsanitize=undefined,bounds", "-fno-sanitize-recover=all", input, "-o", binary},
+		{"-std=c11", "-D__TARGET_ARCH_x86", "-O2", "-Wall", "-Werror", "-fsanitize=undefined,bounds", "-fno-sanitize-recover=all", input, "-o", binary},
 		nil,
 	} {
 		command := clang
@@ -588,6 +624,15 @@ func TestA0FrameMapLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(spec.Programs) != 5 {
+		t.Fatalf("program count = %d", len(spec.Programs))
+	}
+	for _, hook := range a0AttachmentPlan() {
+		p := spec.Programs[hook.Name]
+		if p == nil || p.Type != hook.ProgramType {
+			t.Fatalf("%s wrong compiled type: %+v", hook.Name, p)
+		}
+	}
 	if len(spec.Maps) != 6 {
 		t.Fatalf("map count = %d, want six", len(spec.Maps))
 	}
@@ -597,6 +642,223 @@ func TestA0FrameMapLayout(t *testing.T) {
 		m := spec.Maps[name]
 		if m == nil || m.Type != ebpf.Array || m.KeySize != 4 || m.ValueSize != want.size || m.MaxEntries != want.entries {
 			t.Fatalf("%s unexpected map layout: %+v", name, m)
+		}
+	}
+}
+
+type a0AttachTestCloser struct {
+	index int
+	order *[]int
+	calls int
+	fail  bool
+}
+
+func (c *a0AttachTestCloser) Close() error {
+	c.calls++
+	*c.order = append(*c.order, c.index)
+	if c.fail && c.calls == 1 {
+		return fmt.Errorf("close %d", c.index)
+	}
+	return nil
+}
+
+func TestA0MixedAttachFailureQuarantinesAllAvailableReferences(t *testing.T) {
+	for failed := 0; failed < 5; failed++ {
+		for _, anomaly := range []string{"error", "handle-and-error", "nil", "typed-nil"} {
+			for mask := 0; mask < (1 << (failed + 1)); mask++ {
+				t.Run(fmt.Sprintf("%d/%s/%d", failed, anomaly, mask), func(t *testing.T) {
+					var order []int
+					collection := &ebpf.Collection{}
+					ns := &a0Namespace{}
+					owner := &a0NativeOwner{collection: collection, namespace: ns}
+					var handles []*a0AttachTestCloser
+					calls := 0
+					err := attachA0Plan(owner, func(spec a0AttachSpec) (io.Closer, error) {
+						i := calls
+						calls++
+						if i > failed {
+							t.Fatal("attachment continued after failure")
+						}
+						h := &a0AttachTestCloser{index: i, order: &order, fail: mask&(1<<i) != 0}
+						if i == failed {
+							switch anomaly {
+							case "error":
+								return nil, errors.New("attach")
+							case "nil":
+								return nil, nil
+							case "typed-nil":
+								var absent *a0AttachTestCloser
+								return absent, nil
+							case "handle-and-error":
+								handles = append(handles, h)
+								return h, errors.New("attach")
+							}
+						}
+						handles = append(handles, h)
+						return h, nil
+					})
+					if err == nil || calls != failed+1 || owner.attachErr == nil {
+						t.Fatal("attachment uncertainty lost")
+					}
+					operations := 0
+					retained, cleanupErr := orderedA0Cleanup(a0CleanupSteps{
+						detach:     owner.detach,
+						unregister: func() error { operations++; return nil },
+						release:    func() error { operations++; return nil },
+						quarantine: func(error) {},
+					})
+					if !retained || cleanupErr == nil || operations != 0 {
+						t.Fatal("uncertain attachment released resources")
+					}
+					if owner.collection != collection || owner.namespace != ns || len(owner.links) != len(handles) || owner.child != nil || owner.registered != 0 || owner.timer != nil {
+						t.Fatal("available references lost")
+					}
+					for i, h := range handles {
+						if h.fail && !strings.Contains(cleanupErr.Error(), fmt.Sprintf("close %d", i)) {
+							t.Fatal("close error lost")
+						}
+						if h.calls != 1 || order[len(handles)-1-i] != i {
+							t.Fatal("not exactly one reverse close pass")
+						}
+					}
+					first := owner.detachErr
+					if !errors.Is(owner.detach(), first) {
+						t.Fatal("nil retry cleared uncertainty")
+					}
+					for _, h := range handles {
+						if h.calls != 1 {
+							t.Fatal("close retried")
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestA0MixedAttachPlanExactContract(t *testing.T) {
+	plan := a0AttachmentPlan()
+	wantNames := []string{"start", "copy_enter", "copy_exit", "check", "finish"}
+	for i, s := range plan {
+		if s.Return != (i == 2) {
+			t.Fatal("wrong entry/return attachment kind")
+		}
+		if s.Options.Cookie != 0 || s.Options.TraceFSPrefix != "" {
+			t.Fatal("unexpected attachment option")
+		}
+		if s.Name != wantNames[i] {
+			t.Fatal("attachment order changed")
+		}
+		if i == 1 || i == 2 {
+			if s.ProgramType != ebpf.Kprobe || s.Symbol != "_copy_from_user" || !s.Options.ExactSymbol || s.Options.Offset != 0 {
+				t.Fatal("noncanonical copy hook")
+			}
+			wantMax := 0
+			if i == 2 {
+				wantMax = 128
+			}
+			if s.Options.RetprobeMaxActive != wantMax {
+				t.Fatal("return capacity changed")
+			}
+		} else if s.ProgramType != ebpf.Tracing || s.Symbol != "" {
+			t.Fatal("typed lifecycle changed")
+		}
+	}
+	var order []int
+	o := &a0NativeOwner{}
+	n := 0
+	if err := attachA0Plan(o, func(a0AttachSpec) (io.Closer, error) {
+		h := &a0AttachTestCloser{index: n, order: &order}
+		n++
+		return h, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n != 5 || o.detach() != nil || len(o.links) != 0 {
+		t.Fatal("complete attachment teardown failed")
+	}
+}
+
+func TestA0AuthenticatedRegisterLayout(t *testing.T) {
+	newRegs := func() *btf.Struct {
+		u := &btf.Int{Name: "long unsigned int", Size: 8, Encoding: btf.Unsigned}
+		return &btf.Struct{Name: "pt_regs", Size: 168, Members: []btf.Member{
+			{Name: "di", Type: u, Offset: 112 * 8},
+			{Name: "si", Type: u, Offset: 104 * 8},
+			{Name: "dx", Type: u, Offset: 96 * 8},
+			{Name: "ax", Type: u, Offset: 80 * 8},
+		}}
+	}
+	if err := validateA0RegisterLayout(newRegs()); err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]func(*btf.Struct){
+		"size":       func(r *btf.Struct) { r.Size = 160 },
+		"offset":     func(r *btf.Struct) { r.Members[0].Offset = 104 * 8 },
+		"missing":    func(r *btf.Struct) { r.Members = r.Members[:3] },
+		"wrong name": func(r *btf.Struct) { r.Members[0].Name = "rdi" },
+		"narrow":     func(r *btf.Struct) { r.Members[0].Type = &btf.Int{Size: 4, Encoding: btf.Unsigned} },
+		"signed":     func(r *btf.Struct) { r.Members[0].Type = &btf.Int{Size: 8, Encoding: btf.Signed} },
+		"bitfield":   func(r *btf.Struct) { r.Members[0].BitfieldSize = 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRegs()
+			change(r)
+			if validateA0RegisterLayout(r) == nil {
+				t.Fatal("ambiguous ABI accepted")
+			}
+		})
+	}
+	if validateA0RegisterLayout(nil) == nil {
+		t.Fatal("missing ABI accepted")
+	}
+}
+
+func TestA0CandidatePairingNeverClaimsLosslessness(t *testing.T) {
+	for _, name := range []string{"balanced", "missing return", "duplicate return", "foreign task", "missing snapshot flag", "foreign capacity pressure", "profile zero wrong counter", "profile unavailable", "profile ambiguous"} {
+		t.Run(name, func(t *testing.T) {
+			records := nativeSample()
+			switch name {
+			case "missing return":
+				records = append(records[:2], records[3:]...)
+			case "duplicate return":
+				records = append(records[:3], records[2:]...)
+			case "foreign task":
+				records[2].Task++
+			case "missing snapshot flag":
+				records[2].Unknown = copyCandidateUnknown
+			}
+			valid := validateNativeRecords(records, 7) == nil
+			if name == "missing return" || name == "duplicate return" || name == "foreign task" || name == "missing snapshot flag" {
+				if valid {
+					t.Fatal("malformed pair accepted")
+				}
+			}
+			// Diagnostics/pressure are not inputs that can establish losslessness.
+			report := offlineReport(valid)
+			if report.Pairing != "LIFO_candidate" || report.ReturnArguments != "entry_snapshot" ||
+				report.ReturnInstanceLoss != "UNKNOWN" || report.Completeness != "NOT_READY" ||
+				report.CopyEntry != "canonical_kprobe" || report.CopyReturn != "canonical_kretprobe" || report.RetprobeMaxActive != 128 {
+				t.Fatalf("observation overclaimed: %+v", report)
+			}
+		})
+	}
+}
+
+func TestA0AttachmentPrecedesEveryActivationStep(t *testing.T) {
+	data, err := os.ReadFile("copy_completion_feasibility_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := a0CSection(t, string(data), "func runA0(", "func validateNativeRecords(")
+	attachment := strings.Index(body, "if err := attachA0Plan(")
+	refusal := strings.Index(body, `t.Fatalf("NOT_READY: mixed attachment:`)
+	if attachment < 0 || refusal < attachment {
+		t.Fatal("missing fatal attachment barrier")
+	}
+	for _, step := range []string{`Maps["config"].Put`, `Maps["config"].Freeze`, "ownedA0Command(", "child.Start()", `Maps["owned"].Put`, "gateWrite.Write("} {
+		if strings.Index(body, step) <= refusal {
+			t.Fatalf("%s occurs before fatal attach barrier", step)
 		}
 	}
 }
