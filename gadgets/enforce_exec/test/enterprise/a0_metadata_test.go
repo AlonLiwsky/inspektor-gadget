@@ -430,6 +430,7 @@ func TestA0CopyDepthCRegression(t *testing.T) {
 #define bpf_ktime_get_ns unused_header_time
 #define bpf_get_current_task unused_header_task
 #define bpf_get_stack unused_header_stack
+#include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #undef bpf_map_lookup_elem
 #undef bpf_get_ns_current_pid_tgid
