@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -387,16 +388,69 @@ func TestA0CopyDepthSingleValidatedCapture(t *testing.T) {
 		{"int copy_exit(", `SEC("fentry/security_bprm_check")`, "!depth || depth>8", "frame_at(slot,depth)"},
 	} {
 		body := a0CSection(t, source, callback.start, callback.end)
-		// One full-width map load and one final store. Checking map memory and
-		// then reloading it for arithmetic loses the checked scalar identity.
-		if strings.Count(body, "s->depth") != 2 {
-			t.Errorf("%s must read depth once and write it once", callback.start)
+		if !a0DepthCaptureValid(body, callback.guard, callback.operation) {
+			t.Errorf("%s must validate one captured 64-bit depth before indexing and store once", callback.start)
 		}
-		capture := strings.Index(body, "__u64 depth=s->depth;")
-		guard := strings.Index(body, callback.guard)
-		index := strings.Index(body, callback.operation)
-		if capture < 0 || guard <= capture || index <= guard {
-			t.Errorf("%s must validate the captured 64-bit depth before indexing", callback.start)
+	}
+}
+
+// Formatting changes whitespace, not the full-width capture, guard or ordering.
+func a0DepthCaptureValid(body, guard, operation string) bool {
+	compact := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	// Preserve the type/declarator token boundary before normalizing spacing.
+	match := regexp.MustCompile(`\b__u64\s+depth\s*=\s*s\s*->\s*depth\s*;`).FindStringIndex(body)
+	if match == nil {
+		return false
+	}
+	capture := len(compact(body[:match[0]]))
+	body = compact(body)
+	check := strings.Index(body, compact(guard))
+	index := strings.Index(body, compact(operation))
+	return strings.Count(body, "s->depth") == 2 && capture >= 0 && check > capture && index > check
+}
+
+func TestA0DepthCaptureMergedIdentifier(t *testing.T) {
+	body := "__u64depth=s->depth; if(depth>=8)return; frame_at(slot,depth); s->depth=depth+1;"
+	if a0DepthCaptureValid(body, "depth>=8", "frame_at(slot,depth)") {
+		t.Fatal("merged identifier is not a typed capture")
+	}
+}
+
+func TestA0DepthCaptureFormatting(t *testing.T) {
+	for _, guard := range []string{"depth>=8", "!depth || depth>8"} {
+		for _, layout := range []string{
+			"__u64 depth=s->depth; if(%s)return; frame_at(slot,depth); s->depth=depth+1;",
+			"__u64\tdepth = s->depth;\n\tif ( %s ) return;\nframe_at(slot, depth);\ns->depth = depth + 1;",
+		} {
+			body := fmt.Sprintf(layout, guard)
+			if !a0DepthCaptureValid(body, guard, "frame_at(slot,depth)") {
+				t.Fatal("formatting rejected valid capture")
+			}
+			for name, invalid := range map[string]string{
+				"reload":               body + "depth=s->depth;",
+				"narrow":               strings.Replace(body, "__u64", "__u32", 1),
+				"merged_identifier":    strings.ReplaceAll(strings.ReplaceAll(body, "__u64 ", "__u64"), "__u64\t", "__u64"),
+				"prefixed_type":        strings.Replace(body, "__u64", "other__u64", 1),
+				"missing_guard":        strings.ReplaceAll(body, "8", "9"),
+				"index_before_capture": "frame_at(slot,depth);" + body,
+				"guard_before_capture": "if(" + guard + ")return;" + body,
+			} {
+				if a0DepthCaptureValid(invalid, guard, "frame_at(slot,depth)") {
+					t.Errorf("accepted %s for %s", name, guard)
+				}
+			}
+		}
+	}
+}
+
+func TestA0TypeSectionFormatting(t *testing.T) {
+	for _, source := range []string{
+		"struct config { int x; };\nstruct pending { int y; };\nstruct { __uint(type, 1); } map;",
+		"struct config {\n\tint x;\n};\nstruct pending {\n\tint y;\n};\nstruct {\n\t__uint(type, 1);\n} map;",
+	} {
+		types := a0CSection(t, source, "struct config {", "\nstruct {")
+		if !strings.Contains(types, "struct pending") || strings.Contains(types, "__uint") {
+			t.Fatal("type extraction included map declarations or dropped pending type")
 		}
 	}
 }
@@ -412,7 +466,7 @@ func TestA0CopyDepthCRegression(t *testing.T) {
 	source := a0CopySource(t)
 
 	adapters := a0CSection(t, source, "// Canonical amd64 function ABI,", "struct config {")
-	types := a0CSection(t, source, "struct config {", "struct { __uint")
+	types := a0CSection(t, source, "struct config {", "\nstruct {")
 	lookup := a0CSection(t, source, "static __always_inline struct pending *current(", "static __always_inline struct record *reserve(")
 	callbacks := a0CSection(t, source, `SEC("kprobe/_copy_from_user")`, `SEC("fentry/security_bprm_check")`)
 	// Actual production identity/slot lookup and copy callbacks, with userspace
