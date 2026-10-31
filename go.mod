@@ -235,5 +235,6 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 )
 
-// Temporary fork pending https://github.com/cilium/ebpf/pull/2143.
-replace github.com/cilium/ebpf => github.com/matthyx/ebpf v0.0.0-20261030111350-637a2d176be0
+// Fork required for bounded error wrapping (https://github.com/cilium/ebpf/pull/2143)
+// and ExactSymbol (https://github.com/matthyx/ebpf/commit/b1f2a88f2b0300bded539bfebc00325fe6abaa77).
+replace github.com/cilium/ebpf => github.com/matthyx/ebpf v0.0.0-20261031180124-b1f2a88f2b03
