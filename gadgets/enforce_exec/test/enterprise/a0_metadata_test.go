@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"golang.org/x/sys/unix"
 )
@@ -379,9 +380,9 @@ func a0CopySource(t *testing.T) string {
 
 func TestA0CopyDepthSingleValidatedCapture(t *testing.T) {
 	source := a0CopySource(t)
-	for _, callback := range []struct{ start, end, guard string }{
-		{"int BPF_PROG(copy_enter,", `SEC("fexit/_copy_from_user")`, "depth>=8"},
-		{"int BPF_PROG(copy_exit,", `SEC("fentry/security_bprm_check")`, "!depth || depth>8"},
+	for _, callback := range []struct{ start, end, guard, operation string }{
+		{"int BPF_PROG(copy_enter,", `SEC("fexit/_copy_from_user")`, "depth>=8", "frame_at(slot,depth)"},
+		{"int BPF_PROG(copy_exit,", `SEC("fentry/security_bprm_check")`, "!depth || depth>8", "frame_at(slot,depth)"},
 	} {
 		body := a0CSection(t, source, callback.start, callback.end)
 		// One full-width map load and one final store. Checking map memory and
@@ -391,7 +392,7 @@ func TestA0CopyDepthSingleValidatedCapture(t *testing.T) {
 		}
 		capture := strings.Index(body, "__u64 depth=s->depth;")
 		guard := strings.Index(body, callback.guard)
-		index := strings.Index(body, "&s->frame[depth]")
+		index := strings.Index(body, callback.operation)
 		if capture < 0 || guard <= capture || index <= guard {
 			t.Errorf("%s must validate the captured 64-bit depth before indexing", callback.start)
 		}
@@ -407,80 +408,156 @@ func TestA0CopyDepthCRegression(t *testing.T) {
 		t.Fatal("absolute trusted IG_ENTERPRISE_A0_CLANG required")
 	}
 	source := a0CopySource(t)
+
 	types := a0CSection(t, source, "struct config {", "struct { __uint")
+	lookup := a0CSection(t, source, "static __always_inline struct pending *current(", "static __always_inline struct record *reserve(")
 	callbacks := a0CSection(t, source, `SEC("fentry/_copy_from_user")`, `SEC("fentry/security_bprm_check")`)
-	// Ordinary process memory only: no kernel helpers, maps, attachments,
-	// namespace operations, or synthetic exec_target are invoked.
+	// Actual production identity/slot lookup and copy callbacks, with userspace
+	// map/helper stubs only. This does not load BPF or execute exec_target.
 	harness := `
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
 typedef uint64_t __u64;
+typedef uint32_t __u32;
 #define SEC(name)
 #define BPF_PROG(name, ...) name(void *ctx, __VA_ARGS__)
 ` + types + `
-static struct pending state;
+static int owned, pending, config, counters, frames;
+static struct pending states[4];
+static struct frame frame_values[32];
+static struct config settings={1000,1,2};
 static struct counters counts;
 static struct record observed;
-static struct pending *current(struct counters **c) { *c=&counts; return &state; }
+static __u32 active, owned_slot, last_frame_key;
+static unsigned frame_lookups;
+static int fail_frames, change_slot;
+static long stack_result=16;
+#define state states[active]
+struct bpf_pidns_info { __u32 pid,tgid; };
+static int bpf_get_ns_current_pid_tgid(__u64 dev,__u64 ino,struct bpf_pidns_info *p,unsigned long size) {
+ assert(dev==1 && ino==2); p->pid=42+active; p->tgid=p->pid; return 0;
+}
+static __u64 bpf_ktime_get_ns(void) { return 1; }
+static void *bpf_map_lookup_elem(void *map,const void *keyptr) {
+ __u32 key=*(const __u32 *)keyptr;
+ if (map==&config) { assert(key==0); return &settings; }
+ if (map==&owned) { assert(key==42+active); return &owned_slot; }
+ if (map==&counters) { assert(key==0); if(change_slot) owned_slot=3; return &counts; }
+ if (map==&pending) { assert(key<4); return &states[key]; }
+ assert(map==&frames && key<32); frame_lookups++; last_frame_key=key;
+ return fail_frames ? 0 : &frame_values[key];
+}
 static __u64 bpf_get_current_task(void) { return 7; }
-static long bpf_get_stack(void *ctx, void *stack, unsigned long size, int flags) { return 16; }
+static long bpf_get_stack(void *ctx, void *stack, unsigned long size, int flags) { return stack_result; }
 static struct record *reserve(struct counters *c, struct pending *s, __u64 kind) {
  memset(&observed,0,sizeof(observed)); observed.kind=kind; c->records++; return &observed;
 }
-` + callbacks + `
-static void reset(__u64 depth) {
- memset(&state,0,sizeof(state)); memset(&counts,0,sizeof(counts));
- memset(&observed,0,sizeof(observed)); state.task=7; state.attempt=1; state.depth=depth;
- for (unsigned i=0;i<8;i++) state.frame[i]=(struct frame){i+1,100+i,16+i};
+` + lookup + callbacks + `
+static void reset(__u32 slot,__u64 depth) {
+ memset(states,0,sizeof(states)); memset(frame_values,0,sizeof(frame_values));
+ memset(&counts,0,sizeof(counts)); memset(&observed,0,sizeof(observed));
+ active=owned_slot=slot; fail_frames=change_slot=0; frame_lookups=0; stack_result=16;
+ for (unsigned owner=0;owner<4;owner++) {
+  states[owner].task=7; states[owner].attempt=1; states[owner].depth=depth;
+ }
+}
+static void expect_unchanged(struct pending *before,struct frame *prior) {
+ assert(memcmp(states,before,sizeof(states))==0);
+ assert(memcmp(frame_values,prior,sizeof(frame_values))==0);
 }
 int main(void) {
- const __u64 depths[]={0,1,7,8,9,UINT64_MAX,UINT64_C(1)<<32};
- for (unsigned i=0;i<sizeof(depths)/sizeof(depths[0]);i++) {
-  __u64 depth=depths[i];
-  reset(depth);
-  struct pending before=state;
-  copy_enter(0,(void *)100,0,16);
-  if (depth>=8) {
-   assert(counts.faults==1 && counts.calls==0 && counts.records==0);
-   assert(memcmp(&before,&state,sizeof(state))==0);
-  } else {
-   assert(counts.faults==0 && counts.calls==1 && counts.records==1);
-   assert(state.depth==depth+1 && observed.depth==depth+1 && observed.unknown==2);
-   assert(state.frame[depth].call==observed.call && state.frame[depth].to==100);
-  }
-  reset(depth); before=state;
-  if (!depth || depth>8) {
+ _Static_assert(sizeof(struct pending)==32,"pending no longer holds frames");
+ _Static_assert(sizeof(struct frame)==24,"frame payload changed");
+ reset(0,0);
+ struct frame zero={};
+ for (__u32 i=0;i<32;i++) assert(memcmp(&frame_values[i],&zero,sizeof(zero))==0);
+ const __u64 depths[]={0,1,2,3,4,5,6,7,8,9,UINT64_MAX,UINT64_C(1)<<32};
+ for (__u32 owner=0;owner<4;owner++) {
+  for (unsigned i=0;i<sizeof(depths)/sizeof(depths[0]);i++) {
+   __u64 depth=depths[i];
+   reset(owner,depth);
+   struct pending before[4]; struct frame prior[32];
+   memcpy(before,states,sizeof(states)); memcpy(prior,frame_values,sizeof(frame_values));
+   copy_enter(0,(void *)100,0,16);
+   if (depth>=8) {
+    assert(counts.faults==1 && counts.calls==0 && counts.records==0 && frame_lookups==0);
+    expect_unchanged(before,prior);
+   } else {
+    assert(counts.faults==0 && counts.calls==1 && counts.records==1);
+    assert(state.depth==depth+1 && observed.depth==depth+1 && observed.unknown==2);
+    assert(last_frame_key==owner*8+depth && frame_lookups==1);
+    assert(frame_values[last_frame_key].call==observed.call && frame_values[last_frame_key].to==100);
+    for (__u32 k=0;k<32;k++) if(k!=last_frame_key) assert(memcmp(&frame_values[k],&prior[k],sizeof(zero))==0);
+   }
+   reset(owner,depth);
+   if(depth && depth<=8) frame_values[owner*8+depth-1]=(struct frame){depth,100,16};
+   memcpy(before,states,sizeof(states)); memcpy(prior,frame_values,sizeof(frame_values));
    copy_exit(0,(void *)100,0,16,0);
-   assert(counts.faults==1 && counts.records==0);
-   assert(memcmp(&before,&state,sizeof(state))==0);
-  } else {
-   copy_exit(0,(void *)(uintptr_t)(100+depth-1),0,16+depth-1,0);
-   assert(counts.faults==0 && counts.records==1 && state.depth==depth-1);
-   assert(observed.call==depth && observed.depth==depth && observed.unknown==2);
+   if (!depth || depth>8) {
+    assert(counts.faults==1 && counts.records==0 && frame_lookups==0);
+    expect_unchanged(before,prior);
+   } else {
+    assert(counts.faults==0 && counts.records==1 && state.depth==depth-1);
+    assert(last_frame_key==owner*8+depth-1 && observed.call==depth && observed.depth==depth && observed.unknown==2);
+   }
   }
  }
- reset(0);
- for (__u64 i=0;i<8;i++) copy_enter(0,(void *)(uintptr_t)(100+i),0,16+i);
- assert(state.depth==8 && counts.faults==0);
- for (__u64 i=8;i>0;i--) {
-  copy_exit(0,(void *)(uintptr_t)(100+i-1),0,16+i-1,0);
-  assert(state.depth==i-1 && observed.call==i && observed.depth==i && observed.unknown==2);
+ // Interleave all owners while independently filling and draining eight slots.
+ reset(0,0);
+ for (__u64 depth=0;depth<8;depth++) for(__u32 owner=0;owner<4;owner++) {
+  active=owned_slot=owner;
+  copy_enter(0,(void *)(uintptr_t)(100+owner*8+depth),0,16+depth);
+  assert(state.depth==depth+1);
  }
- assert(counts.calls==8 && counts.records==16 && counts.faults==0);
- reset(1); state.task=8;
- struct pending before=state;
+ for (__u64 depth=8;depth>0;depth--) for(__u32 owner=0;owner<4;owner++) {
+  active=owned_slot=owner;
+  copy_exit(0,(void *)(uintptr_t)(100+owner*8+depth-1),0,16+depth-1,0);
+  assert(state.depth==depth-1 && observed.call==(depth-1)*4+owner+1);
+  assert(observed.depth==depth && observed.unknown==2);
+ }
+ assert(counts.calls==32 && counts.records==64 && counts.faults==0);
+ // Invalid authenticated-slot map values are refused by actual current().
+ const __u32 invalid_slots[]={4,UINT32_MAX};
+ for (unsigned i=0;i<2;i++) {
+  reset(0,1); owned_slot=invalid_slots[i];
+  struct pending before[4]; struct frame prior[32];
+  memcpy(before,states,sizeof(states)); memcpy(prior,frame_values,sizeof(frame_values));
+  copy_enter(0,(void *)100,0,16); copy_exit(0,(void *)100,0,16,0);
+  assert(counts.calls==0 && counts.records==0 && frame_lookups==0);
+  expect_unchanged(before,prior);
+ }
+ // Mutate the owned-map value AFTER capture: both lookups still use original slot.
+ reset(1,0); change_slot=1; copy_enter(0,(void *)100,0,16);
+ assert(last_frame_key==8 && states[1].depth==1 && states[3].depth==0);
+ // Missing frame value must fault before call ID/frame/depth mutation.
+ for(int exiting=0;exiting<2;exiting++) {
+  reset(2,exiting ? 1 : 0); fail_frames=1;
+  struct pending before[4]; struct frame prior[32];
+  memcpy(before,states,sizeof(states)); memcpy(prior,frame_values,sizeof(frame_values));
+  if(exiting) copy_exit(0,(void *)100,0,16,0); else copy_enter(0,(void *)100,0,16);
+  assert(counts.faults==1 && counts.calls==0 && counts.records==0 && frame_lookups==1);
+  expect_unchanged(before,prior);
+ }
+ const long bad_stack[]={-1,0,15,128};
+ for(unsigned i=0;i<4;i++) {
+  reset(0,0); stack_result=bad_stack[i]; copy_enter(0,(void *)100,0,16);
+  assert(counts.faults==1 && observed.unknown==6 && state.depth==1);
+ }
+ reset(0,1); state.task=8;
+ struct pending before[4]; struct frame prior[32];
+ memcpy(before,states,sizeof(states)); memcpy(prior,frame_values,sizeof(frame_values));
  copy_enter(0,(void *)100,0,16); copy_exit(0,(void *)100,0,16,0);
- assert(counts.faults==2 && counts.records==0 && memcmp(&before,&state,sizeof(state))==0);
- reset(1); copy_exit(0,(void *)101,0,16,0);
- assert(counts.faults==1 && observed.unknown==10 && state.depth==0);
- reset(1); copy_exit(0,(void *)100,0,17,0);
- assert(counts.faults==1 && observed.unknown==10);
- reset(1); copy_exit(0,(void *)100,0,16,1);
- assert(counts.faults==1 && observed.unknown==10);
+ assert(counts.faults==2 && counts.records==0 && frame_lookups==0); expect_unchanged(before,prior);
+ for(unsigned fault=0;fault<3;fault++) {
+  reset(0,1); frame_values[0]=(struct frame){1,100,16};
+  copy_exit(0,(void *)(uintptr_t)(fault==0 ? 101 : 100),0,fault==1 ? 17 : 16,fault==2);
+  assert(counts.faults==1 && observed.unknown==10 && state.depth==0);
+ }
  return 0;
 }
 `
+
 	dir := t.TempDir()
 	input, binary := filepath.Join(dir, "depth.c"), filepath.Join(dir, "depth")
 	if err := os.WriteFile(input, []byte(harness), 0o600); err != nil {
@@ -498,6 +575,28 @@ int main(void) {
 		}
 		if output, err := exec.CommandContext(ctx, command, args...).CombinedOutput(); err != nil {
 			t.Fatalf("pure C depth regression: %v: %s", err, output)
+		}
+	}
+}
+
+func TestA0FrameMapLayout(t *testing.T) {
+	if !a0Enabled(os.Getenv(a0Flag)) {
+		t.Skip("A0 offline map layout disabled")
+	}
+	object, _ := compileA0(t)
+	spec, err := ebpf.LoadCollectionSpec(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Maps) != 6 {
+		t.Fatalf("map count = %d, want six", len(spec.Maps))
+	}
+	for name, want := range map[string]struct{ entries, size uint32 }{
+		"frames": {32, 24}, "pending": {4, 32},
+	} {
+		m := spec.Maps[name]
+		if m == nil || m.Type != ebpf.Array || m.KeySize != 4 || m.ValueSize != want.size || m.MaxEntries != want.entries {
+			t.Fatalf("%s unexpected map layout: %+v", name, m)
 		}
 	}
 }

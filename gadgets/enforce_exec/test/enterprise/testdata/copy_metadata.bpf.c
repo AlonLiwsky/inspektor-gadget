@@ -17,7 +17,6 @@ struct counters { __u64 records, attempts, calls, faults; };
 struct frame { __u64 call, to, n; };
 struct pending {
  __u64 task, bprm, attempt, depth;
- struct frame frame[8];
 };
 // All fields are 64-bit to keep the offline representation padding-free.
 struct record {
@@ -27,11 +26,12 @@ struct record {
 };
 struct { __uint(type,BPF_MAP_TYPE_HASH); __uint(max_entries,4); __type(key,__u32); __type(value,__u32); } owned SEC(".maps");
 struct { __uint(type,BPF_MAP_TYPE_ARRAY); __uint(max_entries,4); __type(key,__u32); __type(value,struct pending); } pending SEC(".maps");
+struct { __uint(type,BPF_MAP_TYPE_ARRAY); __uint(max_entries,32); __type(key,__u32); __type(value,struct frame); } frames SEC(".maps");
 struct { __uint(type,BPF_MAP_TYPE_ARRAY); __uint(max_entries,1); __type(key,__u32); __type(value,struct config); __uint(map_flags,BPF_F_RDONLY_PROG); } config SEC(".maps");
 struct { __uint(type,BPF_MAP_TYPE_ARRAY); __uint(max_entries,1); __type(key,__u32); __type(value,struct counters); } counters SEC(".maps");
 struct { __uint(type,BPF_MAP_TYPE_ARRAY); __uint(max_entries,4096); __type(key,__u32); __type(value,struct record); } records SEC(".maps");
 
-static __always_inline struct pending *current(struct counters **counts)
+static __always_inline struct pending *current(struct counters **counts, __u32 *owned_slot)
 {
  __u32 zero=0;
  struct config *cfg=bpf_map_lookup_elem(&config,&zero);
@@ -41,15 +41,27 @@ static __always_inline struct pending *current(struct counters **counts)
  // a namespace-local userspace PID using the initial-namespace task ID.
  if (bpf_get_ns_current_pid_tgid(cfg->ns_dev,cfg->ns_ino,&local,sizeof(local))) return 0;
  __u32 tgid=local.tgid;
- __u32 *slot=bpf_map_lookup_elem(&owned,&tgid);
- if (!slot || *slot>=4) return 0;
+ __u32 *slot_ptr=bpf_map_lookup_elem(&owned,&tgid);
+ if (!slot_ptr) return 0;
+ __u32 slot=*slot_ptr;
+ if (slot>=4) return 0;
  struct counters *c=bpf_map_lookup_elem(&counters,&zero);
  if (!c) return 0;
  if (local.pid!=tgid || !cfg->deadline || bpf_ktime_get_ns()>cfg->deadline) {
   __sync_fetch_and_add(&c->faults,1); return 0;
  }
  *counts=c;
- return bpf_map_lookup_elem(&pending,slot);
+ *owned_slot=slot;
+ return bpf_map_lookup_elem(&pending,&slot);
+}
+
+// Bound the key before narrowing. Each map value is one complete frame,
+// so accessing its fields never requires an inner-array pointer offset.
+static __always_inline struct frame *frame_at(__u32 slot, __u64 index)
+{
+ if (slot>=4 || index>=8) return 0;
+ __u32 key=slot*8+(__u32)index;
+ return bpf_map_lookup_elem(&frames,&key);
 }
 
 static __always_inline struct record *reserve(struct counters *c, struct pending *s, __u64 kind)
@@ -76,7 +88,7 @@ static __always_inline struct record *reserve(struct counters *c, struct pending
 SEC("fexit/security_bprm_creds_for_exec")
 int BPF_PROG(start, struct linux_binprm *bprm, int ret)
 {
- struct counters *c=0; struct pending *s=current(&c);
+ struct counters *c=0; __u32 slot=0; struct pending *s=current(&c,&slot);
  if (!s || ret) return 0;
  if (s->attempt) { __sync_fetch_and_add(&c->faults,1); return 0; }
  __u64 attempt=__sync_fetch_and_add(&c->attempts,1)+1;
@@ -97,12 +109,13 @@ int BPF_PROG(start, struct linux_binprm *bprm, int ret)
 SEC("fentry/_copy_from_user")
 int BPF_PROG(copy_enter, void *to, const void *from, unsigned long n)
 {
- struct counters *c=0; struct pending *s=current(&c);
+ struct counters *c=0; __u32 slot=0; struct pending *s=current(&c,&slot);
  if (!s || !s->attempt) return 0;
  // Keep the checked full-width scalar through indexing; do not reload map depth.
  __u64 depth=s->depth;
  if (s->task!=bpf_get_current_task() || depth>=8) { __sync_fetch_and_add(&c->faults,1); return 0; }
- struct frame *f=&s->frame[depth];
+ struct frame *f=frame_at(slot,depth);
+ if (!f) { __sync_fetch_and_add(&c->faults,1); return 0; }
  f->call=__sync_fetch_and_add(&c->calls,1)+1; f->to=(__u64)to; f->n=n;
  s->depth=depth+1;
  struct record *r=reserve(c,s,1);
@@ -121,13 +134,14 @@ int BPF_PROG(copy_enter, void *to, const void *from, unsigned long n)
 SEC("fexit/_copy_from_user")
 int BPF_PROG(copy_exit, void *to, const void *from, unsigned long n, unsigned long remaining)
 {
- struct counters *c=0; struct pending *s=current(&c);
+ struct counters *c=0; __u32 slot=0; struct pending *s=current(&c,&slot);
  if (!s || !s->attempt) return 0;
  // Validate before subtraction: invalid depth must fault, never wrap or mask.
  __u64 depth=s->depth;
  if (s->task!=bpf_get_current_task() || !depth || depth>8) { __sync_fetch_and_add(&c->faults,1); return 0; }
  depth-=1;
- struct frame *f=&s->frame[depth];
+ struct frame *f=frame_at(slot,depth);
+ if (!f) { __sync_fetch_and_add(&c->faults,1); return 0; }
  struct record *r=reserve(c,s,2);
  if (r) {
   r->call=f->call; r->depth=depth+1; r->to=(__u64)to; r->n=n; r->remaining=remaining; r->unknown=2;
@@ -140,7 +154,7 @@ int BPF_PROG(copy_exit, void *to, const void *from, unsigned long n, unsigned lo
 SEC("fentry/security_bprm_check")
 int BPF_PROG(check, struct linux_binprm *bprm)
 {
- struct counters *c=0; struct pending *s=current(&c);
+ struct counters *c=0; __u32 slot=0; struct pending *s=current(&c,&slot);
  if (!s || !s->attempt) return 0;
  if (s->task!=bpf_get_current_task() || s->bprm!=(__u64)bprm || s->depth) { __sync_fetch_and_add(&c->faults,1); return 0; }
  struct record *r=reserve(c,s,4);
@@ -155,7 +169,7 @@ int BPF_PROG(check, struct linux_binprm *bprm)
 SEC("fentry/free_bprm")
 int BPF_PROG(finish, struct linux_binprm *bprm)
 {
- struct counters *c=0; struct pending *s=current(&c);
+ struct counters *c=0; __u32 slot=0; struct pending *s=current(&c,&slot);
  if (!s || !s->attempt) return 0;
  if (s->task!=bpf_get_current_task() || s->bprm!=(__u64)bprm || s->depth) { __sync_fetch_and_add(&c->faults,1); return 0; }
  reserve(c,s,5);

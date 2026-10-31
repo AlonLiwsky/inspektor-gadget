@@ -3,14 +3,17 @@
 **Test-only and default disabled. The revised candidate is locally validated
 only; another native execution needs a fresh, separate execution review.**
 
-The first candidate was tried once on the authenticated Rocky GA target. Loading
-`copy_exit` was rejected for unbounded map-value pointer arithmetic, before any
-attachment or synthetic helper execution. That run was **NOT_READY**, not a
-platform gap or evidence of enforcement. The revision captures the full-width
-map depth once, validates that same scalar before subtraction/indexing, and
-retains the eight-frame LIFO and fault behavior. No masks, narrowing, or wrapped
-indices accept invalid depths. Local regression and compilation do **not** prove
-that the revised program loads or attaches; it has not been rerun natively.
+Two candidates have each been tried once on the authenticated Rocky GA target:
+the original and the single-captured-depth revision. Both runs rejected
+`copy_exit` during loading for unbounded map-value pointer arithmetic, before any
+attachment or synthetic helper execution. Both were **NOT_READY**, not platform
+gaps or evidence of enforcement.
+
+A pointer-return switch and a per-slot field-copy switch were also assessed
+offline; ordinary Clang19 output still merged their offsets, so neither was
+selected for another native run. The current local candidate instead stores
+each frame as a separate ARRAY-map value. It has not been run natively.
+Compilation and regression results do **not** establish load/attach acceptance.
 
 Target: authenticated Rocky 8.10 GA `4.18.0-553.el8_10.x86_64`, not a production
 patch recommendation. See `.omx/plans/ig15-enterprise-copy-completion-gatea.md`.
@@ -50,6 +53,30 @@ insufficient. Structural success never clears that flag or declares A0 PASS.
 All-path copy coverage, direct return-frame attribution and mapping lifetime are
 experiment outputs requiring independent interpretation, not assumptions hidden
 in prerequisites. Metadata cannot prove destination-byte readability for A1.
+
+## Frame storage revision (local-only)
+
+The captured authenticated owner slot is checked once as a 32-bit value below
+four and reused unchanged for pending-state and frame selection. Entry depth
+must be 0–7; exit depth must be 1–8 before subtraction. The checked key is
+`slot * 8 + index` (0–31), with conversion only after full-width validation.
+Each `frames` ARRAY value holds one 24-byte frame; field accesses use fixed
+offsets 0, 8 and 16. A missing lookup faults before changing call IDs, frame
+contents or depth. All three fields are written before publishing pushed depth.
+
+This replaces the eight-frame array inside each `pending` value: pending values
+shrink from 224 to 32 bytes. Total frame payload remains 32 × 24 = 768 bytes,
+but a sixth map adds a collection-owned FD and kernel allocation/accounting
+overhead. The existing collection load/close and uncertain-detach retention
+own this extra map too; no Go native control or cleanup path changes.
+Record layout and zero-payload/unknown-origin semantics remain unchanged.
+
+Actual-C userspace regression covers all 32 keys and interleaved owners,
+including real production ownership lookup and capture, invalid slots/depths,
+zero-initialized frames, and failed lookups without mutation. This is **not**
+live four-owner proof: the native harness still uses one child and slot zero.
+The opt-in offline map-layout test parses the compiled object without loading
+it and checks six maps plus the frames/pending sizes.
 
 ## Ownership and cleanup
 
@@ -130,10 +157,10 @@ IG_ENTERPRISE_A0_CLANG=/absolute/trusted/clang \
 go test -v -run '^TestA0CompileOnly$' ./gadgets/enforce_exec/test/enterprise
 ```
 
-The opt-in pure C regression compiles the actual production callback bodies and
-type declarations with deterministic userspace stubs, then runs them with
-undefined-behavior/bounds sanitizers. It covers depths 0, 1, 7, 8, 9, 2^32 and
-UINT64_MAX, eight-frame LIFO, task mismatch, copy faults, and permanent unknown
+The opt-in pure C regression compiles the actual production ownership/frame
+lookup, callback bodies and type declarations with deterministic userspace stubs, then runs them with
+undefined-behavior/bounds sanitizers. It covers every slot and depths 0 through 9, 2^32 and
+UINT64_MAX, eight-frame LIFO, task mismatch, stack/copy faults, and permanent unknown
 origin. This does not execute BPF, kernel helpers, or `exec_target`. Ordinary
 tests still skip compiler/subprocess operations unless explicitly opted in.
 
