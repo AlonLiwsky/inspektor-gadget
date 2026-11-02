@@ -6,7 +6,7 @@
 # image is valid, even scratch. Alpine is used by default as a tradeoff
 # between size and tools available in the image.
 
-ARG BUILDER_IMAGE=golang:1.25.5-trixie@sha256:4f9d98ebaa759f776496d850e0439c48948d587b191fc3949b5f5e4667abef90
+ARG BUILDER_IMAGE=golang:1.26.10-trixie@sha256:e18951cff6896c16909458a8e0cbd52364a347826ff1f5b86d095fe0670d52e7
 ARG BASE_IMAGE=gcr.io/distroless/static-debian11:latest@sha256:1dbe426d60caed5d19597532a2d74c8056cd7b1674042b88f7328690b5ead8ed
 
 FROM --platform=${BUILDPLATFORM} ${BUILDER_IMAGE} AS builder

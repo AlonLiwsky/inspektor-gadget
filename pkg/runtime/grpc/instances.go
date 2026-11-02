@@ -23,7 +23,6 @@ import (
 	"sync"
 
 	"github.com/inspektor-gadget/inspektor-gadget/internal/namesgenerator"
-
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/environment"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/params"
