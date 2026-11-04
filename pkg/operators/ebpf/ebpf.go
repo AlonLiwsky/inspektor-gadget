@@ -960,6 +960,8 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		}
 		opts.Programs.KernelTypes = btfSpec
 	}
+	// The final configuration is known here: do not load disabled programs.
+	i.dropDisabledPrograms()
 	// Recheck transformed instructions before kernel map or program loading.
 	if err := verifyCollectionSpec(i.collectionSpec, i.policy); err != nil {
 		return fmt.Errorf("verifying BPF policy before loading: %w", err)
