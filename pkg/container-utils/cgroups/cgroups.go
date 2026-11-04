@@ -55,6 +55,27 @@ func GetCgroupV2Mountpoint() (string, error) {
 	return "", fmt.Errorf("no cgroup v2 mount found (looked in %v)", candidates)
 }
 
+// GetHostCgroupV2Mountpoint returns the host's cgroup-v2 mount point as seen
+// through HOST_ROOT, for callers that run in a container with the host root mounted.
+func GetHostCgroupV2Mountpoint() (string, error) {
+	candidates := []string{
+		filepath.Join(host.HostRoot, "sys/fs/cgroup"),
+		filepath.Join(host.HostRoot, "sys/fs/cgroup/unified"),
+	}
+	for _, path := range candidates {
+		if IsCgroupV2(path) {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("no cgroup v2 mount found (looked in %v)", candidates)
+}
+
+// IsCgroupV2 reports whether path is in a cgroup-v2 filesystem.
+func IsCgroupV2(path string) bool {
+	var stat unix.Statfs_t
+	return unix.Statfs(path, &stat) == nil && stat.Type == unix.CGROUP2_SUPER_MAGIC
+}
+
 // GetCgroupID returns the cgroup2 ID of a path.
 func GetCgroupID(pathWithMountpoint string) (uint64, error) {
 	hf, _, err := unix.NameToHandleAt(unix.AT_FDCWD, pathWithMountpoint, 0)
