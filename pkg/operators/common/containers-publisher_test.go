@@ -95,7 +95,9 @@ func TestContainersPublisherReplayBeforeChanges(t *testing.T) {
 				return nil
 			}, 0))
 			published := make(chan error, 1)
-			go func() { published <- publisher.PublishContainers(false, nil, containercollection.ContainerSelector{}) }()
+			go func() {
+				published <- publisher.PublishContainers(false, nil, containercollection.ContainerSelector{}, false)
+			}()
 			select {
 			case <-entered:
 			case <-time.After(5 * time.Second):
@@ -152,7 +154,7 @@ func TestContainersPublisherReplayFailureUnsubscribes(t *testing.T) {
 		calls++
 		return failure
 	}, 0))
-	require.ErrorIs(t, publisher.PublishContainers(false, nil, containercollection.ContainerSelector{}), failure)
+	require.ErrorIs(t, publisher.PublishContainers(false, nil, containercollection.ContainerSelector{}, false), failure)
 	collection.RemoveContainer("existing")
 	require.Equal(t, 1, calls, "failed startup left its subscription active")
 }

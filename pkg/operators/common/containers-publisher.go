@@ -160,9 +160,8 @@ func (publisher *ContainersPublisher) emitSelectedContainersDatasourceEvent(even
 // namespaceScopeRequired is a restrictive emission signal: callers set
 // it for an authenticated policy context or a persisted scoped-policy marker.
 // Neither the marker nor a user-supplied selector is an authorization grant.
-// The optional argument preserves unscoped callers without such a policy.
-func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainers []*containercollection.Container, containerSelector containercollection.ContainerSelector, namespaceScopeRequired ...bool) (err error) {
-	scoped := len(namespaceScopeRequired) > 0 && namespaceScopeRequired[0]
+// Every caller must explicitly choose whether the scoped boundary applies.
+func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainers []*containercollection.Container, containerSelector containercollection.ContainerSelector, namespaceScopeRequired bool) (err error) {
 	// Subscribe snapshots the collection atomically, but publishing that snapshot
 	// takes time. Queue concurrent changes until the snapshot has been delivered.
 	var mu sync.Mutex
@@ -196,7 +195,7 @@ func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainer
 					pending = append(pending, event)
 					return
 				}
-				err := publisher.emitSelectedContainersDatasourceEvent(event.Type, event.Container, k8s, containerSelector, scoped)
+				err := publisher.emitSelectedContainersDatasourceEvent(event.Type, event.Container, k8s, containerSelector, namespaceScopeRequired)
 				if err != nil {
 					log.Errorf("publishing new container event: %v", err)
 				}
@@ -209,7 +208,7 @@ func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainer
 	}
 
 	for _, container := range containers {
-		err := publisher.emitSelectedContainersDatasourceEvent(containercollection.EventTypeAddContainer, container, k8s, containerSelector, scoped)
+		err := publisher.emitSelectedContainersDatasourceEvent(containercollection.EventTypeAddContainer, container, k8s, containerSelector, namespaceScopeRequired)
 		if err != nil {
 			return fmt.Errorf("publishing existing container event: %w", err)
 		}
@@ -226,7 +225,7 @@ func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainer
 		pending = nil
 		mu.Unlock()
 		for _, event := range batch {
-			if err := publisher.emitSelectedContainersDatasourceEvent(event.Type, event.Container, k8s, containerSelector, scoped); err != nil {
+			if err := publisher.emitSelectedContainersDatasourceEvent(event.Type, event.Container, k8s, containerSelector, namespaceScopeRequired); err != nil {
 				return fmt.Errorf("publishing queued container event: %w", err)
 			}
 		}

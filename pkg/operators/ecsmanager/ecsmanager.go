@@ -500,7 +500,7 @@ func (m *EcsManagerInstance) Start(gadgetCtx operators.GadgetContext) error {
 
 	containerSelector := newEcsContainerSelector(m.params)
 
-	return m.containersPublisher.PublishContainers(true, []*containercollection.Container{}, containerSelector)
+	return m.containersPublisher.PublishContainers(true, []*containercollection.Container{}, containerSelector, false)
 }
 
 func (m *EcsManagerInstance) Stop(gadgetCtx operators.GadgetContext) error {
