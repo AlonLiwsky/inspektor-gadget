@@ -157,8 +157,8 @@ func (publisher *ContainersPublisher) emitSelectedContainersDatasourceEvent(even
 	return publisher.emitContainersDatasourceEvent(eventType, container, k8s)
 }
 
-// namespaceScopeRequired is a restrictive emission signal: callers set
-// it for an authenticated policy context or a persisted scoped-policy marker.
+// PublishContainers uses namespaceScopeRequired as a restrictive emission
+// signal for an authenticated policy context or a persisted scoped-policy marker.
 // Neither the marker nor a user-supplied selector is an authorization grant.
 // Every caller must explicitly choose whether the scoped boundary applies.
 func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainers []*containercollection.Container, containerSelector containercollection.ContainerSelector, namespaceScopeRequired bool) (err error) {
