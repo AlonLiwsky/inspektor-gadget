@@ -156,3 +156,101 @@ func TestContainersPublisherReplayFailureUnsubscribes(t *testing.T) {
 	collection.RemoveContainer("existing")
 	require.Equal(t, 1, calls, "failed startup left its subscription active")
 }
+
+func TestContainersPublisherAuthenticatedNamespaceBoundary(t *testing.T) {
+	ctx := gadgetcontext.New(context.Background(), "test")
+	publisher, err := NewContainersPublisher(ctx, nil)
+	require.NoError(t, err)
+	selector := containercollection.ContainerSelector{}
+	selector.K8s.Namespace = "namespace-a"
+	type packet struct{ kind, id, config string }
+	var packets []packet
+	require.NoError(t, publisher.containersDs.Subscribe(func(_ datasource.DataSource, data datasource.Data) error {
+		kind, err := publisher.eventTypeField.String(data)
+		require.NoError(t, err)
+		id, err := publisher.idField.String(data)
+		require.NoError(t, err)
+		config, err := publisher.containerConfigField.String(data)
+		require.NoError(t, err)
+		packets = append(packets, packet{kind, id, config})
+		return nil
+	}, 0))
+	makeContainer := func(namespace, id, config string) *containercollection.Container {
+		c := &containercollection.Container{OciConfig: config}
+		c.K8s.Namespace = namespace
+		c.Runtime.ContainerID = id
+		return c
+	}
+	unbound := makeContainer("", "unbound-id", `{"secret":"unbound"}`)
+	other := makeContainer("namespace-b", "other-id", `{"secret":"other"}`)
+	allowed := makeContainer("namespace-a", "allowed-id", `{"safe":"a"}`)
+	for _, event := range []struct {
+		kind      containercollection.EventType
+		container *containercollection.Container
+	}{
+		{containercollection.EventTypePreCreateContainer, unbound},
+		{containercollection.EventTypePreCreateContainer, other},
+		{containercollection.EventTypeAddContainer, other},
+		{containercollection.EventTypeAddContainer, unbound},
+		{containercollection.EventType(255), allowed},
+		{containercollection.EventTypeAddContainer, allowed},
+	} {
+		require.NoError(t, publisher.emitSelectedContainersDatasourceEvent(event.kind, event.container, true, selector, true))
+	}
+	require.Equal(t, []packet{{"CREATED", "allowed-id", `{"safe":"a"}`}}, packets)
+	// An unscoped publisher with the same user selector retains PRECREATE.
+	require.NoError(t, publisher.emitSelectedContainersDatasourceEvent(containercollection.EventTypePreCreateContainer, unbound, true, selector, false))
+	require.Equal(t, packet{"PRECREATE", "unbound-id", `{"secret":"unbound"}`}, packets[1])
+	// Empty and exclusion-only selectors are not an authenticated namespace grant.
+	for _, namespaceSelector := range []string{"", "!namespace-b"} {
+		selector.K8s.Namespace = namespaceSelector
+		require.NoError(t, publisher.emitSelectedContainersDatasourceEvent(containercollection.EventTypeAddContainer, allowed, true, selector, true))
+	}
+	require.Len(t, packets, 2)
+}
+
+func TestContainersPublisherScopedSubscriptionAndUnscopedInternalEvents(t *testing.T) {
+	global := containercollection.NewGadgetPubSub()
+	precreate := &containercollection.Container{OciConfig: `{"secret":"global"}`}
+	precreate.Runtime.ContainerID = "global-precreate"
+	var globalEvent containercollection.PubSubEvent
+	global.Subscribe("internal", func(event containercollection.PubSubEvent) { globalEvent = event }, nil)
+	global.Publish(containercollection.EventTypePreCreateContainer, precreate)
+	require.Equal(t, containercollection.EventTypePreCreateContainer, globalEvent.Type)
+	require.Same(t, precreate, globalEvent.Container)
+
+	var internal []string
+	var mu sync.Mutex
+	collection := &containercollection.ContainerCollection{}
+	require.NoError(t, collection.Initialize(containercollection.WithPubSub(func(event containercollection.PubSubEvent) {
+		mu.Lock()
+		internal = append(internal, event.Container.Runtime.ContainerID)
+		mu.Unlock()
+	})))
+	defer collection.Close()
+	ctx := gadgetcontext.New(context.Background(), "test")
+	defer ctx.Cancel()
+	publisher, err := NewContainersPublisher(ctx, collection)
+	require.NoError(t, err)
+	defer publisher.Unsubscribe()
+	selector := containercollection.ContainerSelector{}
+	selector.K8s.Namespace = "namespace-a"
+	var received []string
+	require.NoError(t, publisher.containersDs.Subscribe(func(_ datasource.DataSource, data datasource.Data) error {
+		id, err := publisher.idField.String(data)
+		require.NoError(t, err)
+		received = append(received, id)
+		return nil
+	}, 0))
+	require.NoError(t, publisher.PublishContainers(true, nil, selector, true))
+	for _, namespace := range []string{"namespace-b", "namespace-a"} {
+		container := &containercollection.Container{OciConfig: `{"secret":"` + namespace + `"}`}
+		container.Runtime.ContainerID = namespace
+		container.K8s.Namespace = namespace
+		collection.AddContainer(container)
+	}
+	require.Equal(t, []string{"namespace-a"}, received)
+	mu.Lock()
+	defer mu.Unlock()
+	require.ElementsMatch(t, []string{"namespace-b", "namespace-a"}, internal)
+}
