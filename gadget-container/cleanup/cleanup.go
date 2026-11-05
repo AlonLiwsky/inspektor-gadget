@@ -53,6 +53,7 @@ func removeNRIHooks() {
 		return
 	}
 
+	//nolint:staticcheck // SA1019: Legacy NRI config format is required to remove existing hook entries.
 	var configList nriv1.ConfigList
 	err = json.Unmarshal(content, &configList)
 	if err != nil {

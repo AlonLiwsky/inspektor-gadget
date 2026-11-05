@@ -137,6 +137,7 @@ func installNRIHooks() error {
 	hostConfigPath := filepath.Join(host.HostRoot, "etc/nri/conf.json")
 	content, err := os.ReadFile(hostConfigPath)
 	if err == nil {
+		//nolint:staticcheck // SA1019: Existing NRI conf.json files use the legacy v1 config list.
 		var configList nriv1.ConfigList
 
 		err := json.Unmarshal(content, &configList)
@@ -144,6 +145,7 @@ func installNRIHooks() error {
 			return fmt.Errorf("unmarshalling JSON %s: %w", hostConfigPath, err)
 		}
 
+		//nolint:staticcheck // SA1019: Preserve the legacy plugin entry format in existing conf.json files.
 		configList.Plugins = append(configList.Plugins, &nriv1.Plugin{Type: "nrigadget"})
 
 		content, err = json.Marshal(configList)

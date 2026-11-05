@@ -56,8 +56,10 @@ func (i *igHook) Type() string {
 	return "ighook"
 }
 
+//nolint:staticcheck // SA1019: The installed NRI hook uses the legacy v1 request contract.
 func (i *igHook) Invoke(ctx context.Context, r *types.Request) (*types.Result, error) {
 	// Ignore sandbox containers
+	//nolint:staticcheck // SA1019: Preserve legacy sandbox filtering until the hook protocol is migrated.
 	if !r.IsSandbox() && (r.State == types.Create || r.State == types.Delete) {
 		conf := igHookConf{}
 		err := json.Unmarshal(r.Conf, &conf)
@@ -70,6 +72,7 @@ func (i *igHook) Invoke(ctx context.Context, r *types.Request) (*types.Result, e
 		}
 	}
 
+	//nolint:staticcheck // SA1019: The legacy hook must return a v1 result to its caller.
 	result := r.NewResult("ighook")
 	return result, nil
 }
@@ -84,6 +87,7 @@ func main() {
 	}
 }
 
+//nolint:staticcheck // SA1019: Container processing still receives the legacy v1 NRI request.
 func processContainer(r *types.Request, conf *igHookConf) error {
 	// Validate state
 	if r.ID == "" || (r.Pid == 0 && r.State == types.Create) {
