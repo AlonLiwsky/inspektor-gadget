@@ -294,3 +294,57 @@ func TestCloseRejectsNewAddWithoutBreakingInflightRemoval(t *testing.T) {
 	_, cached := collection.cachedContainers.Load("first")
 	require.False(t, cached, "removal must not refill the cache after Close drained it")
 }
+
+func TestRemoveContainerWithSharedMntnsClearsOwnNetns(t *testing.T) {
+	collection := &ContainerCollection{}
+	require.NoError(t, collection.Initialize())
+	defer collection.Close()
+	first := &Container{Mntns: 123, Netns: 456}
+	first.Runtime.ContainerID = "first"
+	second := &Container{Mntns: 123, Netns: 457}
+	second.Runtime.ContainerID = "second"
+	collection.AddContainer(first)
+	collection.AddContainer(second)
+
+	collection.RemoveContainer("first")
+	require.Nil(t, collection.GetContainer("first"))
+	require.Same(t, second, collection.LookupContainerByMntns(123))
+	require.Empty(t, collection.LookupContainersByNetns(first.Netns))
+	require.Equal(t, []*Container{second}, collection.LookupContainersByNetns(second.Netns))
+}
+
+func TestCloseWithSharedMntnsAndInflightRemovalClearsNetns(t *testing.T) {
+	collection := &ContainerCollection{}
+	require.NoError(t, collection.Initialize(WithPubSub()))
+	first := &Container{Mntns: 123, Netns: 456}
+	first.Runtime.ContainerID = "first"
+	second := &Container{Mntns: 123, Netns: 457}
+	second.Runtime.ContainerID = "second"
+	collection.AddContainer(first)
+	collection.AddContainer(second)
+	entered, release, removeDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	collection.Subscribe("blocking", ContainerSelector{}, func(event PubSubEvent) {
+		if event.Type == EventTypeRemoveContainer && event.Container == first {
+			close(entered)
+			<-release
+		}
+	})
+	defer func() { releaseOnce.Do(func() { close(release) }); <-removeDone }()
+	go func() { collection.RemoveContainer("first"); close(removeDone) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("removal callback did not start")
+	}
+	collection.Close()
+	require.Same(t, first, collection.GetContainer("first"))
+	require.Equal(t, []*Container{first}, collection.LookupContainersByNetns(first.Netns))
+	require.Nil(t, collection.GetContainer("second"))
+	require.Nil(t, collection.LookupContainerByMntns(first.Mntns))
+	require.Empty(t, collection.LookupContainersByNetns(second.Netns))
+	releaseOnce.Do(func() { close(release) })
+	<-removeDone
+	require.Nil(t, collection.GetContainer("first"))
+	require.Empty(t, collection.LookupContainersByNetns(first.Netns))
+}

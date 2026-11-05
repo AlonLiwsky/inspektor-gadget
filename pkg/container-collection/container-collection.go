@@ -211,7 +211,6 @@ func (cc *ContainerCollection) removeContainer(id string, container *Container) 
 	mntNsContainer, ok := cc.containersByMntNs.Load(container.Mntns)
 	if !ok || mntNsContainer.(*Container) != container {
 		log.Warn("container not found or mismatch in mntns lookup map")
-		return
 	} else {
 		cc.containersByMntNs.Delete(container.Mntns)
 	}
