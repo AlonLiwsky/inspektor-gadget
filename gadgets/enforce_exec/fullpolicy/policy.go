@@ -42,20 +42,33 @@ const (
 )
 
 type Policy struct {
-	ID       string
-	Revision string
-	Mode     Mode
-	RootRole string
-	Default  Action // Empty means that no exec section default was authored.
-	Rules    []Rule
+	ID            string
+	Revision      string
+	Mode          Mode
+	RootRole      string
+	Default       Action // Empty means that no exec section default was authored.
+	DefaultMode   Mode   // Empty inherits Mode. Reference-only until native ABI support.
+	DefaultOrigin string // Optional provenance of the section default.
+	// DefaultOriginPresent distinguishes an explicitly authored empty label from omission.
+	// Nonempty DefaultOrigin is present even when this flag is false (legacy callers).
+	DefaultOriginPresent bool
+	Rules                []Rule
 }
 type Rule struct {
 	Name   string
 	Origin string
-	Action Action
-	Mode   Mode
+	// OriginPresent distinguishes an explicitly authored empty label from omission.
+	// Nonempty Origin is present even when this flag is false (legacy callers).
+	OriginPresent bool
+	Action        Action
+	Mode          Mode
+	Actor         Actor
+	Target        Target
+	Except        []Exception // Deny-only predicates; each entry suppresses this rule only.
+}
+type Exception struct {
 	Actor  Actor
-	Target Target
+	Target Target // Predicate-only: SetRole is forbidden.
 }
 type Actor struct {
 	Path      []string
@@ -87,6 +100,7 @@ type Argv struct {
 type preparedRule[P any] struct {
 	source                  Rule
 	actor, target, ancestor []P
+	exceptions              []preparedRule[P]
 }
 type preparedPolicy[P any] struct {
 	source Policy
@@ -109,6 +123,17 @@ func Compile(policies []Policy) (*Program, error) {
 	return &Program{policies: prepared.policies}, nil
 }
 
+// CompileReference accepts the source-only exec contract for reference evaluation.
+// It does not produce uploadable native policy. Compile and native compilation reject
+// these fields until the Go/C ABI and live BPF matcher implement them atomically.
+func CompileReference(policies []Policy) (*Program, error) {
+	prepared, err := preparePoliciesWithDiagnosticsSemantic(policies, glob, richDiagnostics, true)
+	if err != nil {
+		return nil, err
+	}
+	return &Program{policies: prepared.policies}, nil
+}
+
 // preparePolicies preserves common validation, normalization and deep-copy order
 // for both backends. Native limits are checked only by native emission.
 func preparePolicies[P any](policies []Policy, compilePath func(string) (P, error)) (*preparedProgram[P], error) {
@@ -116,6 +141,10 @@ func preparePolicies[P any](policies []Policy, compilePath func(string) (P, erro
 }
 
 func preparePoliciesWithDiagnostics[P any](policies []Policy, compilePath func(string) (P, error), d diagnosticPolicy) (*preparedProgram[P], error) {
+	return preparePoliciesWithDiagnosticsSemantic(policies, compilePath, d, false)
+}
+
+func preparePoliciesWithDiagnosticsSemantic[P any](policies []Policy, compilePath func(string) (P, error), d diagnosticPolicy, referenceOnly bool) (*preparedProgram[P], error) {
 	if len(policies) == 0 || len(policies) > MaxPolicies {
 		if d.compact {
 			if len(policies) > MaxPolicies {
@@ -126,8 +155,14 @@ func preparePoliciesWithDiagnostics[P any](policies []Policy, compilePath func(s
 		return nil, fmt.Errorf("require 1..%d policies", MaxPolicies)
 	}
 	p := &preparedProgram[P]{policies: make([]preparedPolicy[P], 0, len(policies))}
-	rules, patterns := 0, 0
+	rules, patterns, exceptions := 0, 0, 0
 	for _, policy := range policies {
+		if !referenceOnly && (policy.DefaultMode != "" || policy.DefaultOrigin != "" || policy.DefaultOriginPresent || hasExceptions(policy.Rules) || hasExplicitEmptyRuleOrigin(policy.Rules)) {
+			if d.compact {
+				return nil, d.reject()
+			}
+			return nil, fmt.Errorf("exec default metadata and exceptions are not Ready: native ABI unsupported")
+		}
 		duplicateID := false
 		for _, prior := range p.policies {
 			if prior.source.ID == policy.ID {
@@ -159,6 +194,17 @@ func preparePoliciesWithDiagnostics[P any](policies []Policy, compilePath func(s
 			}
 			return nil, fmt.Errorf("policy %s: invalid default", policy.ID)
 		}
+		if policy.DefaultMode != "" && policy.DefaultMode != Audit && policy.DefaultMode != Enforce {
+			if d.compact {
+				return nil, d.reject()
+			}
+			return nil, fmt.Errorf("policy %s: invalid default mode", policy.ID)
+		}
+		if policy.DefaultOrigin != "" {
+			if err := validateStringWithDiagnostics(policy.DefaultOrigin, d); err != nil {
+				return nil, err
+			}
+		}
 		if policy.RootRole == "" {
 			policy.RootRole = "agent"
 		}
@@ -166,6 +212,7 @@ func preparePoliciesWithDiagnostics[P any](policies []Policy, compilePath func(s
 			return nil, err
 		}
 		cp := preparedPolicy[P]{source: policy}
+		cp.source.DefaultOrigin = strings.Clone(policy.DefaultOrigin)
 		cp.source.Rules = nil
 		// Bound allocation by remaining global capacity, not untrusted authored
 		// length. Keep rejection inside the loop to preserve earlier error order.
@@ -207,6 +254,19 @@ func preparePoliciesWithDiagnostics[P any](policies []Policy, compilePath func(s
 				}
 				return nil, fmt.Errorf("rule %s: invalid action", r.Name)
 			}
+			if len(r.Except) != 0 && r.Action != Deny {
+				if d.compact {
+					return nil, d.reject()
+				}
+				return nil, fmt.Errorf("rule %s: except requires deny", r.Name)
+			}
+			if len(r.Except) > MaxValues || exceptions+len(r.Except) > MaxRules {
+				if d.compact {
+					return nil, compactFailure(DiagnosticCapacity, DiagnosticNone)
+				}
+				return nil, fmt.Errorf("exec exception capacity exceeds %d", MaxRules)
+			}
+			exceptions += len(r.Except)
 			if r.Mode != "" && r.Mode != Audit && r.Mode != Enforce {
 				if d.compact {
 					return nil, d.reject()
@@ -225,6 +285,7 @@ func preparePoliciesWithDiagnostics[P any](policies []Policy, compilePath func(s
 				}
 			}
 			cr := preparedRule[P]{source: r}
+			cr.source.Origin = strings.Clone(r.Origin)
 			var err error
 			cr.source.Actor.FromImage = cloneBool(r.Actor.FromImage)
 			cr.source.Target.FromImage = cloneBool(r.Target.FromImage)
@@ -322,12 +383,66 @@ func preparePoliciesWithDiagnostics[P any](policies []Policy, compilePath func(s
 				}
 				cr.source.Target.Argv = &Argv{Contains: contains, Prefix: prefix, StdinIsPipe: cloneBool(a.StdinIsPipe)}
 			}
+			cr.source.Except = nil
+			for _, ex := range r.Except {
+				if exceptionEmpty(ex) || ex.Target.SetRole != "" {
+					if d.compact {
+						return nil, d.reject()
+					}
+					return nil, fmt.Errorf("rule %s: exception requires actor or target predicates and cannot setRole", r.Name)
+				}
+				// Reuse the complete rule validator and deep-copy path for every predicate.
+				ep := Policy{ID: "exception", Revision: "reference", Mode: Audit, Rules: []Rule{{Name: "predicate", Action: Deny, Actor: ex.Actor, Target: ex.Target}}}
+				prepared, e := preparePoliciesWithDiagnosticsSemantic([]Policy{ep}, compilePath, d, true)
+				if e != nil {
+					if d.compact {
+						return nil, d.forward(e)
+					}
+					return nil, fmt.Errorf("rule %s exception: %w", r.Name, e)
+				}
+				er := prepared.policies[0].rules[0]
+				patterns += len(ex.Actor.Path) + len(ex.Target.Path)
+				if ex.Actor.Ancestor != nil {
+					patterns += len(ex.Actor.Ancestor.Path)
+				}
+				if patterns > MaxPatterns {
+					if d.compact {
+						return nil, compactFailure(DiagnosticCapacity, DiagnosticNone)
+					}
+					return nil, fmt.Errorf("pattern capacity exceeds %d", MaxPatterns)
+				}
+				cr.exceptions = append(cr.exceptions, er)
+				cr.source.Except = append(cr.source.Except, Exception{Actor: er.source.Actor, Target: er.source.Target})
+			}
 			cp.rules = append(cp.rules, cr)
 		}
 		p.policies = append(p.policies, cp)
 	}
 	slices.SortFunc(p.policies, func(a, b preparedPolicy[P]) int { return strings.Compare(a.source.ID, b.source.ID) })
 	return p, nil
+}
+
+func hasExceptions(rules []Rule) bool {
+	for _, r := range rules {
+		if r.Except != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExplicitEmptyRuleOrigin(rules []Rule) bool {
+	for _, r := range rules {
+		if r.OriginPresent && r.Origin == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func exceptionEmpty(e Exception) bool {
+	a, t := e.Actor, e.Target
+	return len(a.Path) == 0 && a.FromImage == nil && a.Ancestor == nil && len(a.Role) == 0 && len(a.UID) == 0 && len(a.Container) == 0 && len(t.Path) == 0 && t.FromImage == nil && len(t.FSType) == 0 && t.Argv == nil && t.SetRole == ""
 }
 
 func cloneBool(b *bool) *bool {

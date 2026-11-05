@@ -103,7 +103,7 @@ func TestSharedSnapshotModelLateFailureAndOwnership(t *testing.T) {
 }
 
 func TestSharedSnapshotModelObjectDebitLocks(t *testing.T) {
-	totals := map[int]uint64{0: 8845, 1: 40120, 8: 303853, 256: 9639679}
+	totals := map[int]uint64{0: 8925, 1: 40288, 8: 304637, 256: 9662287}
 	for n, want := range totals {
 		p := base()
 		for i := 0; i < n; i++ {

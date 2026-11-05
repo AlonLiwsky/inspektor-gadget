@@ -59,10 +59,26 @@ type Decision struct {
 	UncertainFallback bool // Audit fallback deny may be suppressed by an unknown allow.
 }
 
+// ReferenceMetadata is source-only diagnostic/provenance output. It is not
+// encoded in the current native verdict ABI.
+type ReferenceMetadata struct {
+	DefaultOrigins     []string
+	RuleOrigins        []RuleOriginMetadata // One per matched rule, including omitted origins.
+	DisabledExceptions map[string]bool      // keyed by policy ID
+}
+
+type RuleOriginMetadata struct {
+	PolicyID, Rule string
+	Origins        []string // [] omitted, [""] explicitly empty, [label] nonempty.
+}
+
 // executionClass is conservative declared capability, not a partial decision.
 func (p *Program) executionClass() Mode {
 	for _, policy := range p.policies {
 		if policy.source.Mode == Enforce {
+			return Enforce
+		}
+		if policy.source.DefaultMode == Enforce {
 			return Enforce
 		}
 		for _, rule := range policy.rules {
@@ -78,6 +94,16 @@ func (p *Program) executionClass() Mode {
 // enforcement fallback. Audit-local unknowns are diagnostics, never known matches;
 // enforced or shared uncertainty fails evaluation.
 func (p *Program) Evaluate(f Facts) (Decision, error) {
+	return p.evaluate(f, nil)
+}
+
+func (p *Program) EvaluateWithMetadata(f Facts) (Decision, ReferenceMetadata, error) {
+	m := ReferenceMetadata{DefaultOrigins: []string{}, RuleOrigins: []RuleOriginMetadata{}, DisabledExceptions: map[string]bool{}}
+	d, err := p.evaluate(f, &m)
+	return d, m, err
+}
+
+func (p *Program) evaluate(f Facts, metadata *ReferenceMetadata) (Decision, error) {
 	for _, v := range append([]string{f.ActorPath, f.TargetPath}, f.Ancestors...) {
 		if len(v) > MaxStringBytes || strings.ContainsRune(v, 0) || !utf8.ValidString(v) {
 			return Decision{Block: p.executionClass() == Enforce}, fmt.Errorf("path observation invalid or exceeds %d bytes", MaxStringBytes)
@@ -120,8 +146,28 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 			if !ok {
 				continue
 			}
+			suppressed := false
+			for _, ex := range rule.exceptions {
+				exMatch, exErr := ruleMatches(ex, f, role)
+				if exErr != nil {
+					if metadata != nil {
+						metadata.DisabledExceptions[ps.ID] = true
+					}
+					continue // An unknown exception never lifts a known deny.
+				}
+				if exMatch {
+					suppressed = true
+					break
+				}
+			}
+			if suppressed {
+				continue
+			}
 			matched = true
 			d.Matches = append(d.Matches, Match{PolicyID: ps.ID, Revision: ps.Revision, Rule: r.Name, Origin: r.Origin, Action: r.Action, Mode: mode})
+			if metadata != nil {
+				metadata.RuleOrigins = append(metadata.RuleOrigins, RuleOriginMetadata{PolicyID: ps.ID, Rule: r.Name, Origins: originList(r.Origin, r.OriginPresent)})
+			}
 			if r.Action == Deny {
 				d.Action = Deny
 				if mode == Enforce {
@@ -154,20 +200,42 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 	// Defaults merge strictly, but are consulted only when the entire merged rule
 	// union has no match. A default deny in one policy cannot shadow another's allow.
 	if !matched {
+		winner := Allow
+		for _, policy := range p.policies {
+			if policy.source.Default == Deny {
+				winner = Deny
+				break
+			}
+		}
+		origins := map[string]bool{}
 		for _, policy := range p.policies {
 			ps := policy.source
-			if ps.Default != Deny {
-				if ps.Default == Allow && ps.Mode == Enforce {
-					allowMode = Enforce
-				}
+			if ps.Default != winner {
 				continue
 			}
-			d.Action = Deny
-			if ps.Mode == Enforce {
-				denyMode = Enforce
-				d.Block = true
+			if ps.DefaultOriginPresent || ps.DefaultOrigin != "" {
+				origins[ps.DefaultOrigin] = true
 			}
-			d.Matches = append(d.Matches, Match{PolicyID: ps.ID, Revision: ps.Revision, Action: Deny, Mode: ps.Mode})
+			mode := ps.DefaultMode
+			if mode == "" {
+				mode = ps.Mode
+			}
+			if winner == Deny {
+				d.Action = Deny
+				if mode == Enforce {
+					denyMode = Enforce
+					d.Block = true
+				}
+				d.Matches = append(d.Matches, Match{PolicyID: ps.ID, Revision: ps.Revision, Action: Deny, Mode: mode})
+			} else if mode == Enforce {
+				allowMode = Enforce
+			}
+		}
+		if metadata != nil {
+			for origin := range origins {
+				metadata.DefaultOrigins = append(metadata.DefaultOrigins, origin)
+			}
+			slices.Sort(metadata.DefaultOrigins)
 		}
 	}
 	if !matched && uncertainAllow && d.Action == Deny && denyMode == Audit {
@@ -186,6 +254,14 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 		}
 		return strings.Compare(a.Rule, b.Rule)
 	})
+	if metadata != nil {
+		slices.SortFunc(metadata.RuleOrigins, func(a, b RuleOriginMetadata) int {
+			if n := strings.Compare(a.PolicyID, b.PolicyID); n != 0 {
+				return n
+			}
+			return strings.Compare(a.Rule, b.Rule)
+		})
+	}
 	d.SuppressRoles = uncertainDeny || d.Action == Deny || evaluationError != nil
 	if d.SuppressRoles {
 		clear(d.SetRoles)
@@ -202,6 +278,13 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 		d.Block = p.executionClass() == Enforce
 	}
 	return d, evaluationError
+}
+
+func originList(value string, present bool) []string {
+	if !present && value == "" {
+		return []string{}
+	}
+	return []string{value}
 }
 
 func ruleMatches(r compiledRule, f Facts, role string) (bool, error) {

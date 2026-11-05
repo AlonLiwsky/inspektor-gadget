@@ -16,7 +16,7 @@ import (
 // It does not make a claim about standard-library parser/codec allocations.
 func TestCompactFormattingSelectionPrecedesConstruction(t *testing.T) {
 	targets := map[string][]string{
-		"policy.go":          {"preparePoliciesWithDiagnostics", "preparePathsWithDiagnostics", "cloneStringsWithDiagnostics", "validateStringWithDiagnostics"},
+		"policy.go":          {"preparePoliciesWithDiagnostics", "preparePoliciesWithDiagnosticsSemantic", "preparePathsWithDiagnostics", "cloneStringsWithDiagnostics", "validateStringWithDiagnostics"},
 		"glob.go":            {"globExpressionWithDiagnostics", "nativeGlobWithDiagnostics"},
 		"kernel.go":          {"decodeWithDiagnostics", "encodeWithDiagnostics", "compilePreparedKernelWithDiagnostics", "identifier", "reserve", "put", "strings", "values", "pathList", "regex", "packInstructionWithDiagnostics"},
 		"fixed_lookup.go":    {"insertWithDiagnostics", "validateWithDiagnostics"},
