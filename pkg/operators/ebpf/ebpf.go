@@ -1216,7 +1216,6 @@ func (i *ebpfInstance) Close(gadgetCtx operators.GadgetContext) error {
 	}
 	i.Stop(gadgetCtx)
 	i.closeOnce.Do(func() {
-
 		if i.collection != nil {
 			i.unpublishCommandPrograms(gadgetCtx)
 			i.collection.Close()
