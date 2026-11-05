@@ -40,6 +40,41 @@ func TestParseSyscallExecve(t *testing.T) {
 	}
 }
 
+func TestParseSyscallIgnoresDynamicTraceFields(t *testing.T) {
+	// Newer kernels append captured strings to syscall trace events. These
+	// describe trace storage, rather than additional syscall arguments.
+	const format = `name: sys_enter_execve
+ID: 889
+format:
+	field:unsigned short common_type; offset:0; size:2; signed:0;
+	field:unsigned char common_flags; offset:2; size:1; signed:0;
+	field:unsigned char common_preempt_count; offset:3; size:1; signed:0;
+	field:int common_pid; offset:4; size:4; signed:1;
+
+	field:int __syscall_nr; offset:8; size:4; signed:1;
+	field:const char * filename; offset:16; size:8; signed:0;
+	field:const char *const * argv; offset:24; size:8; signed:0;
+	field:const char *const * envp; offset:32; size:8; signed:0;
+`
+	for _, extra := range []string{"", "__data_loc", "__rel_loc"} {
+		t.Run(extra, func(t *testing.T) {
+			input := format
+			if extra != "" {
+				input += "\tfield:" + extra + " char[] __filename_val; offset:40; size:4; signed:0;\n"
+			}
+			declaration, err := parseSyscall("execve", input)
+			if !assert.NoError(t, err) {
+				return
+			}
+			assert.Equal(t, []param{
+				{position: 1, name: "filename", isPointer: true},
+				{position: 2, name: "argv", isPointer: true},
+				{position: 3, name: "envp", isPointer: true},
+			}, declaration.params)
+		})
+	}
+}
+
 func TestParseLineInternalFields(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -87,7 +122,7 @@ func TestGetSyscallNumberByName(t *testing.T) {
 		{
 			description: "getting syscall number from name",
 			name:        "accept",
-			number:      200,
+			number:      202,
 			arch:        "arm64",
 			expectedok:  true,
 		},
@@ -101,7 +136,7 @@ func TestGetSyscallNumberByName(t *testing.T) {
 		{
 			description: "empty syscall name",
 			name:        "",
-			number:      -1,
+			number:      0,
 			expectedok:  false,
 			arch:        "arm64",
 		},
@@ -145,7 +180,7 @@ func TestGetSyscallNameByNumber(t *testing.T) {
 		{
 			description: "getting syscall name from number",
 			name:        "accept",
-			number:      200,
+			number:      202,
 			arch:        "arm64",
 			expectedok:  true,
 		},

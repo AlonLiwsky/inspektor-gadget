@@ -154,3 +154,31 @@ func TestAttachCanceledClientDoesNotSendReadyMetadata(t *testing.T) {
 	require.Zero(t, stream.sent)
 	require.Empty(t, m.LookupInstance("ready").clients)
 }
+
+func TestParamValuesReturnsIndependentSnapshot(t *testing.T) {
+	m := testManager(t)
+	d := desired("params")
+	d.GadgetConfig.ParamValues = api.ParamValues{"key": "original"}
+	require.NoError(t, m.StartGadget(context.Background(), d))
+	t.Cleanup(func() { require.NoError(t, m.StopGadget(context.Background(), "params")) })
+
+	instance := m.LookupInstance("params")
+	values := instance.ParamValues()
+	values["key"] = "changed"
+	values["extra"] = "added"
+	require.Equal(t, api.ParamValues{"key": "original"}, instance.ParamValues())
+}
+
+func TestAddClientFailureResultBufferedAndClosedOnce(t *testing.T) {
+	m := testManager(t)
+	require.NoError(t, m.StartGadget(context.Background(), desired("running")))
+	t.Cleanup(func() { require.NoError(t, m.StopGadget(context.Background(), "running")) })
+	failure := errors.New("metadata send failed")
+	instance := m.LookupInstance("running")
+	stream := &attachmentStream{ctx: context.Background(), sendError: failure}
+	result := instance.AddClient(stream) // Deliberately receive after AddClient returns.
+	require.ErrorIs(t, <-result, failure)
+	_, open := <-result
+	require.False(t, open, "attachment result must close after one result")
+	require.Empty(t, instance.clients)
+}

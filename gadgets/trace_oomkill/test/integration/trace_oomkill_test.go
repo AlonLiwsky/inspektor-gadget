@@ -115,7 +115,6 @@ func TestTraceOomKill(t *testing.T) {
 
 	testSteps := []igtesting.TestStep{
 		traceOomkillCmd,
-		utils.Sleep(10 * time.Second),
 		testContainer,
 	}
 

@@ -17,6 +17,7 @@ package instancemanager
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 
 	log "github.com/sirupsen/logrus"
@@ -83,6 +84,13 @@ func (p *GadgetInstance) GadgetInfo() (*api.GadgetInfo, error) {
 	return p.gadgetInfo, p.error
 }
 
+// ParamValues returns a snapshot of the request parameters, not the mutable backing map.
+func (p *GadgetInstance) ParamValues() api.ParamValues {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return maps.Clone(p.request.ParamValues)
+}
+
 // AddClient returns the attachment result after metadata delivery and streaming finish.
 // The result is buffered so asynchronous callers need not wait for it.
 func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) chan error {
@@ -129,7 +137,7 @@ func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) cha
 		p.mu.Lock()
 		delete(p.clients, cl)
 		p.mu.Unlock()
-		log.Debugf("[%s] client disconnected (failed to send gadget info): %c", p.gadgetInfo.Id, err)
+		log.Debugf("[%s] client disconnected (failed to send gadget info): %v", p.gadgetInfo.Id, err)
 		done <- err
 		close(done)
 		return done

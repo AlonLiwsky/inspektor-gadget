@@ -43,14 +43,20 @@ type Command struct {
 	// It's used in situations where we want to process the output on-line without saving it.
 	StdOutWriter io.Writer
 
-	// StdErrWriter observes stderr without replacing its captured output.
+	// StdErrWriter observes stderr while captured output is retained.
 	StdErrWriter io.Writer
-
-	// ObserveExit enables asynchronous exit notification for startup barriers.
-	// Stop still owns stopping the command and verifying its output.
+	// ObserveExit is the compatibility option for TrackExit.
 	ObserveExit bool
-	exited      chan struct{}
-	exitErr     error
+
+	// StdErrLineObserver, if set, is invoked with each complete line of the command's
+	// standard error as it is produced. It allows callers to react to output while the
+	// command is still running (e.g. to detect a readiness marker).
+	StdErrLineObserver func(line string)
+
+	// StdErrStoreFilter, if set and returning true for a given standard error line, causes
+	// that line to be omitted from the stderr buffer used for validation and logging. It's
+	// used to drop verbose/debug noise while still allowing StdErrLineObserver to see it.
+	StdErrStoreFilter func(line string) bool
 
 	// StartAndStop indicates this command should first be started then stopped.
 	// It corresponds to gadget like execsnoop which wait user to type Ctrl^C.
@@ -69,7 +75,45 @@ type Command struct {
 
 	// stderr contains command standard output when started using Startcommand().
 	stderr bytes.Buffer
+
+	// stderrProc is the live stderr line processor, set when StdErrLineObserver or
+	// StdErrStoreFilter is used. It must be flushed once the process has exited so a final
+	// line without a trailing newline is not lost.
+	stderrProc *stderrLineProcessor
+
+	// trackExit, when set before Start(), makes a background goroutine own Cmd.Wait() so the
+	// command's exit can be observed (via ExitCh) while it is still "running" from the test's
+	// point of view. It is used by the readiness gate to fail fast when a started command exits
+	// before becoming ready, instead of waiting for the readiness timeout. Untracked commands
+	// keep the original Stop()/kill() behaviour.
+	trackExit bool
+	exitCh    chan struct{}
+	exitErr   error
 }
+
+// TrackExit enables background exit tracking (see the trackExit field). It must be called before
+// Start().
+func (c *Command) TrackExit() {
+	c.trackExit = true
+}
+
+// ExitCh returns a channel that is closed once a tracked command's process has exited (and been
+// reaped), or nil if exit tracking is not enabled. ExitErr may be read once it is closed.
+func (c *Command) ExitCh() <-chan struct{} {
+	return c.exitCh
+}
+
+// ExitErr returns the error from Cmd.Wait() for a tracked command. It must only be read after
+// ExitCh() has been closed.
+func (c *Command) ExitErr() error {
+	return c.exitErr
+}
+
+// Exited is the compatibility name for ExitCh.
+func (c *Command) Exited() <-chan struct{} { return c.ExitCh() }
+
+// ExitError is the compatibility name for ExitErr.
+func (c *Command) ExitError() error { return c.ExitErr() }
 
 func (c *Command) IsStartAndStop() bool {
 	return c.StartAndStop
@@ -84,12 +128,24 @@ func (c *Command) Running() bool {
 func (c *Command) initExecCmd() {
 	c.Cmd.Stdout = &c.stdout
 	c.Cmd.Stderr = &c.stderr
-	if c.StdErrWriter != nil {
-		c.Cmd.Stderr = io.MultiWriter(&c.stderr, c.StdErrWriter)
-	}
 
 	if c.StdOutWriter != nil {
 		c.Cmd.Stdout = c.StdOutWriter
+	}
+
+	// When a caller wants to observe stderr lines live or filter noise out of the stored
+	// stderr, route stderr through a line processor that feeds the observer and only stores
+	// the lines that pass the filter.
+	if c.StdErrLineObserver != nil || c.StdErrStoreFilter != nil {
+		c.stderrProc = &stderrLineProcessor{
+			observer: c.StdErrLineObserver,
+			filter:   c.StdErrStoreFilter,
+			store:    &c.stderr,
+		}
+		c.Cmd.Stderr = c.stderrProc
+	}
+	if c.StdErrWriter != nil {
+		c.Cmd.Stderr = io.MultiWriter(c.Cmd.Stderr, c.StdErrWriter)
 	}
 
 	// To be able to kill the process of /bin/sh and its child (the process of
@@ -119,12 +175,22 @@ func (c *Command) verifyStderrOutput(t *testing.T) {
 	}
 }
 
+// flushStderr flushes any final stderr line that was not terminated by a newline. It must be
+// called only after the process has exited (so all writes to the processor are done), which is
+// guaranteed after Cmd.Run()/Cmd.Wait() returns.
+func (c *Command) flushStderr() {
+	if c.stderrProc != nil {
+		c.stderrProc.flush()
+	}
+}
+
 // Run runs the Command on the given as parameter test.
 func (c *Command) Run(t *testing.T) {
 	c.initExecCmd()
 
 	t.Logf("[%s] Run command(%s):\n", time.Now().UTC(), c.Name)
 	err := c.Cmd.Run()
+	c.flushStderr()
 	t.Logf("[%s] Command returned(%s):\n%s\n%s\n",
 		time.Now().UTC(), c.Name, c.stderr.String(), c.stdout.String())
 	require.NoError(t, err, "failed to run command(%s)", c.Name)
@@ -148,20 +214,19 @@ func (c *Command) Start(t *testing.T) {
 	require.NoError(t, err, "failed to start command(%s)", c.Name)
 
 	c.started = true
-	if c.ObserveExit {
-		c.exited = make(chan struct{})
+
+	// When exit tracking is enabled, a background goroutine owns Cmd.Wait() so that the
+	// command's exit (e.g. a gadget that fails to load) can be observed via ExitCh() while the
+	// test is still waiting for it to become ready. kill() then reaps through this goroutine
+	// instead of calling Cmd.Wait() a second time.
+	if c.trackExit || c.ObserveExit {
+		c.exitCh = make(chan struct{})
 		go func() {
 			c.exitErr = c.Cmd.Wait()
-			close(c.exited)
+			close(c.exitCh)
 		}()
 	}
 }
-
-// Exited is closed after an observed command exits and its output has been drained.
-func (c *Command) Exited() <-chan struct{} { return c.exited }
-
-// ExitError returns the exit result after Exited has closed.
-func (c *Command) ExitError() error { return c.exitErr }
 
 // Stop stops a Command previously started with Start().
 // To do so, it Kill() the process corresponding to this Cmd and then wait for
@@ -175,13 +240,7 @@ func (c *Command) Stop(t *testing.T) {
 
 	t.Logf("[%s] Stop command(%s)\n", time.Now().UTC(), c.Name)
 	err := c.kill()
-	if c.ObserveExit {
-		select {
-		case <-c.exited:
-			c.started = false
-		default:
-		}
-	}
+	c.flushStderr()
 	t.Logf("[%s] Command returned(%s):\n%s\n%s\n",
 		time.Now().UTC(), c.Name, c.stderr.String(), c.stdout.String())
 	require.NoError(t, err, "failed to kill command(%s)", c.Name)
@@ -196,27 +255,35 @@ func (c *Command) Stop(t *testing.T) {
 func (c *Command) kill() error {
 	const sig syscall.Signal = syscall.SIGKILL
 
-	if c.ObserveExit && c.exited != nil {
+	if c.Cmd == nil {
+		return nil
+	}
+
+	// Tracked commands have a background goroutine that owns Cmd.Wait(). Reap through it
+	// instead of calling Wait() again (which would panic).
+	if c.exitCh != nil {
 		select {
-		case <-c.exited:
-			return c.exitErr
+		case <-c.exitCh:
+			// The process already exited on its own. Report its exit status just like the
+			// untracked path would: a self-exit before readiness is already surfaced by
+			// WaitForReady, but a gadget that becomes ready and then crashes during the
+			// workload window must not be silently treated as a clean stop.
+			return killErrorAllowingSignal(c.exitErr, sig)
 		default:
 		}
+
+		// The process was still running when we checked; kill its group. It may still exit
+		// and be reaped by the background goroutine between the check and here, in which case
+		// the group is already gone (ESRCH); that is not an error for us.
 		if err := syscall.Kill(-c.Cmd.Process.Pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 			return err
 		}
-		<-c.exited
-		var exitErr *exec.ExitError
-		if errors.As(c.exitErr, &exitErr) {
-			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signal() == sig {
-				return nil
-			}
-		}
-		return c.exitErr
+		<-c.exitCh
+		return killErrorAllowingSignal(c.exitErr, sig)
 	}
 
 	// No need to kill, command has not been executed yet or it already exited
-	if c.Cmd == nil || (c.Cmd.ProcessState != nil && c.Cmd.ProcessState.Exited()) {
+	if c.Cmd.ProcessState != nil && c.Cmd.ProcessState.Exited() {
 		return nil
 	}
 
@@ -233,29 +300,82 @@ func (c *Command) kill() error {
 	// with run(), which already waits. On the contrary, in the case it was
 	// executed with start() thus ig.started is true, we need to wait indeed.
 	if c.started {
-		err = c.Cmd.Wait()
-		if err == nil {
-			return nil
-		}
-
-		// Verify if the error is about the signal we just sent. In that case,
-		// do not return error, it is what we were expecting.
-		var exiterr *exec.ExitError
-		if ok := errors.As(err, &exiterr); !ok {
-			return err
-		}
-
-		waitStatus, ok := exiterr.Sys().(syscall.WaitStatus)
-		if !ok {
-			return err
-		}
-
-		if waitStatus.Signal() != sig {
-			return err
-		}
-
-		return nil
+		return killErrorAllowingSignal(c.Cmd.Wait(), sig)
 	}
 
 	return err
+}
+
+// killErrorAllowingSignal returns nil if err is nil or is the process being terminated by sig
+// (which is what we expect when we SIGKILL a still-running command); otherwise it returns err.
+func killErrorAllowingSignal(err error, sig syscall.Signal) error {
+	if err == nil {
+		return nil
+	}
+
+	// Verify if the error is about the signal we just sent. In that case,
+	// do not return error, it is what we were expecting.
+	var exiterr *exec.ExitError
+	if ok := errors.As(err, &exiterr); !ok {
+		return err
+	}
+
+	waitStatus, ok := exiterr.Sys().(syscall.WaitStatus)
+	if !ok {
+		return err
+	}
+
+	if waitStatus.Signal() != sig {
+		return err
+	}
+
+	return nil
+}
+
+// stderrLineProcessor is an io.Writer that splits the incoming bytes into lines and, for each
+// complete line, invokes an optional observer and optionally stores the line in a backing buffer.
+// It's used to observe stderr live (e.g. to detect a readiness marker) while keeping the stored
+// stderr free of verbose/debug noise.
+type stderrLineProcessor struct {
+	buf      []byte
+	observer func(line string)
+	filter   func(line string) bool
+	store    *bytes.Buffer
+}
+
+func (p *stderrLineProcessor) Write(b []byte) (int, error) {
+	p.buf = append(p.buf, b...)
+	for {
+		i := bytes.IndexByte(p.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := string(p.buf[:i])
+		p.buf = append(p.buf[:0], p.buf[i+1:]...)
+		p.handle(line, true)
+	}
+	return len(b), nil
+}
+
+func (p *stderrLineProcessor) handle(line string, hasNewline bool) {
+	if p.observer != nil {
+		p.observer(line)
+	}
+	if p.store != nil && (p.filter == nil || !p.filter(line)) {
+		p.store.WriteString(line)
+		if hasNewline {
+			p.store.WriteByte('\n')
+		}
+	}
+}
+
+// flush emits any buffered bytes that were not terminated by a newline as a final line. It must
+// be called only after the last Write (i.e. after the process has exited) to avoid data races.
+func (p *stderrLineProcessor) flush() {
+	if len(p.buf) == 0 {
+		return
+	}
+	line := string(p.buf)
+	p.buf = p.buf[:0]
+	p.handle(line, false)
 }

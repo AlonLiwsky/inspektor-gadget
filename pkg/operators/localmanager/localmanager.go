@@ -27,6 +27,7 @@ import (
 	"github.com/containerd/containerd/pkg/cri/constants"
 	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/google/uuid"
+	"github.com/moby/sys/capability"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 
@@ -96,6 +97,9 @@ type localManager struct {
 	fakeContainer *containercollection.Container
 }
 
+// NewLocalManager creates a new LocalManager operator skipping the Init() method.
+// This can be used when the operator is used as a library and the caller wants to manage the lifecycle of the collections.
+// It also means that all initialization steps in Init() are skipped, so the caller is responsible for initializing the collections.
 func NewLocalManager(containerCollection *containercollection.ContainerCollection, tracerCollection *tracercollection.TracerCollection) *localManager {
 	return &localManager{
 		containerCollection: containerCollection,
@@ -293,6 +297,17 @@ func (l *localManager) Init(operatorParams *params.Params) error {
 	return nil
 }
 
+func hasEffectiveCap(cap capability.Cap) (bool, error) {
+	caps, err := capability.NewPid2(0)
+	if err != nil {
+		return false, err
+	}
+	if err := caps.Load(); err != nil {
+		return false, err
+	}
+	return caps.Get(capability.EFFECTIVE, cap), nil
+}
+
 // initCollections initializes the container collection and tracer collection.
 func (l *localManager) initCollections(rc []*containerutilsTypes.RuntimeConfig, kubeconfig string, enrichWithK8s bool, ecsCluster, awsRegion string) error {
 	var cc containercollection.ContainerCollection
@@ -323,10 +338,20 @@ func (l *localManager) initCollections(rc []*containerutilsTypes.RuntimeConfig, 
 		containercollection.WithLinuxNamespaceEnrichment(),
 		containercollection.WithMultipleContainerRuntimesEnrichment(rc),
 		containercollection.WithOCIConfigForInitialContainer(),
-		containercollection.WithContainerFanotifyEbpf(),
 		containercollection.WithTracerCollection(l.tracerCollection),
 		containercollection.WithProcEnrichment(),
 	}...)
+
+	ok, err := hasEffectiveCap(capability.CAP_SYS_ADMIN)
+	if err != nil {
+		log.Warnf("checking if binary has CAP_SYS_ADMIN: %v", err)
+	}
+
+	if ok {
+		ccOpts = append(ccOpts, containercollection.WithContainerFanotifyEbpf())
+	} else {
+		log.Warn("binary does not have CAP_SYS_ADMIN: new containers will not be detected")
+	}
 
 	if kubeconfig != "" {
 		ccOpts = append(ccOpts, containercollection.WithKubeconfigPath(kubeconfig))
@@ -373,7 +398,8 @@ type localManagerTrace struct {
 	mountnsmap      *ebpf.Map
 	enrichEvents    bool
 	subscriptionKey string
-	tracerID        string
+	// tracerID is the id the tracer was registered under at the tracer collection.
+	tracerID string
 
 	// Keep a map to attached containers, so we can clean up properly
 	containerMutex     sync.Mutex
@@ -539,7 +565,7 @@ func (l *localManagerTrace) handleGadgetInstance(log logger.Logger) error {
 
 func (l *localManagerTrace) PostGadgetRun() error {
 	if l.tracerID != "" {
-		log.Debugf("calling RemoveMountNsMap()")
+		log.Debugf("calling RemoveTracer()")
 		l.manager.tracerCollection.RemoveTracer(l.tracerID)
 		l.tracerID = ""
 		l.mountnsmap = nil
@@ -549,6 +575,7 @@ func (l *localManagerTrace) PostGadgetRun() error {
 
 		log.Debugf("calling Unsubscribe()")
 		l.manager.containerCollection.Unsubscribe(l.subscriptionKey)
+		l.subscriptionKey = ""
 
 		if l.attacher != nil {
 			// emit detach for all remaining containers

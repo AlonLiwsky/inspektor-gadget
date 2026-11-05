@@ -46,6 +46,10 @@ type runner struct {
 	readinessTimeout time.Duration
 	kubernetesReady  bool
 	localReady       bool
+	// Mainline default readiness gate is used for StartAndStop unless opted out.
+	waitReady       bool
+	readyWatcher    *readinessWatcher
+	noReadinessGate bool
 }
 
 func (ig *runner) createCmd() {
@@ -130,6 +134,11 @@ func WithKubernetesReady(timeout time.Duration) Option {
 	}
 }
 
+// WithoutReadinessGate opts out of the default StartAndStop marker gate.
+func WithoutReadinessGate() Option {
+	return func(ig *runner) { ig.noReadinessGate = true }
+}
+
 // WithPath used for providing custom path to ig executable.
 func WithPath(path string) Option {
 	return func(ig *runner) {
@@ -211,8 +220,16 @@ func New(image string, opts ...Option) igtesting.TestStep {
 		factoryRunner.flags = append(factoryRunner.flags, split...)
 	}
 
+	if publicKey := os.Getenv("IG_PUBLIC_KEY"); publicKey != "" {
+		factoryRunner.flags = append(factoryRunner.flags, "--public-keys="+publicKey)
+	}
+
 	for _, opt := range opts {
 		opt(factoryRunner)
+	}
+
+	if factoryRunner.StartAndStop && !factoryRunner.noReadinessGate && !factoryRunner.localReady && !factoryRunner.kubernetesReady {
+		factoryRunner.enableReadinessGate()
 	}
 
 	factoryRunner.createCmd()

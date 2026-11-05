@@ -118,7 +118,6 @@ func TestContainerFiltering(t *testing.T) {
 
 	testSteps := []igtesting.TestStep{
 		containerFilteringCmd,
-		utils.Sleep(3 * time.Second),
 	}
 	igtesting.RunTestSteps(testSteps, t, testingOpts...)
 }
