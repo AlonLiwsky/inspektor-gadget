@@ -206,12 +206,34 @@ func TestCloseDoesNotHoldCollectionLockWhileJoiningCallbacks(t *testing.T) {
 	}
 }
 
+func TestCloseClearsLiveContainerLookups(t *testing.T) {
+	collection := &ContainerCollection{}
+	require.NoError(t, collection.Initialize())
+	container := &Container{Mntns: 123, Netns: 456}
+	container.Runtime.ContainerID = "live"
+	collection.AddContainer(container)
+	collection.Close()
+	require.Nil(t, collection.GetContainer("live"))
+	require.Nil(t, collection.LookupContainerByMntns(container.Mntns))
+	require.Empty(t, collection.LookupContainersByNetns(container.Netns))
+}
+
 func TestCloseRejectsNewAddWithoutBreakingInflightRemoval(t *testing.T) {
 	collection := &ContainerCollection{}
 	require.NoError(t, collection.Initialize(WithPubSub()))
+	collection.cachedContainers = &sync.Map{}
+	collection.cleanUpFuncs = append(collection.cleanUpFuncs, func() {
+		collection.cachedContainers.Range(func(key, _ interface{}) bool {
+			collection.cachedContainers.Delete(key)
+			return true
+		})
+	})
 	first := &Container{Mntns: 123, Netns: 456}
 	first.Runtime.ContainerID = "first"
 	collection.AddContainer(first)
+	live := &Container{Mntns: 125, Netns: 458}
+	live.Runtime.ContainerID = "live"
+	collection.AddContainer(live)
 	entered, release := make(chan struct{}), make(chan struct{})
 	removeDone, secondRemoveDone, closeDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
@@ -242,8 +264,19 @@ func TestCloseRejectsNewAddWithoutBreakingInflightRemoval(t *testing.T) {
 	second := &Container{Mntns: 124, Netns: 457}
 	second.Runtime.ContainerID = "second"
 	collection.AddContainer(second)
-	require.Nil(t, collection.GetContainer("second"))
 	go func() { collection.RemoveContainer("first"); close(secondRemoveDone) }()
+	require.Nil(t, collection.GetContainer("second"))
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not finish while removal callback was blocked")
+	}
+	require.Nil(t, collection.GetContainer("live"))
+	require.Nil(t, collection.LookupContainerByMntns(live.Mntns))
+	require.Empty(t, collection.LookupContainersByNetns(live.Netns))
+	require.Same(t, first, collection.GetContainer("first"))
+	require.Same(t, first, collection.LookupContainerByMntns(first.Mntns))
+	require.Equal(t, []*Container{first}, collection.LookupContainersByNetns(first.Netns))
 	select {
 	case <-removeDone:
 		t.Fatal("removal completed before subscriber cleanup")
@@ -256,4 +289,8 @@ func TestCloseRejectsNewAddWithoutBreakingInflightRemoval(t *testing.T) {
 	<-secondRemoveDone
 	<-closeDone
 	require.Nil(t, collection.GetContainer("first"))
+	require.Nil(t, collection.LookupContainerByMntns(first.Mntns))
+	require.Empty(t, collection.LookupContainersByNetns(first.Netns))
+	_, cached := collection.cachedContainers.Load("first")
+	require.False(t, cached, "removal must not refill the cache after Close drained it")
 }

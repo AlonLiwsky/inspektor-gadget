@@ -191,8 +191,14 @@ func (cc *ContainerCollection) removeContainer(id string, container *Container) 
 	// Save the container in the cache as enrichers might need the container some time after it
 	// has been removed.
 	if cc.cachedContainers != nil {
-		container.deletionTimestamp = time.Now()
-		cc.cachedContainers.Store(id, container)
+		if cc.closed {
+			// Close already drained the cache; do not leave this container in
+			// a cache whose cleanup goroutine has stopped.
+			container.close()
+		} else {
+			container.deletionTimestamp = time.Now()
+			cc.cachedContainers.Store(id, container)
+		}
 	}
 
 	// Remove the container from the collection after publishing the event as
@@ -586,6 +592,8 @@ func (cc *ContainerCollection) Unsubscribe(key interface{}) {
 	cc.pubsub.Unsubscribe(key)
 }
 
+// Close stops discovery and clears live container lookups. Removals already
+// notifying subscribers finish independently and clear their own lookups.
 func (cc *ContainerCollection) Close() {
 	cc.mu.Lock()
 	if !cc.initialized || cc.closed {
@@ -607,12 +615,41 @@ func (cc *ContainerCollection) Close() {
 
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	// Similar to RemoveContainer() on all containers but without publishing
-	// events.
+	// Preserve entries for removals already notifying subscribers; their
+	// callbacks may still need every lookup. Those removals finish cleanup
+	// themselves after Close releases cc.mu.
+	removing := make(map[*Container]bool)
+	cc.removing.Range(func(_, value interface{}) bool {
+		removing[value.(*containerRemoval).container] = true
+		return true
+	})
+	// Close the remaining live containers without publishing remove events.
 	cc.containers.Range(func(key, value interface{}) bool {
 		c := value.(*Container)
-		c.close()
-		cc.containers.Delete(c)
+		if !removing[c] {
+			c.close()
+			cc.containers.Delete(key)
+		}
+		return true
+	})
+	cc.containersByMntNs.Range(func(key, value interface{}) bool {
+		if !removing[value.(*Container)] {
+			cc.containersByMntNs.Delete(key)
+		}
+		return true
+	})
+	cc.containersByNetNs.Range(func(key, value interface{}) bool {
+		var remaining []*Container
+		for _, c := range value.([]*Container) {
+			if removing[c] {
+				remaining = append(remaining, c)
+			}
+		}
+		if len(remaining) == 0 {
+			cc.containersByNetNs.Delete(key)
+		} else {
+			cc.containersByNetNs.Store(key, remaining)
+		}
 		return true
 	})
 }

@@ -1022,7 +1022,8 @@ func WithTracerCollection(tc TracerCollection) ContainerCollectionOption {
 		})
 
 		cc.cleanUpFuncs = append(cc.cleanUpFuncs, func() {
-			// clean up functions are called with the mutex held
+			// Close calls cleanup functions without cc.mu held, since they may
+			// join goroutines that need to enter the collection.
 			cc.cachedContainers.Range(func(key, value interface{}) bool {
 				c := value.(*Container)
 				c.close()
