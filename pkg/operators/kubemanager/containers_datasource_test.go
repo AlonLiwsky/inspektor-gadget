@@ -7,11 +7,16 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets"
 )
 
 // A gadget consuming container notifications need not request mount-namespace
@@ -44,4 +49,40 @@ func TestContainersDatasourceOnlyActivatesManager(t *testing.T) {
 	t.Cleanup(instance.(*KubeManagerInstance).containersPublisher.Unsubscribe)
 	require.NoError(t, instance.Start(gc))
 	require.Equal(t, []string{"known-container"}, ids)
+}
+
+func TestScopedContainersDatasourceOnlyIsNotIsolationCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		independentEvents bool
+	}{
+		{name: "notifications only"},
+		{name: "independent unfiltered events", independentEvents: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gc := gadgetcontext.New(policyContext("team-a"), "test")
+			require.NoError(t, gc.SetMetadata([]byte("annotations:\n  enable-containers-datasource: true\n")))
+			if tc.independentEvents {
+				_, err := gc.RegisterDataSource(datasource.TypeSingle, "events")
+				require.NoError(t, err)
+			}
+			manager := &KubeManager{containerCollection: &containercollection.ContainerCollection{}}
+			instance, err := manager.InstantiateDataOperator(gc, api.ParamValues{})
+			require.Nil(t, instance)
+			require.Equal(t, codes.PermissionDenied, status.Code(err))
+		})
+	}
+}
+
+func TestLegacyScopedMountNsRequestStillActivatesManager(t *testing.T) {
+	gc := gadgetcontext.New(policyContext("team-a"), "test")
+	require.NoError(t, gc.SetMetadata([]byte("annotations:\n  enable-containers-datasource: true\n")))
+	// This is the pre-existing map-request activation path, not a proof that
+	// every gadget datasource actually invokes the mount-namespace filter.
+	gc.SetVar(gadgets.MntNsFilterMapName, (*ebpf.Map)(nil))
+	manager := &KubeManager{containerCollection: &containercollection.ContainerCollection{}}
+	instance, err := manager.InstantiateDataOperator(gc, api.ParamValues{"namespace": "team-a"})
+	require.NoError(t, err)
+	require.NotNil(t, instance)
+	require.True(t, instance.(*KubeManagerInstance).authenticatedNamespaceScope)
 }
