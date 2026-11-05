@@ -99,5 +99,15 @@ WORKDIR /work
 ADD include /usr/include
 
 ARG WITHOUT_CACHE
-RUN apt-get -y update \
-	&& apt-get upgrade -y --with-new-pkgs
+# Keep the final refresh after all package installs, and fail if a cached or
+# incomplete refresh leaves the vulnerable bookworm apt packages in the image.
+RUN set -eu; \
+	apt-get -y update; \
+	apt-get upgrade -y --with-new-pkgs; \
+	for package in apt libapt-pkg6.0; do \
+		version="$(dpkg-query -W -f='${Version}' "$package")"; \
+		if ! dpkg --compare-versions "$version" ge 2.6.2; then \
+			echo >&2 "$package $version is older than the CVE-2026-109518 fix (2.6.2)"; \
+			exit 1; \
+		fi; \
+	done
