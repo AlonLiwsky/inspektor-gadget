@@ -86,3 +86,92 @@ func TestConcurrentRemoveContainerWaitsForSubscriberCleanup(t *testing.T) {
 	require.Nil(t, collection.LookupContainerByMntns(container.Mntns))
 	require.Empty(t, collection.LookupContainersByNetns(container.Netns))
 }
+
+func TestRemovalKeepsReaddedContainerAndDoesNotRollForward(t *testing.T) {
+	collection := &ContainerCollection{}
+	require.NoError(t, collection.Initialize(WithPubSub()))
+	defer collection.Close()
+	first := &Container{Mntns: 123, Netns: 456}
+	first.Runtime.ContainerID = "reused"
+	collection.AddContainer(first)
+	entered, release, callbackDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	firstDone, secondDone := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	collection.Subscribe("blocking", ContainerSelector{}, func(event PubSubEvent) {
+		if event.Type == EventTypeRemoveContainer && event.Container == first {
+			close(entered)
+			<-release
+			close(callbackDone)
+		}
+	})
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+		<-firstDone
+		<-secondDone
+	}()
+	go func() { collection.RemoveContainer("reused"); close(firstDone) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("removal callback did not start")
+	}
+	go func() { collection.RemoveContainer("reused"); close(secondDone) }()
+	select {
+	case <-secondDone:
+		t.Fatal("second removal returned before first finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// The primary and namespace transitions must use the same lock. With the
+	// lock held, a completed callback cannot expose a gap where B can be added
+	// before A's namespace entries are cleaned up.
+	collection.mu.Lock()
+	releaseOnce.Do(func() { close(release) })
+	<-callbackDone
+	select {
+	case <-firstDone:
+		collection.mu.Unlock()
+		t.Fatal("removal completed while namespace lock was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+	stillPresent := collection.GetContainer("reused")
+	collection.mu.Unlock()
+	require.Same(t, first, stillPresent)
+	<-firstDone
+
+	second := &Container{Mntns: first.Mntns, Netns: first.Netns}
+	second.Runtime.ContainerID = "reused"
+	collection.AddContainer(second)
+	<-secondDone
+	require.Same(t, second, collection.GetContainer("reused"))
+	require.Same(t, second, collection.LookupContainerByMntns(second.Mntns))
+	require.Equal(t, []*Container{second}, collection.LookupContainersByNetns(second.Netns))
+}
+
+func TestRemovalCallbackMayRemoveOtherIDAndScheduleSameID(t *testing.T) {
+	collection := &ContainerCollection{}
+	require.NoError(t, collection.Initialize(WithPubSub()))
+	defer collection.Close()
+	first := &Container{Mntns: 123, Netns: 456}
+	first.Runtime.ContainerID = "first"
+	other := &Container{Mntns: 124, Netns: 457}
+	other.Runtime.ContainerID = "other"
+	collection.AddContainer(first)
+	collection.AddContainer(other)
+	asynchronousDone := make(chan struct{})
+	collection.Subscribe("nested", ContainerSelector{}, func(event PubSubEvent) {
+		if event.Type != EventTypeRemoveContainer || event.Container != first {
+			return
+		}
+		collection.RemoveContainer("other")
+		go func() { collection.RemoveContainer("first"); close(asynchronousDone) }()
+	})
+	collection.RemoveContainer("first")
+	select {
+	case <-asynchronousDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("asynchronous same-ID removal did not finish")
+	}
+	require.Nil(t, collection.GetContainer("first"))
+	require.Nil(t, collection.GetContainer("other"))
+}

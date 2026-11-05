@@ -153,48 +153,41 @@ func (cc *ContainerCollection) GetContainer(id string) *Container {
 }
 
 // RemoveContainer removes a container from the collection, but only after
-// notifying all the subscribers.
+// notifying all the subscribers and cleaning up its lookup entries. Concurrent
+// removals of the same container wait for that work to finish. A removal
+// subscriber must not synchronously call RemoveContainer for the same ID:
+// Publish waits for subscribers, so that call would wait for itself.
 func (cc *ContainerCollection) RemoveContainer(id string) {
-	for {
-		v, loaded := cc.containers.Load(id)
-		if !loaded {
-			if inFlight, ok := cc.removing.Load(id); ok {
-				<-inFlight.(*containerRemoval).done
-			}
-			return
-		}
-
-		container := v.(*Container)
-		removal := &containerRemoval{container: container, done: make(chan struct{})}
-		if inFlight, loaded := cc.removing.LoadOrStore(id, removal); loaded {
-			<-inFlight.(*containerRemoval).done
-			if inFlight.(*containerRemoval).container == container {
-				return
-			}
-			// The ID was re-added while an older instance was being removed.
-			continue
-		}
-		// A different caller may have finished removing this instance between
-		// our first lookup and claiming the removal slot.
-		if current, ok := cc.containers.Load(id); !ok || current != v {
-			close(removal.done)
-			cc.removing.CompareAndDelete(id, removal)
-			continue
-		}
-		defer func() {
-			close(removal.done)
-			cc.removing.CompareAndDelete(id, removal)
-		}()
-		cc.removeContainer(id, container)
+	cc.mu.Lock()
+	v, loaded := cc.containers.Load(id)
+	if inFlight, removing := cc.removing.Load(id); removing {
+		cc.mu.Unlock()
+		<-inFlight.(*containerRemoval).done
+		// This call observed the old instance; never roll forward to a new one.
 		return
 	}
-}
+	if !loaded {
+		cc.mu.Unlock()
+		return
+	}
+	container := v.(*Container)
+	removal := &containerRemoval{container: container, done: make(chan struct{})}
+	cc.removing.Store(id, removal)
+	cc.mu.Unlock()
 
-func (cc *ContainerCollection) removeContainer(id string, container *Container) {
+	// Callbacks may perform lookups, so do not hold cc.mu while notifying them.
 	if cc.pubsub != nil {
 		cc.pubsub.Publish(EventTypeRemoveContainer, container)
 	}
 
+	cc.mu.Lock()
+	cc.removeContainer(id, container)
+	close(removal.done)
+	cc.removing.Delete(id)
+	cc.mu.Unlock()
+}
+
+func (cc *ContainerCollection) removeContainer(id string, container *Container) {
 	// Save the container in the cache as enrichers might need the container some time after it
 	// has been removed.
 	if cc.cachedContainers != nil {
@@ -208,14 +201,9 @@ func (cc *ContainerCollection) removeContainer(id string, container *Container) 
 	// present.
 	cc.containers.Delete(id)
 
-	// Make this operation atomic, as RemoveContainer() could be called concurrently, which could result in
-	// dirty map contents
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-
 	// Remove from MntNs lookup
 	mntNsContainer, ok := cc.containersByMntNs.Load(container.Mntns)
-	if !ok || mntNsContainer.(*Container).Runtime.ContainerID != container.Runtime.ContainerID {
+	if !ok || mntNsContainer.(*Container) != container {
 		log.Warn("container not found or mismatch in mntns lookup map")
 		return
 	} else {
@@ -233,7 +221,7 @@ func (cc *ContainerCollection) removeContainer(id string, container *Container) 
 	netNsContainersArr := netNsContainers.([]*Container)
 	newNetNsContainers := make([]*Container, 0, len(netNsContainersArr)-1)
 	for _, netNsContainer := range netNsContainersArr {
-		if netNsContainer.Runtime.ContainerID == container.Runtime.ContainerID {
+		if netNsContainer == container {
 			found = true
 			continue
 		}
@@ -268,8 +256,10 @@ func (cc *ContainerCollection) AddContainer(container *Container) {
 		}
 	}
 
+	cc.mu.Lock()
 	existing, loaded := cc.containers.LoadOrStore(container.Runtime.ContainerID, container)
 	if loaded {
+		cc.mu.Unlock()
 		// Another discovery source already added this container ID; this one
 		// is discarded. Release the ns fds the WithTracerCollection enricher
 		// may have opened on it above, or they leak for the container's
@@ -289,7 +279,6 @@ func (cc *ContainerCollection) AddContainer(container *Container) {
 		}
 		return
 	}
-	cc.mu.Lock()
 	cc.containersByMntNs.Store(container.Mntns, container)
 	arr, ok := cc.containersByNetNs.Load(container.Netns)
 	var newContainerArr []*Container
@@ -554,7 +543,9 @@ func (cc *ContainerCollection) EnrichByNetNs(event *eventtypes.CommonData, netns
 }
 
 // Subscribe returns the list of existing containers and registers a callback
-// for notifications about additions and deletions of containers
+// for notifications about additions and deletions of containers. A removal
+// callback must not synchronously call RemoveContainer for the same ID;
+// callbacks for other IDs and asynchronous same-ID calls are supported.
 func (cc *ContainerCollection) Subscribe(key interface{}, selector ContainerSelector, f FuncNotify) []*Container {
 	if cc.pubsub == nil {
 		panic("ContainerCollection's pubsub uninitialized")
@@ -568,7 +559,10 @@ func (cc *ContainerCollection) Subscribe(key interface{}, selector ContainerSele
 	}, func() {
 		// Fetch the list of containers inside pubsub.Subscribe() to
 		// guarantee that no new container event will be published at
-		// the same time.
+		// the same time. Hold cc.mu to keep primary lookup changes and
+		// removal-state changes atomic with this snapshot.
+		cc.mu.Lock()
+		defer cc.mu.Unlock()
 		cc.ContainerRangeWithSelector(&selector, func(c *Container) {
 			inFlight, removing := cc.removing.Load(c.Runtime.ContainerID)
 			if !removing || inFlight.(*containerRemoval).container != c {
