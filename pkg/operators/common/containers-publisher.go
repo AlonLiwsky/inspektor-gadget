@@ -150,18 +150,19 @@ func scopedContainerEventMatches(eventType containercollection.EventType, contai
 	return authorized && containercollection.ContainerSelectorMatches(&selector, container)
 }
 
-func (publisher *ContainersPublisher) emitSelectedContainersDatasourceEvent(eventType containercollection.EventType, container *containercollection.Container, k8s bool, selector containercollection.ContainerSelector, authenticatedNamespaceScope bool) error {
-	if authenticatedNamespaceScope && !scopedContainerEventMatches(eventType, container, selector) {
+func (publisher *ContainersPublisher) emitSelectedContainersDatasourceEvent(eventType containercollection.EventType, container *containercollection.Container, k8s bool, selector containercollection.ContainerSelector, namespaceScopeRequired bool) error {
+	if namespaceScopeRequired && !scopedContainerEventMatches(eventType, container, selector) {
 		return nil
 	}
 	return publisher.emitContainersDatasourceEvent(eventType, container, k8s)
 }
 
-// authenticatedNamespaceScope must be sourced from the authenticated policy
-// context, not inferred from a user-supplied selector. The optional argument
-// preserves unscoped callers that do not carry such a policy.
-func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainers []*containercollection.Container, containerSelector containercollection.ContainerSelector, authenticatedNamespaceScope ...bool) (err error) {
-	scoped := len(authenticatedNamespaceScope) > 0 && authenticatedNamespaceScope[0]
+// namespaceScopeRequired is a restrictive emission signal: callers set
+// it for an authenticated policy context or a persisted scoped-policy marker.
+// Neither the marker nor a user-supplied selector is an authorization grant.
+// The optional argument preserves unscoped callers without such a policy.
+func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainers []*containercollection.Container, containerSelector containercollection.ContainerSelector, namespaceScopeRequired ...bool) (err error) {
+	scoped := len(namespaceScopeRequired) > 0 && namespaceScopeRequired[0]
 	// Subscribe snapshots the collection atomically, but publishing that snapshot
 	// takes time. Queue concurrent changes until the snapshot has been delivered.
 	var mu sync.Mutex

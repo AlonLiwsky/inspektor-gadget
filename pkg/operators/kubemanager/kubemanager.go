@@ -254,9 +254,9 @@ type KubeManagerInstance struct {
 	eventWrappers map[datasource.DataSource]*compat.EventWrapperBase
 
 	containersPublisher *common.ContainersPublisher
-	// Set only from the authenticated request context, never from gadget metadata
-	// or a caller-supplied namespace selector.
-	authenticatedNamespaceScope bool
+	// A restrictive publisher signal, not an authorization grant. Persisted
+	// scoped instances run without the original authenticated request context.
+	namespaceScopeRequired bool
 }
 
 func (m *KubeManagerInstance) Name() string {
@@ -496,8 +496,10 @@ func (k *KubeManager) InstantiateDataOperator(gadgetCtx operators.GadgetContext,
 	}
 
 	_, hasPolicyScope := auth.PolicyScopeFromContext(gadgetCtx.Context())
-	traceInstance.authenticatedNamespaceScope = hasPolicyScope
 	policyRequired := hasPolicyScope || strings.EqualFold(paramValues[paramPolicyScope], "true")
+	// The persisted policy marker can only add a restriction here. It is not
+	// trusted to authorize namespaces or exempt a gadget from isolation checks.
+	traceInstance.namespaceScopeRequired = policyRequired
 	if !legacyActivation && !enableContainersDs {
 		if policyRequired {
 			return nil, status.Error(codes.PermissionDenied, "gadget does not support Kubernetes namespace isolation")
@@ -567,7 +569,7 @@ func (m *KubeManagerInstance) Start(gadgetCtx operators.GadgetContext) error {
 
 	containerSelector := newContainerSelector(m.params)
 
-	return m.containersPublisher.PublishContainers(true, []*containercollection.Container{}, containerSelector, m.authenticatedNamespaceScope)
+	return m.containersPublisher.PublishContainers(true, []*containercollection.Container{}, containerSelector, m.namespaceScopeRequired)
 }
 
 func (m *KubeManagerInstance) Stop(gadgetCtx operators.GadgetContext) error {

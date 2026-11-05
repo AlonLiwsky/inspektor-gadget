@@ -198,15 +198,22 @@ func TestContainersPublisherAuthenticatedNamespaceBoundary(t *testing.T) {
 		require.NoError(t, publisher.emitSelectedContainersDatasourceEvent(event.kind, event.container, true, selector, true))
 	}
 	require.Equal(t, []packet{{"CREATED", "allowed-id", `{"safe":"a"}`}}, packets)
+	// Extra snapshot entries take the same scoped emission path; neither a
+	// foreign nor an unbound entry is allowed through during startup replay.
+	require.NoError(t, publisher.PublishContainers(true, []*containercollection.Container{other, unbound, allowed}, selector, true))
+	require.Equal(t, []packet{
+		{"CREATED", "allowed-id", `{"safe":"a"}`},
+		{"CREATED", "allowed-id", `{"safe":"a"}`},
+	}, packets)
 	// An unscoped publisher with the same user selector retains PRECREATE.
 	require.NoError(t, publisher.emitSelectedContainersDatasourceEvent(containercollection.EventTypePreCreateContainer, unbound, true, selector, false))
-	require.Equal(t, packet{"PRECREATE", "unbound-id", `{"secret":"unbound"}`}, packets[1])
+	require.Equal(t, packet{"PRECREATE", "unbound-id", `{"secret":"unbound"}`}, packets[2])
 	// Empty and exclusion-only selectors are not an authenticated namespace grant.
 	for _, namespaceSelector := range []string{"", "!namespace-b"} {
 		selector.K8s.Namespace = namespaceSelector
 		require.NoError(t, publisher.emitSelectedContainersDatasourceEvent(containercollection.EventTypeAddContainer, allowed, true, selector, true))
 	}
-	require.Len(t, packets, 2)
+	require.Len(t, packets, 3)
 }
 
 func TestContainersPublisherScopedSubscriptionAndUnscopedInternalEvents(t *testing.T) {
