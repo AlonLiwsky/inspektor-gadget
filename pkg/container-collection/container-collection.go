@@ -44,7 +44,9 @@ type ContainerCollection struct {
 
 	// Containers being removed remain available for callback lookups, but must
 	// not enter a new subscription's snapshot after deletion was published.
-	removing sync.Map // keys: *Container
+	// Keyed by ID so another RemoveContainer can wait even after the primary
+	// lookup has been deleted but before namespace lookup cleanup finishes.
+	removing sync.Map // keys: container ID; values: *containerRemoval
 
 	// Keys:   MntNsID     string
 	// Values: container   Container
@@ -90,6 +92,11 @@ type ContainerCollection struct {
 	// kubeconfigPath is the path to the kubeconfig file, or empty for in-cluster config.
 	// Some options like WithPodInformer will use it.
 	kubeconfigPath string
+}
+
+type containerRemoval struct {
+	container *Container
+	done      chan struct{}
 }
 
 // ContainerCollectionOption are options to pass to
@@ -148,17 +155,42 @@ func (cc *ContainerCollection) GetContainer(id string) *Container {
 // RemoveContainer removes a container from the collection, but only after
 // notifying all the subscribers.
 func (cc *ContainerCollection) RemoveContainer(id string) {
-	v, loaded := cc.containers.Load(id)
-	if !loaded {
+	for {
+		v, loaded := cc.containers.Load(id)
+		if !loaded {
+			if inFlight, ok := cc.removing.Load(id); ok {
+				<-inFlight.(*containerRemoval).done
+			}
+			return
+		}
+
+		container := v.(*Container)
+		removal := &containerRemoval{container: container, done: make(chan struct{})}
+		if inFlight, loaded := cc.removing.LoadOrStore(id, removal); loaded {
+			<-inFlight.(*containerRemoval).done
+			if inFlight.(*containerRemoval).container == container {
+				return
+			}
+			// The ID was re-added while an older instance was being removed.
+			continue
+		}
+		// A different caller may have finished removing this instance between
+		// our first lookup and claiming the removal slot.
+		if current, ok := cc.containers.Load(id); !ok || current != v {
+			close(removal.done)
+			cc.removing.CompareAndDelete(id, removal)
+			continue
+		}
+		defer func() {
+			close(removal.done)
+			cc.removing.CompareAndDelete(id, removal)
+		}()
+		cc.removeContainer(id, container)
 		return
 	}
+}
 
-	container := v.(*Container)
-	if _, loaded := cc.removing.LoadOrStore(container, struct{}{}); loaded {
-		return
-	}
-	defer cc.removing.Delete(container)
-
+func (cc *ContainerCollection) removeContainer(id string, container *Container) {
 	if cc.pubsub != nil {
 		cc.pubsub.Publish(EventTypeRemoveContainer, container)
 	}
@@ -167,7 +199,7 @@ func (cc *ContainerCollection) RemoveContainer(id string) {
 	// has been removed.
 	if cc.cachedContainers != nil {
 		container.deletionTimestamp = time.Now()
-		cc.cachedContainers.Store(id, v)
+		cc.cachedContainers.Store(id, container)
 	}
 
 	// Remove the container from the collection after publishing the event as
@@ -538,7 +570,8 @@ func (cc *ContainerCollection) Subscribe(key interface{}, selector ContainerSele
 		// guarantee that no new container event will be published at
 		// the same time.
 		cc.ContainerRangeWithSelector(&selector, func(c *Container) {
-			if _, removing := cc.removing.Load(c); !removing {
+			inFlight, removing := cc.removing.Load(c.Runtime.ContainerID)
+			if !removing || inFlight.(*containerRemoval).container != c {
 				ret = append(ret, c)
 			}
 		})
