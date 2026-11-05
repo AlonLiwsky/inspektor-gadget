@@ -166,7 +166,7 @@ func (cc *ContainerCollection) RemoveContainer(id string) {
 		// This call observed the old instance; never roll forward to a new one.
 		return
 	}
-	if !loaded {
+	if !loaded || cc.closed {
 		cc.mu.Unlock()
 		return
 	}
@@ -257,6 +257,11 @@ func (cc *ContainerCollection) AddContainer(container *Container) {
 	}
 
 	cc.mu.Lock()
+	if cc.closed {
+		cc.mu.Unlock()
+		container.close()
+		return
+	}
 	existing, loaded := cc.containers.LoadOrStore(container.Runtime.ContainerID, container)
 	if loaded {
 		cc.mu.Unlock()
@@ -583,22 +588,25 @@ func (cc *ContainerCollection) Unsubscribe(key interface{}) {
 
 func (cc *ContainerCollection) Close() {
 	cc.mu.Lock()
-	defer cc.mu.Unlock()
-
-	close(cc.done)
-
 	if !cc.initialized || cc.closed {
+		cc.mu.Unlock()
 		panic("ContainerCollection is not initialized or has been closed")
 	}
 
 	// TODO: it's not clear if we want/can allow to re-initialize
 	// this instance yet, so we don't set cc.initialized = false.
 	cc.closed = true
+	close(cc.done)
+	cc.mu.Unlock()
 
+	// Cleanup functions may join goroutines whose callbacks enter Subscribe,
+	// AddContainer, or RemoveContainer. Never hold cc.mu while joining them.
 	for _, f := range cc.cleanUpFuncs {
 		f()
 	}
 
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
 	// Similar to RemoveContainer() on all containers but without publishing
 	// events.
 	cc.containers.Range(func(key, value interface{}) bool {

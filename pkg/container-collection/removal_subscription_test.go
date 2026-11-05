@@ -175,3 +175,85 @@ func TestRemovalCallbackMayRemoveOtherIDAndScheduleSameID(t *testing.T) {
 	require.Nil(t, collection.GetContainer("first"))
 	require.Nil(t, collection.GetContainer("other"))
 }
+
+func TestCloseDoesNotHoldCollectionLockWhileJoiningCallbacks(t *testing.T) {
+	collection := &ContainerCollection{}
+	require.NoError(t, collection.Initialize(WithPubSub()))
+	cleanupEntered := make(chan struct{})
+	enterSubscriber := make(chan struct{})
+	watcherDone := make(chan struct{})
+	closeDone := make(chan struct{})
+	collection.cleanUpFuncs = append(collection.cleanUpFuncs, func() {
+		close(cleanupEntered)
+		<-watcherDone
+	})
+	go func() {
+		<-enterSubscriber
+		collection.Subscribe("during-close", ContainerSelector{}, func(PubSubEvent) {})
+		close(watcherDone)
+	}()
+	go func() { collection.Close(); close(closeDone) }()
+	select {
+	case <-cleanupEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not enter cleanup")
+	}
+	close(enterSubscriber)
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close held collection lock while joining callback")
+	}
+}
+
+func TestCloseRejectsNewAddWithoutBreakingInflightRemoval(t *testing.T) {
+	collection := &ContainerCollection{}
+	require.NoError(t, collection.Initialize(WithPubSub()))
+	first := &Container{Mntns: 123, Netns: 456}
+	first.Runtime.ContainerID = "first"
+	collection.AddContainer(first)
+	entered, release := make(chan struct{}), make(chan struct{})
+	removeDone, secondRemoveDone, closeDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	collection.Subscribe("blocking", ContainerSelector{}, func(event PubSubEvent) {
+		if event.Type == EventTypeRemoveContainer {
+			close(entered)
+			<-release
+		}
+	})
+	defer func() {
+		releaseOnce.Do(func() { close(release) })
+		<-removeDone
+		<-secondRemoveDone
+		<-closeDone
+	}()
+	go func() { collection.RemoveContainer("first"); close(removeDone) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("removal callback did not start")
+	}
+	go func() { collection.Close(); close(closeDone) }()
+	select {
+	case <-collection.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not begin")
+	}
+	second := &Container{Mntns: 124, Netns: 457}
+	second.Runtime.ContainerID = "second"
+	collection.AddContainer(second)
+	require.Nil(t, collection.GetContainer("second"))
+	go func() { collection.RemoveContainer("first"); close(secondRemoveDone) }()
+	select {
+	case <-removeDone:
+		t.Fatal("removal completed before subscriber cleanup")
+	case <-secondRemoveDone:
+		t.Fatal("concurrent removal returned before subscriber cleanup")
+	case <-time.After(50 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(release) })
+	<-removeDone
+	<-secondRemoveDone
+	<-closeDone
+	require.Nil(t, collection.GetContainer("first"))
+}
