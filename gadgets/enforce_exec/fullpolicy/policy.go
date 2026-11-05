@@ -254,7 +254,7 @@ func preparePoliciesWithDiagnosticsSemantic[P any](policies []Policy, compilePat
 				}
 				return nil, fmt.Errorf("rule %s: invalid action", r.Name)
 			}
-			if len(r.Except) != 0 && r.Action != Deny {
+			if r.Except != nil && r.Action != Deny {
 				if d.compact {
 					return nil, d.reject()
 				}

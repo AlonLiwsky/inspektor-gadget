@@ -156,6 +156,34 @@ func TestExecExceptionValidationAndOwnership(t *testing.T) {
 	}
 }
 
+func TestExecAllowExceptionPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		except []Exception
+		valid  bool
+	}{
+		{name: "omitted", valid: true},
+		{name: "explicit-empty", except: []Exception{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := base()
+			p.Rules = []Rule{{Name: "a", Action: Allow, Except: tc.except}}
+			_, err := CompileReference([]Policy{p})
+			if (err == nil) != tc.valid {
+				t.Fatalf("CompileReference error = %v, want valid = %t", err, tc.valid)
+			}
+			if !tc.valid {
+				if _, err := Compile([]Policy{p}); err == nil {
+					t.Fatal("Compile accepted native-unsupported exception field")
+				}
+				if _, err := CompileKernel([]Policy{p}, 1, "app"); err == nil {
+					t.Fatal("CompileKernel accepted native-unsupported exception field")
+				}
+			}
+		})
+	}
+}
+
 func TestExecOriginPresence(t *testing.T) {
 	for _, change := range []func(*Policy){
 		func(p *Policy) { p.DefaultOriginPresent = true },
