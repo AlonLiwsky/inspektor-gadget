@@ -925,6 +925,9 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		m.MaxEntries = maxEntries
 	}
 
+	// The final configuration is known here: do not load disabled programs.
+	i.dropDisabledPrograms()
+
 	i.logger.Debugf("creating ebpf collection")
 
 	// check if the btfgen operator has stored the kernel types in the context

@@ -181,3 +181,9 @@ int BPF_KPROBE(foo, args...)
 	return 0;
 }
 ```
+
+A disabled program is neither loaded nor attached, so the kernel does not
+verify it. The same applies when the gadget configuration sets
+`programs.<name>.attach_to` to `gadget_program_disabled`. A gadget can use
+this to carry programs for a hook or program type that some kernels lack,
+and load only the programs that the kernel supports.
