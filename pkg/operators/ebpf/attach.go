@@ -156,6 +156,17 @@ func (i *ebpfInstance) attachProgram(gadgetCtx operators.GadgetContext, p *ebpf.
 			Attach:  ebpf.AttachCGroupSockOps,
 			Program: prog,
 		})
+	case ebpf.CGroupSockAddr:
+		cgroupPath, err := cgroupAttachPath(attachTo)
+		if err != nil {
+			return nil, fmt.Errorf("attaching cgroup program %q: %w", p.Name, err)
+		}
+		i.logger.Debugf("Attaching cgroup program %q (%s) to cgroup %q", p.Name, p.AttachType, cgroupPath)
+		return link.AttachCgroup(link.CgroupOptions{
+			Path:    cgroupPath,
+			Attach:  p.AttachType,
+			Program: prog,
+		})
 	case ebpf.SkSKB, ebpf.SkMsg:
 		sockMapName, ok := i.skTargetMaps[p.Name]
 		if !ok {
