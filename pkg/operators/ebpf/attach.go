@@ -47,12 +47,22 @@ const (
 	disabledProgram = "gadget_program_disabled"
 )
 
-func (i *ebpfInstance) attachProgram(gadgetCtx operators.GadgetContext, p *ebpf.ProgramSpec, prog *ebpf.Program) (link.Link, error) {
-	attachTo := p.AttachTo
+// programAttachTarget returns the attach target of a program: the
+// programs.<name>.attach_to override, else the target of the spec. A program
+// whose target is disabledProgram is neither loaded nor attached.
+func (i *ebpfInstance) programAttachTarget(p *ebpf.ProgramSpec) string {
+	if i.config != nil {
+		if target := i.config.GetString("programs." + p.Name + ".attach_to"); target != "" {
+			return target
+		}
+	}
+	return p.AttachTo
+}
 
-	if attachToCfg := i.config.GetString("programs." + p.Name + ".attach_to"); attachToCfg != "" {
-		i.logger.Debugf("Overriding attachTo with %q for program %q", attachToCfg, p.Name)
-		attachTo = attachToCfg
+func (i *ebpfInstance) attachProgram(gadgetCtx operators.GadgetContext, p *ebpf.ProgramSpec, prog *ebpf.Program) (link.Link, error) {
+	attachTo := i.programAttachTarget(p)
+	if attachTo != p.AttachTo {
+		i.logger.Debugf("Overriding attachTo with %q for program %q", attachTo, p.Name)
 	}
 
 	if attachTo == disabledProgram {

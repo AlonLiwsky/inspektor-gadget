@@ -926,7 +926,9 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 	}
 
 	// The final configuration is known here: do not load disabled programs.
-	i.dropDisabledPrograms()
+	if err := i.dropDisabledPrograms(); err != nil {
+		return err
+	}
 
 	i.logger.Debugf("creating ebpf collection")
 

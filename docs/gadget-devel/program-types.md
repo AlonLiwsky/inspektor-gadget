@@ -187,3 +187,14 @@ verify it. The same applies when the gadget configuration sets
 `programs.<name>.attach_to` to `gadget_program_disabled`. A gadget can use
 this to carry programs for a hook or program type that some kernels lack,
 and load only the programs that the kernel supports.
+
+A program that a `PROG_ARRAY` map lists in its contents (a tail call target)
+cannot be disabled: the gadget then fails to start with an error that names
+the program and the map.
+
+For an enforcement gadget, a disabled hook is a check that does not run, not
+an allow. The operator only skips the program. The gadget, or the project
+that runs it, must report each semantic that the hook enforces as not ready
+or degraded, never as enforced. For example, a file enforcement gadget that
+disables its `inode_set_acl` program on a kernel without that hook must
+report ACL changes as not enforced.
