@@ -53,15 +53,16 @@ static __always_inline bool covered(struct task_struct *task)
 #include "../../../root_barrier.h"
 
 SEC("lsm/task_alloc")
-int BPF_PROG(own_task_alloc, struct task_struct *child,
-	     unsigned long clone_flags, int ret)
+long BPF_PROG(own_task_alloc, struct task_struct *child,
+	      unsigned long clone_flags, int ret)
 {
+	__s64 prior = ROOT_BARRIER_PRIOR(2);
 	__u64 key = (__u64)child;
 	__u32 zero = 0, one = 1;
 	__u64 *allocs;
 
-	if (ret)
-		return ret;
+	if (prior)
+		return prior;
 #ifdef OWNER_INLINE
 	ret = root_barrier_task_alloc(ctx, clone_flags);
 	if (ret)

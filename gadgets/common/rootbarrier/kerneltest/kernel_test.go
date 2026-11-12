@@ -12,6 +12,8 @@
 package kerneltest
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -246,6 +248,24 @@ func TestTaskAllocComposition(t *testing.T) {
 			if err := rootbarrier.VerifyMaps(counters, collection.Maps[rootbarrier.ProbeMap], tc.hooks); err != nil {
 				t.Fatalf("verify: %v", err)
 			}
+			if tc.name == "inline" {
+				// The same program matched by its kernel ID; another
+				// program's ID is refused.
+				for _, c := range []struct {
+					program string
+					ok      bool
+				}{{"own_task_alloc", true}, {"own_task_free", false}} {
+					hooks, err := rootbarrier.WithProgramID(rootbarrier.Hooks, "task_alloc", collection.Programs[c.program])
+					if err != nil {
+						t.Fatal(err)
+					}
+					// The name of another hook's program: only the ID can match.
+					hooks[3].Program = "rb_chroot"
+					if err := rootbarrier.Attest(counters, hooks); (err == nil) != c.ok {
+						t.Errorf("attest with the ID of %s: %v, want success %v", c.program, err, c.ok)
+					}
+				}
+			}
 			cgroup := coverCgroup(t, collection)
 			before, err := rootbarrier.Denials(counters)
 			if err != nil {
@@ -296,5 +316,78 @@ func TestTaskAllocComposition(t *testing.T) {
 	if allocated[cases[1].name] == allocated[cases[2].name] {
 		t.Errorf("separate programs: allocation in %q %v, in %q %v; want it in exactly one order",
 			cases[1].name, allocated[cases[1].name], cases[2].name, allocated[cases[2].name])
+	}
+}
+
+// ia32Unshare is a static i386 program: unshare(CLONE_NEWNS) through int 0x80,
+// then exit with the error number (0 on success, 1 for EPERM).
+func ia32Unshare() []byte {
+	const base = 0x08048000
+	code := []byte{
+		0xb8, 0x36, 0x01, 0x00, 0x00, // mov eax, 310 (unshare on i386)
+		0xbb, 0x00, 0x00, 0x02, 0x00, // mov ebx, CLONE_NEWNS
+		0xcd, 0x80, // int 0x80
+		0x89, 0xc3, // mov ebx, eax
+		0xf7, 0xdb, // neg ebx
+		0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1 (exit)
+		0xcd, 0x80, // int 0x80
+	}
+	const headers = 52 + 32
+	size := uint32(headers + len(code))
+	var b bytes.Buffer
+	b.Write([]byte{0x7f, 'E', 'L', 'F', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	for _, v := range []any{
+		uint16(2), uint16(3), uint32(1), // ET_EXEC, EM_386, EV_CURRENT
+		uint32(base + headers), uint32(52), uint32(0), uint32(0), // entry, phoff, shoff, flags
+		uint16(52), uint16(32), uint16(1), uint16(0), uint16(0), uint16(0), // ehsize, phentsize, phnum, sh*
+		uint32(1), uint32(0), uint32(base), uint32(base), size, size, uint32(5), uint32(0x1000), // PT_LOAD R+X
+	} {
+		binary.Write(&b, binary.LittleEndian, v)
+	}
+	b.Write(code)
+	return b.Bytes()
+}
+
+// A 32-bit task (TS_COMPAT) uses other syscall numbers, so the capable
+// program fails closed for it: a covered ia32 task's unshare(CLONE_NEWNS) is
+// denied and counted as compat. amd64 only.
+func TestCompatTask(t *testing.T) {
+	optIn(t)
+	if runtime.GOARCH != "amd64" {
+		t.Skip("ia32 compat tasks exist only on amd64")
+	}
+	collection := load(t, compile(t, "testdata/barrier.bpf.c"))
+	counters := collection.Maps[rootbarrier.CountersMap]
+	attach(t, collection, programs(rootbarrier.Hooks)...)
+	program := filepath.Join(t.TempDir(), "unshare32")
+	if err := os.WriteFile(program, ia32Unshare(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Outside the covered cgroup the program unshares, so a denial below is
+	// the barrier's.
+	if err := exec.Command(program).Run(); errors.Is(err, unix.ENOEXEC) {
+		t.Skip("the kernel does not run ia32 programs")
+	} else if err != nil {
+		t.Fatalf("ia32 unshare outside the covered cgroup: %v", err)
+	}
+	cgroup := coverCgroup(t, collection)
+	before, err := rootbarrier.Denials(counters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = inCgroup(cgroup, program)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != int(unix.EPERM) {
+		t.Fatalf("ia32 unshare in the covered cgroup: %v, want exit %d (EPERM)", err, unix.EPERM)
+	}
+	after, err := rootbarrier.Denials(counters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after[rootbarrier.OpCompat] == before[rootbarrier.OpCompat] {
+		t.Error("the barrier did not count a compat denial")
+	}
+	if after[rootbarrier.OpUnshareNS] != before[rootbarrier.OpUnshareNS] {
+		t.Error("an ia32 unshare was judged with the x86_64 syscall numbers")
 	}
 }
