@@ -182,19 +182,37 @@ int BPF_KPROBE(foo, args...)
 }
 ```
 
-A disabled program is neither loaded nor attached, so the kernel does not
-verify it. The same applies when the gadget configuration sets
-`programs.<name>.attach_to` to `gadget_program_disabled`. A gadget can use
-this to carry programs for a hook or program type that some kernels lack,
-and load only the programs that the kernel supports.
+A disabled program is loaded and verified, but the operator does not attach
+it. The same applies when the gadget configuration sets
+`programs.<name>.attach_to` to `gadget_program_disabled`. User space can still
+use a disabled program, for example install it in a `PROG_ARRAY` as a tail
+call target, or attach it itself.
 
-A program that a `PROG_ARRAY` map lists in its contents (a tail call target)
-cannot be disabled: the gadget then fails to start with an error that names
-the program and the map.
+## Programs That Are Not Loaded
 
-For an enforcement gadget, a disabled hook is a check that does not run, not
-an allow. The operator only skips the program. The gadget, or the project
-that runs it, must report each semantic that the hook enforces as not ready
-or degraded, never as enforced. For example, a file enforcement gadget that
-disables its `inode_set_acl` program on a kernel without that hook must
-report ACL changes as not enforced.
+The gadget configuration can opt a program out of the load with
+`programs.<name>.load: false`:
+
+```yaml
+programs:
+  foo:
+    load: false
+```
+
+Such a program is neither loaded nor attached, so the kernel does not verify
+it. The value must be `true` or `false`; any other value stops the gadget
+with an error. A gadget can use this to carry programs for a hook or program type that
+some kernels lack, and load only the programs that the kernel supports.
+
+A program that a `PROG_ARRAY` map lists in its ELF contents (a statically
+initialized tail call target) must be loaded: the gadget then fails to start
+with an error that names the program and the map. The operator does not see
+the tail calls that user space installs at runtime. A program that user space
+installs in a `PROG_ARRAY` must not use `load: false`; disable it instead.
+
+For an enforcement gadget, a hook that is not loaded is a check that does not
+run, not an allow. The operator only skips the program. The gadget, or the
+project that runs it, must report each semantic that the hook enforces as not
+ready or degraded, never as enforced. For example, a file enforcement gadget
+that does not load its `inode_set_acl` program on a kernel without that hook
+must report ACL changes as not enforced.

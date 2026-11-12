@@ -49,7 +49,7 @@ const (
 
 // programAttachTarget returns the attach target of a program: the
 // programs.<name>.attach_to override, else the target of the spec. A program
-// whose target is disabledProgram is neither loaded nor attached.
+// whose target is disabledProgram is loaded but not attached.
 func (i *ebpfInstance) programAttachTarget(p *ebpf.ProgramSpec) string {
 	if i.config != nil {
 		if target := i.config.GetString("programs." + p.Name + ".attach_to"); target != "" {
