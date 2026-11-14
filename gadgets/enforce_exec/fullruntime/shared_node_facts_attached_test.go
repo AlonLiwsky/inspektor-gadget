@@ -134,11 +134,7 @@ func newSharedFactFiles(t *testing.T) sharedFactFiles {
 			t.Fatal(err)
 		}
 	}
-	for d := dir; d != filepath.Dir(d) && strings.HasPrefix(d, os.TempDir()); d = filepath.Dir(d) {
-		if err := os.Chmod(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
+	chmodTempAncestors(t, dir)
 	return f
 }
 

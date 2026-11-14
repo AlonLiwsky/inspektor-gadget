@@ -68,11 +68,7 @@ func newOpaqueInterpFiles(t interface {
 	// Scripts must be readable and the directory searchable by uid 1000:
 	// testing.T.TempDir creates its per-test parent 0700, which made the
 	// uid-1000 exec fail EACCES before any policy decision.
-	for _, d := range []string{dir, filepath.Dir(dir)} {
-		if err := os.Chmod(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
+	chmodTempAncestors(t, dir)
 	return opaqueInterpFiles{dir: dir, hold: hold}
 }
 
