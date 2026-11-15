@@ -45,6 +45,13 @@ const (
 	// of the value's size refuses the load. The constants set are reported
 	// in NativeResources.Constants. Ordinary gadgets ignore it.
 	NativeConstantsKey = "ebpf/native-constants"
+	// NativeProgramDigestKey holds a string the eBPF operator sets only when
+	// NativeOwnerRequiredKey is true: the lowercase hex sha256 of the eBPF
+	// program layer bytes it loads, recorded before any parsing. A second
+	// eBPF layer sets it to "" (sticky), so a native owner can bind the
+	// exact object bytes of its one-layer image. Ordinary gadgets never see
+	// it.
+	NativeProgramDigestKey = "ebpf/native-program-sha256"
 )
 
 type NativeMapResource struct {

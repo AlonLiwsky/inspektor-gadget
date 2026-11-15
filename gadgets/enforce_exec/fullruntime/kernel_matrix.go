@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,15 +46,61 @@ func supportedKernelBTF(digest string) bool {
 	}
 }
 
-// sharedCandidateKernelBTF is the exact kernel matrix of the shared-node
-// candidate (G019 qualification builds only): the BTF of the two AL2023
-// guest kernels the candidate objects are compiled against (compile.sh
-// vmlinux.h) and qualified on (G005/G009/G019 isolated VM runs). It is not
-// the persistent-owner matrix above and admits nothing to that path.
-var sharedCandidateKernelBTF = map[string]string{
-	"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": "6.12.113-138.209.amzn2023.x86_64",
-	"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": "6.18.56-125.164.amzn2023.x86_64",
+// sharedProductPin is one exact kernel build the shared product node is
+// qualified on (G011 pass 1; checklist step 0 values, mirrored in
+// testdata/shared_product_pins.tsv). The BTF digest alone does not identify a
+// build: the release and the vmlinux GNU build-id must match too.
+type sharedProductPin struct {
+	Release string // uname -r
+	BuildID string // vmlinux GNU build-id (hex) from /sys/kernel/notes
+	// OuterSymbol and HandlerSymbol are the failure_outer_* and
+	// failure_handler_* kprobe targets the qualified loader resolved.
+	OuterSymbol, HandlerSymbol string
+	// ProductELF is the sha256 set of the qualified product objects for this
+	// kernel (g19pkg64/128/256/512).
+	ProductELF map[string]struct{}
 }
+
+// sharedProductPins maps a vmlinux BTF sha256 to its pinned build.
+var sharedProductPins = map[string]sharedProductPin{
+	"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": {
+		Release:       "6.12.113-138.209.amzn2023.x86_64",
+		BuildID:       "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
+		OuterSymbol:   "do_execveat_common.isra.0",
+		HandlerSymbol: "search_binary_handler",
+		ProductELF: map[string]struct{}{
+			"2e2b033bde0ece73ac9f95fd7455fcf36be7aa32250f52e527aff4bd86546be9": {}, // g19pkg64
+			"b7245ddfbb7bac323921d0583b67295789e9f3f22cd7460e36f9f37b65b10c31": {}, // g19pkg128
+			"86f04ecc2f919c91992487c85b7be038feee39cec9dfd99187dcd64bc863e5b3": {}, // g19pkg256
+			"16dfb0eaa510d3d5ae9c744d3c8f9023047724f6a2ad253da33629d6a74c3404": {}, // g19pkg512
+		},
+	},
+	"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
+		Release:       "6.18.56-125.164.amzn2023.x86_64",
+		BuildID:       "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
+		OuterSymbol:   "do_execveat_common.isra.0",
+		HandlerSymbol: "exec_binprm",
+		ProductELF: map[string]struct{}{
+			"1ab606ec132732984cd682438dd2ca6be0e98f6bfa567c263d1263326ee351ce": {}, // g19pkg64
+			"142ae885221167eaf258678f508999eb0528447b53355eb5d776ae009b6115ae": {}, // g19pkg128
+			"074ce03442631ab34462de5802addb67c3e783109c6de8b9ec55f05091b2d38a": {}, // g19pkg256
+			"370f971574941b15fcee31dbeb6d6d2467db189a1618a877d8c4636d5afc940c": {}, // g19pkg512
+		},
+	},
+}
+
+// sharedCandidateKernelBTF is the exact kernel matrix of the shared-node
+// candidate (G019 qualification builds): the BTF of the two AL2023 guest
+// kernels the candidate objects are compiled against (compile.sh vmlinux.h)
+// and qualified on, derived from sharedProductPins. It is not the
+// persistent-owner matrix above and admits nothing to that path.
+var sharedCandidateKernelBTF = func() map[string]string {
+	out := make(map[string]string, len(sharedProductPins))
+	for digest, pin := range sharedProductPins {
+		out[digest] = pin.Release
+	}
+	return out
+}()
 
 // Overlay exec-file private_data layouts consumed by se_image_classify through
 // the se_image_ovl_layout rodata constant (full/shared_image_classify.h
@@ -234,7 +281,7 @@ func verifySharedCandidateKernel() error {
 
 func verifyKernelBTF(supported func(string) bool, matrix string) error {
 	if runtime.GOARCH != "amd64" {
-		return fmt.Errorf("persistent owner requires proved x86_64 kernel matrix")
+		return fmt.Errorf("%s matrix requires a proved x86_64 kernel", matrix)
 	}
 	digest, err := kernelBTFDigest()
 	if err != nil {
@@ -246,29 +293,225 @@ func verifyKernelBTF(supported func(string) bool, matrix string) error {
 	return checkKernelControls()
 }
 
+// sharedProductKernelProbe reads the running kernel's identity and controls
+// for verifySharedProductKernel. Tests replace sharedProductKernelProbes.
+type sharedProductKernelProbe struct {
+	arch      func() string
+	btfDigest func() (string, error)
+	release   func() (string, error)
+	buildID   func() (string, error)
+	lsm       func() (string, error)
+	ftrace    func() (string, error)
+	tainted   func() (string, error)
+}
+
+var sharedProductKernelProbes = sharedProductKernelProbe{
+	arch:      func() string { return runtime.GOARCH },
+	btfDigest: kernelBTFDigest,
+	release:   kernelRelease,
+	buildID:   kernelBuildID,
+	lsm:       func() (string, error) { return readKernelLSM(kernelLSMRoots()) },
+	ftrace:    func() (string, error) { return readProcSys("/proc/sys/kernel/ftrace_enabled") },
+	tainted:   func() (string, error) { return readProcSys("/proc/sys/kernel/tainted") },
+}
+
+// sharedProductKernelCheck is the product kernel gate; tests replace it.
+var sharedProductKernelCheck = verifySharedProductKernel
+
+// verifySharedProductKernel admits only an exact sharedProductPins build:
+// x86_64, a pinned vmlinux BTF digest, its release and GNU build-id, the bpf
+// LSM active, ftrace enabled and no livepatch. It returns the BTF digest and
+// its pin. Every refusal wraps ErrSharedNativeUnavailable with the reason.
+func verifySharedProductKernel() (string, sharedProductPin, error) {
+	refuse := func(cause error) (string, sharedProductPin, error) {
+		return "", sharedProductPin{}, fmt.Errorf("shared product node refused: %w: %w", cause, ErrSharedNativeUnavailable)
+	}
+	p := sharedProductKernelProbes
+	if arch := p.arch(); arch != "amd64" {
+		return refuse(fmt.Errorf("shared product node requires x86_64, running on %s", arch))
+	}
+	digest, err := p.btfDigest()
+	if err != nil {
+		return refuse(fmt.Errorf("kernel BTF: %w", err))
+	}
+	pin, ok := sharedProductPins[digest]
+	if !ok {
+		return refuse(fmt.Errorf("kernel BTF sha256 %s is not a qualified shared product kernel build", digest))
+	}
+	release, err := p.release()
+	if err != nil {
+		return refuse(fmt.Errorf("kernel release: %w", err))
+	}
+	if release != pin.Release {
+		return refuse(fmt.Errorf("kernel release %q, the pinned BTF %s is %q", release, digest, pin.Release))
+	}
+	buildID, err := p.buildID()
+	if err != nil {
+		return refuse(fmt.Errorf("kernel build-id: %w", err))
+	}
+	if buildID != pin.BuildID {
+		return refuse(fmt.Errorf("kernel build-id %s, %s is pinned to %s", buildID, pin.Release, pin.BuildID))
+	}
+	lsm, err := p.lsm()
+	if err != nil {
+		return refuse(fmt.Errorf("LSM list: %w", err))
+	}
+	if err := requireBPFLSM(lsm); err != nil {
+		return refuse(err)
+	}
+	if err := checkSharedProductKernelRuntime(p); err != nil {
+		return refuse(err)
+	}
+	return digest, pin, nil
+}
+
+// taintLivepatch is TAINT_LIVEPATCH (bit 15, include/linux/panic.h).
+const taintLivepatch = 1 << 15
+
+// checkSharedProductKernelRuntime re-reads the two controls that can change
+// while the agent runs: ftrace_enabled (with ftrace off the fentry/fexit
+// trampolines stop) and the livepatch taint (a livepatch changes exec-path
+// text without changing the BTF or the build-id). Never cached.
+func checkSharedProductKernelRuntime(p sharedProductKernelProbe) error {
+	ftrace, err := p.ftrace()
+	if err != nil {
+		return fmt.Errorf("ftrace_enabled: %w", err)
+	}
+	if strings.TrimSpace(ftrace) != "1" {
+		return fmt.Errorf("ftrace is not enabled (kernel.ftrace_enabled=%s)", strings.TrimSpace(ftrace))
+	}
+	tainted, err := p.tainted()
+	if err != nil {
+		return fmt.Errorf("kernel taint: %w", err)
+	}
+	mask, err := strconv.ParseUint(strings.TrimSpace(tainted), 10, 64)
+	if err != nil {
+		return fmt.Errorf("kernel taint %q: %w", strings.TrimSpace(tainted), err)
+	}
+	if mask&taintLivepatch != 0 {
+		return fmt.Errorf("kernel is livepatched (taint %d has TAINT_LIVEPATCH)", mask)
+	}
+	return nil
+}
+
+// readProcSys reads a small /proc/sys value, refusing anything not on
+// procfs (a bind-mounted or replaced file cannot fake a kernel control).
+func readProcSys(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	var fs unix.Statfs_t
+	if err = unix.Fstatfs(int(file.Fd()), &fs); err != nil {
+		return "", err
+	}
+	if fs.Type != unix.PROC_SUPER_MAGIC {
+		return "", fmt.Errorf("%s is not on procfs", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > 4096 {
+		return "", fmt.Errorf("%s exceeds 4096 bytes", path)
+	}
+	return string(data), nil
+}
+
+// kernelRelease is uname -r.
+func kernelRelease() (string, error) {
+	var u unix.Utsname
+	if err := unix.Uname(&u); err != nil {
+		return "", err
+	}
+	return unix.ByteSliceToString(u.Release[:]), nil
+}
+
+// kernelBuildID is the running vmlinux GNU build-id from /sys/kernel/notes
+// (sysfs-checked, at most 64 KiB).
+func kernelBuildID() (string, error) {
+	notes, err := readSysfsFile("/sys/kernel/notes", 64<<10, "kernel notes")
+	if err != nil {
+		return "", err
+	}
+	return parseGNUBuildID(notes)
+}
+
+// ntGNUBuildID is NT_GNU_BUILD_ID (elf.h).
+const ntGNUBuildID = 3
+
+// parseGNUBuildID returns the hex descriptor of the one "GNU" NT_GNU_BUILD_ID
+// note in an ELF note section (Elf64_Nhdr: namesz, descsz, type, each a
+// native-endian 32-bit word; name and descriptor padded to 4 bytes). A
+// truncated note, no build-id or more than one is an error.
+func parseGNUBuildID(notes []byte) (string, error) {
+	var found string
+	for len(notes) > 0 {
+		if len(notes) < 12 {
+			return "", fmt.Errorf("truncated note header")
+		}
+		namesz, descsz, typ := binary.NativeEndian.Uint32(notes), binary.NativeEndian.Uint32(notes[4:]), binary.NativeEndian.Uint32(notes[8:])
+		notes = notes[12:]
+		nameLen, descLen := align4(uint64(namesz)), align4(uint64(descsz))
+		if nameLen+descLen > uint64(len(notes)) {
+			return "", fmt.Errorf("truncated note (name %d, descriptor %d bytes)", namesz, descsz)
+		}
+		name, desc := notes[:namesz], notes[nameLen:nameLen+uint64(descsz)]
+		notes = notes[nameLen+descLen:]
+		if typ != ntGNUBuildID || string(name) != "GNU\x00" {
+			continue
+		}
+		if found != "" {
+			return "", fmt.Errorf("more than one GNU build-id note")
+		}
+		if len(desc) == 0 {
+			return "", fmt.Errorf("empty GNU build-id note")
+		}
+		found = hex.EncodeToString(desc)
+	}
+	if found == "" {
+		return "", fmt.Errorf("no GNU build-id note")
+	}
+	return found, nil
+}
+
+func align4(n uint64) uint64 { return (n + 3) &^ 3 }
+
 var (
-	kernelBTFDigestOnce  sync.Once
+	kernelBTFDigestMu    sync.Mutex
 	kernelBTFDigestValue string
-	kernelBTFDigestErr   error
+	// kernelBTFRead reads the running vmlinux BTF; tests replace it.
+	kernelBTFRead = func() ([]byte, error) { return readSysfsBTF("/sys/kernel/btf/vmlinux") }
 )
 
-// kernelBTFDigest is the sha256 of the running kernel's sysfs vmlinux BTF,
-// computed once per process (value and error cached: the running kernel's BTF
-// cannot change).
+// kernelBTFDigest is the sha256 of the running kernel's sysfs vmlinux BTF.
+// Only a successful digest is cached (the running kernel's BTF cannot
+// change); a failed read is retried on the next call.
 func kernelBTFDigest() (string, error) {
-	kernelBTFDigestOnce.Do(func() {
-		var data []byte
-		if data, kernelBTFDigestErr = readSysfsBTF("/sys/kernel/btf/vmlinux"); kernelBTFDigestErr == nil {
-			sum := sha256.Sum256(data)
-			kernelBTFDigestValue = hex.EncodeToString(sum[:])
-		}
-	})
-	return kernelBTFDigestValue, kernelBTFDigestErr
+	kernelBTFDigestMu.Lock()
+	defer kernelBTFDigestMu.Unlock()
+	if kernelBTFDigestValue != "" {
+		return kernelBTFDigestValue, nil
+	}
+	data, err := kernelBTFRead()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	kernelBTFDigestValue = hex.EncodeToString(sum[:])
+	return kernelBTFDigestValue, nil
 }
 
 // readSysfsBTF reads a kernel BTF file, refusing anything not on sysfs or
 // larger than 128 MiB.
 func readSysfsBTF(path string) ([]byte, error) {
+	return readSysfsFile(path, 128<<20, "kernel BTF")
+}
+
+// readSysfsFile reads a sysfs file of at most limit bytes, refusing anything
+// not on sysfs; what names it in errors.
+func readSysfsFile(path string, limit int64, what string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -279,14 +522,14 @@ func readSysfsBTF(path string) ([]byte, error) {
 		return nil, err
 	}
 	if fs.Type != unix.SYSFS_MAGIC {
-		return nil, fmt.Errorf("kernel BTF is not on sysfs")
+		return nil, fmt.Errorf("%s is not on sysfs", what)
 	}
-	data, err := io.ReadAll(io.LimitReader(file, 128<<20+1))
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > 128<<20 {
-		return nil, fmt.Errorf("kernel BTF exceeds 128 MiB")
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d bytes", what, limit)
 	}
 	return data, nil
 }

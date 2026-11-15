@@ -1239,27 +1239,35 @@ func TestSharedQualifiedOperatorStartupReadiness(t *testing.T) {
 }
 
 // TestSharedInstantiateSelectsOperatorReadiness: only a qualified node in a
-// qualification build gets startup readiness; every other shared node is the
-// NodeEnforcer itself, whose operator Ready never succeeds.
+// qualification build or a product node in a product build gets startup
+// readiness; every other shared node is the NodeEnforcer itself, whose
+// operator Ready never succeeds.
 func TestSharedInstantiateSelectsOperatorReadiness(t *testing.T) {
 	old := sharedQualificationBuild
 	t.Cleanup(func() { sharedQualificationBuild = old })
 	for _, tc := range []struct {
-		build, qualified, want bool
-	}{{false, false, false}, {false, true, false}, {true, false, false}, {true, true, true}} {
+		build, qualified, product, want bool
+	}{
+		{false, false, false, false},
+		{false, true, false, false},
+		{true, false, false, false},
+		{true, true, false, true},
+		{false, false, true, true},
+		{true, false, true, false},
+	} {
 		sharedQualificationBuild = tc.build
 		n, err := NewNodeEnforcer(sharedQualifiedConfig())
 		if err != nil {
 			t.Fatal(err)
 		}
-		n.host.qualified = tc.qualified
+		n.host.qualified, n.host.product = tc.qualified, tc.product
 		instance := sharedOperatorInstance(n)
 		if _, ok := instance.(sharedQualifiedOperator); ok != tc.want {
-			t.Fatalf("build=%v qualified=%v: qualified operator %v", tc.build, tc.qualified, ok)
+			t.Fatalf("build=%v qualified=%v product=%v: live operator %v", tc.build, tc.qualified, tc.product, ok)
 		}
 		if !tc.want {
 			if r, ok := instance.(operators.Readiness); !ok || r.Ready(nil) == nil {
-				t.Fatalf("build=%v qualified=%v: operator readiness must fail", tc.build, tc.qualified)
+				t.Fatalf("build=%v qualified=%v product=%v: operator readiness must fail", tc.build, tc.qualified, tc.product)
 			}
 		}
 	}

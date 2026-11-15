@@ -4,6 +4,8 @@
 package ebpfoperator
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -13,6 +15,22 @@ import (
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
+
+// recordNativeProgramDigest sets operators.NativeProgramDigestKey to the
+// sha256 of program for a native owner (NativeOwnerRequiredKey true) only.
+// Native ownership supports one eBPF layer: a second one invalidates the
+// digest (sticky ""), so it never names only part of the image.
+func recordNativeProgramDigest(gc operators.GadgetContext, program []byte) {
+	if owner, _ := gc.GetVar(operators.NativeOwnerRequiredKey); owner != true {
+		return
+	}
+	if _, exists := gc.GetVar(operators.NativeProgramDigestKey); exists {
+		gc.SetVar(operators.NativeProgramDigestKey, "")
+		return
+	}
+	sum := sha256.Sum256(program)
+	gc.SetVar(operators.NativeProgramDigestKey, hex.EncodeToString(sum[:]))
+}
 
 func (i *ebpfInstance) publishNativeResources(gc operators.GadgetContext) {
 	if _, exists := gc.GetVar(operators.NativeResourcesKey); exists {

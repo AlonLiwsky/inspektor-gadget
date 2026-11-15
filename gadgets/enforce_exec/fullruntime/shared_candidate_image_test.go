@@ -62,11 +62,12 @@ char LICENSE[] SEC("license") = "GPL";
 func TestBuildSharedCandidateImage(t *testing.T) {
 	elf := sharedMinimalObject(t)
 	var release string
-	for _, r := range sharedCandidateKernelBTF {
-		release = r
+	var pin sharedProductPin
+	for _, p := range sharedProductPins {
+		release, pin = p.Release, p
 		break
 	}
-	kernel := KernelMatrixEntry{Release: release, OuterSymbol: "do_execveat_common.isra.0", HandlerSymbol: "exec_binprm", Profile: sharedCandidateQualificationProfile()}
+	kernel := KernelMatrixEntry{Release: release, OuterSymbol: pin.OuterSymbol, HandlerSymbol: pin.HandlerSymbol, Profile: sharedCandidateQualificationProfile()}
 	store := memory.New()
 	ref, err := BuildSharedCandidateImage(t.Context(), store, elf, kernel)
 	if err != nil || ref != SharedCandidateImage {
@@ -160,10 +161,27 @@ func TestBuildSharedCandidateImage(t *testing.T) {
 	for name, bad := range map[string]KernelMatrixEntry{
 		"outside the matrix": {Release: "6.1.0-generic", OuterSymbol: "a", HandlerSymbol: "b", Profile: kernel.Profile},
 		"no symbols":         {Release: release, Profile: kernel.Profile},
-		"invalid profile":    {Release: release, OuterSymbol: "a", HandlerSymbol: "b"},
+		"invalid profile":    {Release: release, OuterSymbol: pin.OuterSymbol, HandlerSymbol: pin.HandlerSymbol},
+		"unpinned outer":     {Release: release, OuterSymbol: "do_execveat_common.isra.38", HandlerSymbol: pin.HandlerSymbol, Profile: kernel.Profile},
+		"unpinned handler":   {Release: release, OuterSymbol: pin.OuterSymbol, HandlerSymbol: "a", Profile: kernel.Profile},
 	} {
 		if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), elf, bad); err == nil {
 			t.Fatalf("%s: built", name)
+		}
+	}
+	// Every pin builds with its own symbols and refuses the other kernel's.
+	for _, own := range sharedProductPins {
+		for _, other := range sharedProductPins {
+			entry := KernelMatrixEntry{Release: own.Release, OuterSymbol: other.OuterSymbol, HandlerSymbol: other.HandlerSymbol, Profile: kernel.Profile}
+			_, err := BuildSharedCandidateImage(t.Context(), memory.New(), elf, entry)
+			if want := own.HandlerSymbol == other.HandlerSymbol && own.OuterSymbol == other.OuterSymbol; (err == nil) != want {
+				t.Fatalf("%s with %s/%s: %v", own.Release, other.OuterSymbol, other.HandlerSymbol, err)
+			}
+			// A diagnostic twin may select another handler source.
+			entry.Diagnostic = true
+			if err := entry.validate(); err != nil {
+				t.Fatalf("diagnostic %s with %s/%s: %v", own.Release, other.OuterSymbol, other.HandlerSymbol, err)
+			}
 		}
 	}
 	if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), []byte("not an ELF"), kernel); err == nil || !strings.Contains(err.Error(), "candidate object") {

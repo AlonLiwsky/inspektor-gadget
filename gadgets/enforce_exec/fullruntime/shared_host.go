@@ -44,7 +44,11 @@ type sharedHostState struct {
 	// qualified is set only by startQualifiedSharedNode (qualification build
 	// plus explicit opt-in). It admits the candidate attach set, nothing else.
 	qualified bool
-	live      *sharedLiveCandidate
+	// product is set only by startProductSharedNode (product build, pinned
+	// kernel, WithSharedNodeHost): the live path with the exact product
+	// manifest and the product Ready semantics.
+	product bool
+	live    *sharedLiveCandidate
 	// started receives the qualified startup result once: Start's error, or
 	// the operator Readiness result (sharedQualifiedOperator.Ready), which
 	// the gadget context evaluates right before it publishes the gadget as
@@ -91,6 +95,13 @@ type sharedHostState struct {
 	// strictRefused is why Strict publication is refused on this node
 	// (design 13.8: the agent is not in the initial pid/time namespaces).
 	strictRefused error
+}
+
+// liveHost reports whether the node runs the live collection path: a
+// qualified node in a qualification build, or a product node in a product
+// build (mutual exclusion: never both).
+func (h *sharedHostState) liveHost() bool {
+	return h != nil && ((h.qualified && sharedQualificationBuild) || (h.product && !sharedQualificationBuild))
 }
 
 // sharedLiveCandidate is the one node-wide candidate collection, owned by the
@@ -365,7 +376,15 @@ func validateSharedProductConstants(resources *operators.NativeResources) error 
 	return nil
 }
 
-func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources) error {
+func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources) (err error) {
+	if n.host != nil && n.host.product {
+		// Every product refusal is typed (fail closed with the reason).
+		defer func() {
+			if err != nil && !errors.Is(err, ErrSharedNativeUnavailable) {
+				err = fmt.Errorf("shared product image refused: %w: %w", err, ErrSharedNativeUnavailable)
+			}
+		}()
+	}
 	// Product admission (every path but the tagged qualification one)
 	// refuses diagnostic-twin maps by name before any allowlist.
 	if n.host == nil || !n.host.qualified || !sharedQualificationBuild {
@@ -379,9 +398,10 @@ func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources
 		}
 		return fmt.Errorf("recovered native supervisor and link retention are not implemented: %w", ErrSharedNativeUnavailable)
 	}
-	// Set only by startQualifiedSharedNode in a qualification build.
-	qualified := n.host != nil && n.host.qualified && sharedQualificationBuild
-	if hasSharedOpaqueTaskMaps(resources) && !qualified {
+	// Set only by startQualifiedSharedNode in a qualification build, or by
+	// startProductSharedNode in a product build.
+	live := n.host.liveHost()
+	if hasSharedOpaqueTaskMaps(resources) && !live {
 		var err error
 		if _, hasWork := resources.Maps["se_opaque_work_accounts"]; hasWork {
 			_, err = validateSharedOpaqueOwnerResources(n.config.Profile, resources)
@@ -393,8 +413,16 @@ func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources
 		}
 		return fmt.Errorf("opaque TASK/WORK product hooks and source cleanup are incomplete: %w", ErrSharedNativeUnavailable)
 	}
-	if qualified {
-		// Qualification only: the product validators above refuse this image.
+	if live {
+		if n.host.product {
+			// The exact generated product name sets (no diagnostic,
+			// recovery or test resource, every command).
+			if err := validateSharedProductManifest(resources); err != nil {
+				return err
+			}
+		}
+		// The live candidate validators; the product validators above
+		// refuse this image.
 		if err := validateSharedCandidateGeometry(n.config.Profile, resources); err != nil {
 			return err
 		}
@@ -406,7 +434,7 @@ func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources
 		// attach), so the hooks it arms can reach a verdict, and never with
 		// a userspace-writable test gate (its hooks are armed only by the
 		// authenticated configuration).
-		if sharedHasProductCommands(resources) {
+		if n.host.product || sharedHasProductCommands(resources) {
 			if err := validateSharedProductNoTestGate(resources); err != nil {
 				return err
 			}
@@ -466,9 +494,104 @@ func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources
 	return nil
 }
 
-func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, node *NodeEnforcer) (operators.DataOperatorInstance, error) {
+// validateSharedProductManifest requires the exact generated product name
+// sets (shared_product_manifest.go): every map and program of the product
+// object, nothing more, nothing less.
+func validateSharedProductManifest(resources *operators.NativeResources) error {
+	if resources == nil {
+		return fmt.Errorf("missing native resources")
+	}
+	if got := slices.Sorted(maps.Keys(resources.Maps)); !slices.Equal(got, sharedProductManifestMaps) {
+		return fmt.Errorf("map set differs from the product manifest: extra %v, missing %v", sharedSetDiff(got, sharedProductManifestMaps), sharedSetDiff(sharedProductManifestMaps, got))
+	}
+	if got := slices.Sorted(maps.Keys(resources.Programs)); !slices.Equal(got, sharedProductManifestPrograms) {
+		return fmt.Errorf("program set differs from the product manifest: extra %v, missing %v", sharedSetDiff(got, sharedProductManifestPrograms), sharedSetDiff(sharedProductManifestPrograms, got))
+	}
+	return nil
+}
+
+// sharedSetDiff is a minus b, both sorted.
+func sharedSetDiff(a, b []string) []string {
+	var out []string
+	for _, v := range a {
+		if _, found := slices.BinarySearch(b, v); !found {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// sharedProductFailureTargets maps each failure-frame kprobe to whether it
+// takes the outer (true) or the handler (false) symbol of the pin.
+var sharedProductFailureTargets = map[string]bool{
+	"opaque_real_owner_failure_outer_enter":   true,
+	"opaque_real_owner_failure_outer_exit":    true,
+	"opaque_real_owner_failure_handler_enter": false,
+	"opaque_real_owner_failure_handler_exit":  false,
+}
+
+// admitSharedProductImage binds the product image to the running pinned
+// kernel build: the kernel gate (re-run here, at instantiation); every
+// probe program's effective target (resources, after any attach_to
+// override) is its section's target, the failure-frame ones the pin's
+// symbols (also in the image metadata); and the loaded eBPF object's sha256
+// (operators.NativeProgramDigestKey) is one of the pin's product objects.
+// Every refusal wraps ErrSharedNativeUnavailable.
+func admitSharedProductImage(gc operators.GadgetContext, metadata *viper.Viper, resources *operators.NativeResources) error {
+	_, pin, err := sharedProductKernelCheck()
+	if err != nil {
+		return err
+	}
+	refuse := func(cause error) error {
+		return fmt.Errorf("shared product image refused on %s: %w: %w", pin.Release, cause, ErrSharedNativeUnavailable)
+	}
+	for name, outer := range sharedProductFailureTargets {
+		want := pin.HandlerSymbol
+		if outer {
+			want = pin.OuterSymbol
+		}
+		if got := metadata.GetString("programs." + name + ".attach_to"); got != want {
+			return refuse(fmt.Errorf("failure-frame %s attaches to %q, the kernel pins %q", name, got, want))
+		}
+	}
+	if resources == nil {
+		return refuse(fmt.Errorf("missing native resources"))
+	}
+	for name, section := range sharedCandidateProbeSet {
+		_, want, _ := strings.Cut(section, "/")
+		if outer, failure := sharedProductFailureTargets[name]; failure {
+			want = pin.HandlerSymbol
+			if outer {
+				want = pin.OuterSymbol
+			}
+		}
+		program, ok := resources.Programs[name]
+		if !ok || program.Target != want {
+			return refuse(fmt.Errorf("probe %s targets %q, want %q", name, program.Target, want))
+		}
+	}
+	value, _ := gc.GetVar(operators.NativeProgramDigestKey)
+	digest, _ := value.(string)
+	if digest == "" {
+		return refuse(fmt.Errorf("eBPF object digest unavailable"))
+	}
+	if _, ok := pin.ProductELF[digest]; !ok {
+		return refuse(fmt.Errorf("eBPF object sha256 %s is not a qualified product object", digest))
+	}
+	return nil
+}
+
+func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, node *NodeEnforcer) (_ operators.DataOperatorInstance, err error) {
 	if node == nil || node.host == nil || metadata == nil {
 		return nil, fmt.Errorf("shared image requires its host-owned native node")
+	}
+	if node.host.product {
+		// Every product refusal is typed (fail closed with the reason).
+		defer func() {
+			if err != nil && !errors.Is(err, ErrSharedNativeUnavailable) {
+				err = fmt.Errorf("shared product image refused: %w: %w", err, ErrSharedNativeUnavailable)
+			}
+		}()
 	}
 	if owner, _ := gc.GetVar(ownerKey); owner != nil {
 		return nil, fmt.Errorf("shared and per-binding owner options are mutually exclusive")
@@ -494,17 +617,27 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 	}
 	value, _ := gc.GetVar(operators.NativeResourcesKey)
 	resources, _ := value.(*operators.NativeResources)
+	// The product node binds the kernel and the image first (pinned build,
+	// every probe target, the object bytes), before any resource admission.
+	if node.host.product {
+		if err = admitSharedProductImage(gc, metadata, resources); err != nil {
+			return nil, err
+		}
+	}
 	if err = node.admitSharedResources(resources); err != nil {
 		return nil, err
 	}
-	// The qualified candidate runs on its own exact kernel matrix; every
-	// other shared image keeps the persistent-owner matrix.
-	verifyKernel := verifySupportedKernel
-	if node.host.qualified && sharedQualificationBuild {
-		verifyKernel = verifySharedCandidateKernel
-	}
-	if err = verifyKernel(); err != nil {
-		return nil, err
+	// The qualified candidate runs on its own exact kernel matrix (the
+	// product node was checked above); every other shared image keeps the
+	// persistent-owner matrix.
+	if !node.host.product {
+		verifyKernel := verifySupportedKernel
+		if node.host.qualified && sharedQualificationBuild {
+			verifyKernel = verifySharedCandidateKernel
+		}
+		if err = verifyKernel(); err != nil {
+			return nil, err
+		}
 	}
 	node.mu.Lock()
 	defer node.mu.Unlock()
@@ -517,22 +650,25 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 }
 
 // sharedOperatorInstance is the operator instance of a claimed shared node:
-// sharedQualifiedOperator only for a qualified node in a qualification build.
+// sharedQualifiedOperator only for a live node (a qualified node in a
+// qualification build, or a product node).
 func sharedOperatorInstance(node *NodeEnforcer) operators.DataOperatorInstance {
-	if node.host.qualified && sharedQualificationBuild {
+	if node.host.liveHost() {
 		return sharedQualifiedOperator{node}
 	}
 	return node
 }
 
-// sharedQualifiedOperator is the qualified candidate's operator instance. The
-// gadget context stops a gadget whose operator Readiness fails right after
-// Start; NodeEnforcer.Ready always fails (no policy is ever Ready), so the
-// host gadget, and with it the live collection, would be torn down before
-// any Bind. Its operator readiness is therefore startup readiness only: the
-// live candidate exists and every receipt, the product reaper and credit at
-// exit are healthy. Enforcement readiness stays NodeEnforcer.Ready
-// (ErrSharedNativeUnavailable). Qualification builds only.
+// sharedQualifiedOperator is the live node's operator instance (qualified
+// or product; the name predates the product node). The gadget context stops
+// a gadget whose operator Readiness fails right after Start, while
+// NodeEnforcer.Ready fails until the node is enforcing (a qualified node
+// never is; a product node may be Ready with zero bindings but still fails
+// on, e.g., a refused Strict namespace), so the host gadget, and with it the
+// live collection, would be torn down before any Bind. Its operator
+// readiness is therefore startup readiness only: the live candidate exists
+// and every receipt, the product reaper and credit at exit are healthy.
+// Enforcement readiness stays NodeEnforcer.Ready.
 type sharedQualifiedOperator struct{ *NodeEnforcer }
 
 func (o sharedQualifiedOperator) Ready(gc operators.GadgetContext) error {
@@ -540,13 +676,22 @@ func (o sharedQualifiedOperator) Ready(gc operators.GadgetContext) error {
 	n.mu.Lock()
 	var err error
 	var health sharedLiveHealth
+	var product bool
+	var strictRefused error
 	if n.host == nil || n.host.context != gc || n.host.live == nil || n.closing || n.closed {
 		err = fmt.Errorf("shared candidate startup incomplete")
 	} else {
 		health = n.liveHealthLocked()
+		product, strictRefused = n.host.product, n.host.strictRefused
 	}
 	n.mu.Unlock()
-	if err == nil {
+	switch {
+	case err != nil:
+	case product:
+		// Product startup: the NotReady inputs, the Strict namespace and
+		// the kernel controls only; Degraded never fails startup.
+		err = sharedProductReady(health, strictRefused)
+	default:
 		err = health.check()
 	}
 	// StartNode reports success only after this gate, right before the gadget
@@ -594,7 +739,7 @@ func (n *NodeEnforcer) Start(gc operators.GadgetContext) error {
 	admitted := n.host.admitted
 	n.mu.Unlock()
 	defer func() { cancel(); n.mu.Lock(); n.host.startup = sharedStartupOperation{}; close(done); n.mu.Unlock() }()
-	if n.host.qualified {
+	if n.host.qualified || n.host.product {
 		err := n.startLiveCandidate(gc, admitted)
 		if err != nil {
 			// Success is signalled by the operator Readiness, not here.
@@ -651,16 +796,57 @@ func (n *NodeEnforcer) Ready(gc operators.GadgetContext) error {
 		return fmt.Errorf("shared host startup incomplete")
 	}
 	if n.host.live != nil {
-		// A live qualification collection still has no published policy.
 		// Receipt and witness reads run outside n.mu.
 		health := n.liveHealthLocked()
+		product, strictRefused := n.host.product, n.host.strictRefused
 		n.mu.Unlock()
+		if product {
+			return sharedProductReady(health, strictRefused)
+		}
+		// A live qualification collection still has no published policy.
 		return errors.Join(ErrSharedNativeUnavailable, health.check(), n.adoptionDegraded(), n.revisionDegraded(), n.verdictLossDegraded(), n.overlayDegraded())
 	}
 	n.mu.Unlock()
 	// Routing, union evaluator adaptation, qualified history publication and
 	// required attachment receipts are not integrated. Never advertise protection.
 	return ErrSharedNativeUnavailable
+}
+
+// sharedProductReady is a live product node's Ready (plan Q3, Q6, F2, F5):
+// nil, also with zero bindings, unless a NotReady health input fails, Strict
+// publication is refused (the agent is outside the initial pid/time
+// namespaces) or a kernel control re-read now fails (ftrace off,
+// livepatch). Every failure wraps ErrSharedNodeNotReady. Degraded inputs
+// never fail it (NodeEnforcer.Degraded).
+func sharedProductReady(health sharedLiveHealth, strictRefused error) error {
+	notReady, _ := health.checks()
+	if strictRefused != nil {
+		notReady = append(notReady, fmt.Errorf("strict publication refused: %w", strictRefused))
+	}
+	if err := checkSharedProductKernelRuntime(sharedProductKernelProbes); err != nil {
+		notReady = append(notReady, err)
+	}
+	if len(notReady) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrSharedNodeNotReady, errors.Join(notReady...))
+}
+
+// Degraded joins the live node's Degraded conditions (nil: none): a
+// fail-closed Degraded window, the image ledger (G020 ruling), a refused
+// adoption, a revision report, verdict loss and the overlay layout. It
+// never makes Ready fail. A node that is not live reports startup
+// incomplete.
+func (n *NodeEnforcer) Degraded(gc operators.GadgetContext) error {
+	n.mu.Lock()
+	if n.host == nil || n.host.context != gc || n.host.live == nil || n.closing || n.closed {
+		n.mu.Unlock()
+		return fmt.Errorf("shared host startup incomplete")
+	}
+	health := n.liveHealthLocked()
+	n.mu.Unlock()
+	_, degraded := health.checks()
+	return errors.Join(append(degraded, n.adoptionDegraded(), n.revisionDegraded(), n.verdictLossDegraded(), n.overlayDegraded())...)
 }
 
 // BeforeStop must precede host StopGadget. It joins native commands; it neither
@@ -1289,41 +1475,63 @@ func (n *NodeEnforcer) liveHealthLocked() sharedLiveHealth {
 	return h
 }
 
+// check joins every health input (qualified Ready and startup readiness).
 func (h sharedLiveHealth) check() error {
 	if h.unavailable {
 		return ErrSharedNativeUnavailable
 	}
-	var result error
+	notReady, degraded := h.checks()
+	return errors.Join(append(notReady, degraded...)...)
+}
+
+// checks reads every health input once and routes each failure (unwrapped)
+// for the product node: notReady are stopped health, the attach receipts,
+// the product reaper, the credit-at-exit, exec-capsule, birth-park and fact
+// witnesses and a fail-closed NotReady or Unknown; degraded are a
+// fail-closed Degraded window and the image ledger.
+func (h sharedLiveHealth) checks() (notReady, degraded []error) {
+	if h.unavailable {
+		return []error{ErrSharedNativeUnavailable}, nil
+	}
+	add := func(list *[]error, err error) {
+		if err != nil {
+			*list = append(*list, err)
+		}
+	}
 	if h.stopped {
-		result = fmt.Errorf("shared candidate health monitoring stopped (node stopping)")
+		add(&notReady, fmt.Errorf("shared candidate health monitoring stopped (node stopping)"))
 	}
 	for _, receipt := range h.receipts {
-		result = errors.Join(result, receipt.Check())
+		add(&notReady, receipt.Check())
 	}
 	if h.reaper != nil {
-		result = errors.Join(result, h.reaper.fault())
+		add(&notReady, h.reaper.fault())
 	}
 	if h.exit != nil {
-		result = errors.Join(result, h.exit.check())
+		add(&notReady, h.exit.check())
 	}
 	if h.capsule != nil {
-		result = errors.Join(result, h.capsule.check())
+		add(&notReady, h.capsule.check())
 	}
 	if h.birthPark != nil {
-		result = errors.Join(result, h.birthPark.check())
+		add(&notReady, h.birthPark.check())
 	}
 	if h.facts != nil {
-		result = errors.Join(result, h.facts.check())
+		add(&notReady, h.facts.check())
 	}
 	if h.failClosed != nil {
-		result = errors.Join(result, h.failClosed.check())
+		if err := h.failClosed.check(); errors.Is(err, ErrSharedFailClosedNotReady) {
+			add(&notReady, err)
+		} else {
+			add(&degraded, err)
+		}
 	}
 	// G020: any image ledger vs kernel count mismatch, or an UNCERTAIN or
-	// failed exact delete, is Degraded.
+	// failed exact delete, is Degraded (not reversed for the product node).
 	if h.image != nil {
-		result = errors.Join(result, h.image.imageHealth())
+		add(&degraded, h.image.imageHealth())
 	}
-	return result
+	return notReady, degraded
 }
 
 // reserveLiveRoute gives a bound account one route slot of the node
@@ -1350,12 +1558,27 @@ func (n *NodeEnforcer) reserveLiveRoute(a *sharedPhysicalScope) error {
 // through the host's gadget context. Reached only from a qualification build
 // with an explicit WithSharedNodeQualification opt-in.
 func startQualifiedSharedNode(ctx context.Context, config SharedNodeConfig, q SharedNodeQualification) (*NodeEnforcer, error) {
+	return startLiveSharedNode(ctx, config, q.Run, q, false)
+}
+
+// startProductSharedNode loads the shared product collection once per node
+// through the host's gadget context, with no seam. Reached only from a
+// product build with WithSharedNodeHost, after the kernel gate.
+func startProductSharedNode(ctx context.Context, config SharedNodeConfig, h SharedNodeHost) (*NodeEnforcer, error) {
+	return startLiveSharedNode(ctx, config, h.Run, SharedNodeQualification{}, true)
+}
+
+// startLiveSharedNode is the shared body of the qualified and the product
+// start: seams is the qualification seam set (empty for product).
+func startLiveSharedNode(ctx context.Context, config SharedNodeConfig, run func(context.Context, gadgetcontext.Option) (func(context.Context) error, <-chan error, error), seams SharedNodeQualification, product bool) (*NodeEnforcer, error) {
 	n, err := NewNodeEnforcer(config)
 	if err != nil {
 		return nil, err
 	}
+	q := seams
 	started := make(chan error, 1)
-	n.host.qualified, n.host.started, n.host.newPublisher, n.host.newReaper, n.host.exitCredit = true, started, q.Publisher, q.newReaper, q.exitCredit
+	n.host.qualified, n.host.product = !product, product
+	n.host.started, n.host.newPublisher, n.host.newReaper, n.host.exitCredit = started, q.Publisher, q.newReaper, q.exitCredit
 	n.host.capsuleStats = q.capsuleStats
 	n.host.birthParkStats = q.birthParkStats
 	n.host.factStats = q.factStats
@@ -1364,7 +1587,7 @@ func startQualifiedSharedNode(ctx context.Context, config SharedNodeConfig, q Sh
 	n.host.verdictCounters, n.host.verdictClock = q.verdictCounters, q.verdictClock
 	n.host.imageSource = q.imageSource
 	n.host.strictRefused = sharedNamespaceCheck()
-	stop, done, err := q.Run(ctx, WithNodeEnforcer(n))
+	stop, done, err := run(ctx, WithNodeEnforcer(n))
 	if stop == nil {
 		return nil, errors.Join(err, fmt.Errorf("missing shared candidate host teardown"))
 	}

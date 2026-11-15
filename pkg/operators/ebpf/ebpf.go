@@ -117,6 +117,8 @@ func (o *ebpfOperator) InstantiateImageOperator(
 	}
 	r.Close()
 
+	recordNativeProgramDigest(gadgetCtx, program)
+
 	// TODO: do some pre-checks in here, maybe validate hashes, signatures, etc.
 
 	newInstance := &ebpfInstance{

@@ -73,6 +73,15 @@ func (k KernelMatrixEntry) validate() error {
 	if k.OuterSymbol == "" || k.HandlerSymbol == "" {
 		return fmt.Errorf("kernel %s: failure-frame symbols required", k.Release)
 	}
+	// A product (non-diagnostic) image carries exactly the pinned build's
+	// failure-frame symbols, which the product node also requires.
+	if !k.Diagnostic {
+		for _, pin := range sharedProductPins {
+			if pin.Release == k.Release && (k.OuterSymbol != pin.OuterSymbol || k.HandlerSymbol != pin.HandlerSymbol) {
+				return fmt.Errorf("kernel %s: failure-frame symbols %s/%s, the pin is %s/%s", k.Release, k.OuterSymbol, k.HandlerSymbol, pin.OuterSymbol, pin.HandlerSymbol)
+			}
+		}
+	}
 	_, err := k.Profile.Validate()
 	return err
 }

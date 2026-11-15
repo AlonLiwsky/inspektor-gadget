@@ -30,11 +30,38 @@ replacement.
 
 ## Shared-node implementation status and API contracts
 
-`NodeEnforcer.Ready` **never reports Ready**: it returns a startup error when the
-host is absent, mismatched, incomplete or closing/closed, and otherwise returns
-`ErrSharedNativeUnavailable`. Routing, union evaluator adaptation, qualified
-history publication and required attachment receipts are not integrated.
-Protocol preparation and Go tests do not establish protected workloads.
+`NodeEnforcer.Ready` depends on how the node was started:
+
+- **Product node** (`WithSharedNodeHost`, a build without the
+  `enforce_exec_shared_qualification` tag): `StartNode` admits only the exact
+  pinned kernel builds and their pinned product objects (see
+  [Shared engine: supported kernels](#shared-engine-supported-kernels)) and
+  refuses everything else with `ErrSharedNativeUnavailable` and the reason.
+  `Ready` returns nil, also with zero bindings, unless an attach receipt, the
+  product reaper, a witness (credit at exit, exec capsule, birth park, facts),
+  a fail-closed NotReady or Unknown, stopped health, a refused Strict namespace
+  (the agent is outside the initial pid/time namespaces) or a kernel control
+  re-read at each call (ftrace off, livepatch) fails it; every such error wraps
+  `ErrSharedNodeNotReady`. The same NotReady inputs also gate product startup:
+  a product node whose agent is outside the initial pid/time namespaces does
+  not start at all (no Strict and no Audit bindings), rather than starting
+  NotReady. `NodeEnforcer.Degraded` reports the Degraded inputs
+  (fail-closed Degraded window, image ledger, refused adoption, revision
+  reports, verdict loss, overlay layout); they never fail `Ready`. A binding is
+  protected only if node `Ready` is nil and
+  `SharedBindingStatus.Protected(committedGeneration)` is nil: not removed, no
+  `Fault`, `Attached`, `RoutePublished` and not `WithdrawPending`, the
+  committed `Generation`, and no refused adoption.
+- **Qualification node** (`WithSharedNodeQualification`, tag only) and every
+  other node: `Ready` **never reports Ready**. It returns a startup error when
+  the host is absent, mismatched, incomplete or closing/closed, and otherwise
+  returns `ErrSharedNativeUnavailable`. On the protocol-only path, routing,
+  union evaluator adaptation, qualified history publication and required
+  attachment receipts are not integrated, and protocol preparation and Go tests
+  do not establish protected workloads.
+
+The two start paths are mutually exclusive: a qualification build refuses
+`WithSharedNodeHost`, and a product build ignores the qualification seam.
 `se_publication_arm` is the only shared commit/withdrawal producer, and only from
 an authenticated `cgroup_kn_lock_live` barrier. A syscall receipt is not that
 producer. `se_arm_frame` is per-CPU scratch, not epoch authority. Shared exec
@@ -158,6 +185,114 @@ signed-image digest verification remains the external release/deployment trust
 requirement; these tools do not establish it, and hashes alone are not
 authentication. No positive descriptor or Ready state follows from these local
 tools or their tests.
+
+## Shared engine: supported kernels
+
+### Statement
+
+The shared engine (product node) enforces only on the same kernel builds that
+were qualified:
+
+| Release | vmlinux BTF sha256 | GNU build-id | Failure-frame symbols |
+|---|---|---|---|
+| `6.12.113-138.209.amzn2023.x86_64` | `0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82` | `1d135d67e6d0ea8f77d60a2984915eadd28a5fcf` | `do_execveat_common.isra.0`, `search_binary_handler` |
+| `6.18.56-125.164.amzn2023.x86_64` | `d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee` | `884ed4548406a1461ac5fb658c0dffdd87f1b3b2` | `do_execveat_common.isra.0`, `exec_binprm` |
+
+Sources: the build-ids come from the vmlinux of the AL2023 repo kernel RPMs
+(the same packages the qualified AMIs carry); they are not yet confirmed on a
+live boot, and pass 2 preflight will confirm them from `/sys/kernel/notes`. The handler symbols come from the pass-1
+runner. The outer symbol `do_execveat_common.isra.0` has a single source,
+the 2026-11-09 preflight on the same AMIs (pass 1 resolved it from
+`/proc/kallsyms` without logging it); pass 2 logs the resolved symbol.
+
+These builds ship in these AMI releases (the AMI IDs are the ones the
+qualification runs used; IDs differ per region, the release names do not):
+
+- plain AL2023 `al2023-ami-2023.12.20261026.1-kernel-6.12-x86_64`
+  (`ami-0e8550404ae6ca4c6`) and `al2023-ami-2023.12.20261102.0-kernel-6.18-x86_64`
+  (`ami-0516089d963059a51`): qualified (G011 pass 1, with the qualification
+  build); product-build Ready on these AMIs is pending pass 2;
+- EKS-optimized `amazon-eks-node-al2023-x86_64-standard-1.35-v20261031`
+  (`ami-0c50b8c0d6d72c152`, 6.12) and
+  `amazon-eks-node-al2023-x86_64-standard-1.36-v20261031`
+  (`ami-07ef7f0d9b6d0f123`, 6.18): the same kernel builds as qualified (the
+  same BTF was recorded on both; the agent still checks the build-id and
+  release at start). **EKS product Ready is pending pass 2b**
+  (default-build node-agent on these AMIs) until that pass succeeds.
+
+Identity is the BTF sha256 **and** the GNU build-id (`/sys/kernel/notes`)
+**and** the release (`uname -r`); the BTF alone does not identify a build. The
+node also requires x86_64, `bpf` in the active LSM list, `ftrace_enabled=1` and
+no livepatch (`TAINT_LIVEPATCH` clear). Ftrace and livepatch are re-read at
+every `Ready`. The image is bound to the build as well: its failure-frame
+`attach_to` targets must equal the pinned symbols and the loaded eBPF object's
+sha256 (recorded by the eBPF operator for native owners,
+`operators.NativeProgramDigestKey`) must be one of the pinned product objects
+(`g19pkg64/128/256/512` of that kernel). Every other kernel or image is refused
+at agent start (`StartNode`, `SelectSharedProductImage`) with an error that
+wraps `ErrSharedNativeUnavailable` and names the reason. The pins live in
+`kernel_matrix.go` (`sharedProductPins`) and `testdata/shared_product_pins.tsv`.
+
+### Why an allowlist
+
+CO-RE relocates field offsets but cannot verify:
+
+- hook semantics and ordering across the exec paths;
+- the kprobe failure-frame symbols (`do_execveat_common.isra.N`, the handler);
+- verifier acceptance of the 16-link, spin-lock object;
+- exec-path behaviour changed by AL2023 backports under the same version
+  string.
+
+The costs are asymmetric. On an unproven kernel, Strict either fails closed
+node-wide (an exec outage) or silently misses an exec path while reporting
+Ready. A reported refusal is better than either.
+
+### Support window and AMI pinning
+
+The rule, not a calendar date: support covers exactly the builds above.
+Nodes must stay on them. Pin the AMI releases listed above: no in-place
+`dnf` kernel update, no automatic node AMI upgrade, no livepatch. A node that
+moves to any other kernel build, newer or not, is refused until that build is
+qualified and pinned in a new IG release. Support for a node ends when its
+operator moves it to another AMI or kernel.
+
+### Operational facts and unproven items
+
+- An agent crash or restart leaves enforcement **off until the agent is
+  restarted**: the in-kernel state dies with the agent's BPF objects. The gap
+  is reported as Ready False.
+- **Unproven:** SELinux enforcing (the qualification ran Permissive);
+  lockdown modes other than none; other BPF users beyond the synthetic
+  coexistence tests; unsigned or out-of-tree kernel modules; arm64; any other
+  AMI.
+- Argv predicates are refused (D1). The AT_EXECVE_CHECK and RETIRING residuals
+  (D3/D4) and the migration-out residual (`MigrationOutUnenforced`) apply.
+
+### Future work (not implemented)
+
+1. **Startup self-test on an unlisted kernel:** load, probe execs, check hook
+   firing and ordering, then enable.
+   - Pro: broad coverage.
+   - Cons: proves only the exercised paths (races, binfmt_misc, ptrace and rare
+     paths stay unproven); needs a test cgroup on production nodes; adds startup
+     latency; a false pass is a silent bypass.
+2. **Audit-first, promoted to Strict after a clean period.**
+   - Pro: no outage risk; reuses the fail-closed witness thresholds.
+   - Cons: missed hooks look clean; the clean period is arbitrary; no protection
+     meanwhile; promotion needs an operator.
+3. **Targeted BTF matching** of the functions and types the object depends on,
+   instead of the whole-vmlinux hash.
+   - Pro: survives unrelated backports.
+   - Cons: types do not prove semantics or call order; the dependency set must
+     be complete and maintained; a gap is a silent bypass.
+4. **Bulk kernel-family qualification** (stock-kernel matrix,
+   kubescape/inspektor-gadget#27).
+   - Pro: today's proof strength.
+   - Cons: about an hour of EC2 per kernel; needs a pipeline that tracks vendor
+     updates; the allowlist lags new AMIs.
+
+The likely combination is (4) for support claims, with (3) and (1) only as a
+pre-check, never as a Ready claim.
 
 The remaining sections describe the **legacy per-binding `Owner` profile**,
 including its lifecycle and historical isolated proofs, not `NodeEnforcer`.
@@ -363,7 +498,9 @@ threshold. Its eleventh counter reports WORK start retry-bound exhaustions
 (`SE_PROFILE_WORK_RETRIES`, default min(16, WORK quota)),
 a subset of those refusals. A live product node polls these counters
 (`shared_fail_closed_health.go`, see the fail-closed runtime section below);
-`Ready` still stays unavailable.
+a qualification node's `Ready` stays unavailable; on a product node a
+fail-closed NotReady or Unknown fails `Ready` (`ErrSharedNodeNotReady`) and a
+Degraded window is reported by `NodeEnforcer.Degraded`.
 
 The G019 M0 classes count the outcomes G025 excluded:
 
@@ -1227,7 +1364,8 @@ other BPF consumer on the node, as the preexisting `file_open` link shows.
   verifies, by link ID, that the link still exists and references the same
   program. A missing or replaced link returns `*nativeattach.ErrNotReady`
   naming the target; a stale Ready is never reported. This is a component
-  check for a future Ready gate: `NodeEnforcer.Ready` stays unavailable.
+  check of the product node's `Ready` (a failed receipt fails it with
+  `ErrSharedNodeNotReady`); a qualification node's `Ready` stays unavailable.
 
 The native data operator verifies live, operator-owned attachment receipts for
 all required hooks, not just image annotations/program FDs. It validates the

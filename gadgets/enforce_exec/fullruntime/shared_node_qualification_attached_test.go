@@ -11,11 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -30,59 +28,6 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf/nativeattach"
 	ocihandler "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/oci-handler"
 )
-
-// sharedM2Lease is a trusted lease over one init process the test spawned in
-// the dedicated cgroup. Test only.
-type sharedM2Lease struct{ proc, cgroup, mount, hostMount *os.File }
-
-func (*sharedM2Lease) Check(context.Context) error    { return nil }
-func (l *sharedM2Lease) InitProc() *os.File           { return l.proc }
-func (l *sharedM2Lease) Cgroup() *os.File             { return l.cgroup }
-func (l *sharedM2Lease) MountNamespace() *os.File     { return l.mount }
-func (l *sharedM2Lease) HostMountNamespace() *os.File { return l.hostMount }
-func (l *sharedM2Lease) Close() error {
-	var result error
-	for _, f := range []*os.File{l.proc, l.cgroup, l.mount, l.hostMount} {
-		if f != nil {
-			result = errors.Join(result, f.Close())
-		}
-	}
-	return result
-}
-
-// startSharedTestInit starts a bound workload's init the way a container
-// runtime does, so the binding scope check (no host mount namespace, no
-// inferred exemption) holds: sleep, cloned directly into cgroup (CgroupFD)
-// with its own private mount namespace (CLONE_NEWNS; Go remounts / private
-// before exec). InitHostPID is this child. Killed and reaped at test end.
-func startSharedTestInit(t *testing.T, cgroup, name string, seconds int) *exec.Cmd {
-	t.Helper()
-	dir, err := os.Open(cgroup)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dir.Close()
-	cmd := exec.Command("/bin/sleep", strconv.Itoa(seconds))
-	cmd.Args[0] = name
-	cmd.SysProcAttr = &syscall.SysProcAttr{Unshareflags: syscall.CLONE_NEWNS, UseCgroupFD: true, CgroupFD: int(dir.Fd())}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start %s in its own mount namespace and %s: %v", name, cgroup, err)
-	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	pid := cmd.Process.Pid
-	var child, host unix.Stat_t
-	if err := errors.Join(unix.Stat(fmt.Sprintf("/proc/%d/ns/mnt", pid), &child), unix.Stat("/proc/self/ns/mnt", &host)); err != nil {
-		t.Fatal(err)
-	}
-	if child.Ino == host.Ino && child.Dev == host.Dev {
-		t.Fatalf("%s (pid %d) shares the host mount namespace", name, pid)
-	}
-	data, err := os.ReadFile(filepath.Join(cgroup, "cgroup.procs"))
-	if err != nil || !strings.Contains("\n"+string(data), "\n"+strconv.Itoa(pid)+"\n") {
-		t.Fatalf("%s (pid %d) is not in %s: %v", name, pid, cgroup, err)
-	}
-	return cmd
-}
 
 // TestSharedNodeM2Attached (G019 M2) loads the real shared candidate object
 // through StartNode and the host gadget context (OCI image = candidate

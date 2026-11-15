@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -41,24 +42,52 @@ func TestOwnerBuilderKernelMatrixMatchesRuntime(t *testing.T) {
 	}
 }
 
-// TestSharedCandidateKernelMatrixIsSeparate: the shared candidate matrix is
-// exactly the two qualified AL2023 kernels and shares nothing with the
-// persistent-owner matrix in either direction.
+// TestSharedCandidateKernelMatrixIsSeparate: the shared product pins are
+// exactly the two qualified AL2023 kernel builds (every field literal), the
+// candidate matrix is derived from them, and neither shares anything with
+// the persistent-owner matrix in either direction.
 func TestSharedCandidateKernelMatrixIsSeparate(t *testing.T) {
-	if len(sharedCandidateKernelBTF) != 2 {
+	elf := func(sums ...string) map[string]struct{} {
+		out := map[string]struct{}{}
+		for _, s := range sums {
+			out[s] = struct{}{}
+		}
+		return out
+	}
+	want := map[string]sharedProductPin{
+		"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": {
+			Release: "6.12.113-138.209.amzn2023.x86_64", BuildID: "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
+			OuterSymbol: "do_execveat_common.isra.0", HandlerSymbol: "search_binary_handler",
+			ProductELF: elf("2e2b033bde0ece73ac9f95fd7455fcf36be7aa32250f52e527aff4bd86546be9", "b7245ddfbb7bac323921d0583b67295789e9f3f22cd7460e36f9f37b65b10c31",
+				"86f04ecc2f919c91992487c85b7be038feee39cec9dfd99187dcd64bc863e5b3", "16dfb0eaa510d3d5ae9c744d3c8f9023047724f6a2ad253da33629d6a74c3404"),
+		},
+		"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
+			Release: "6.18.56-125.164.amzn2023.x86_64", BuildID: "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
+			OuterSymbol: "do_execveat_common.isra.0", HandlerSymbol: "exec_binprm",
+			ProductELF: elf("1ab606ec132732984cd682438dd2ca6be0e98f6bfa567c263d1263326ee351ce", "142ae885221167eaf258678f508999eb0528447b53355eb5d776ae009b6115ae",
+				"074ce03442631ab34462de5802addb67c3e783109c6de8b9ec55f05091b2d38a", "370f971574941b15fcee31dbeb6d6d2467db189a1618a877d8c4636d5afc940c"),
+		},
+	}
+	if !reflect.DeepEqual(sharedProductPins, want) {
+		t.Fatalf("shared product pins %+v, want %+v", sharedProductPins, want)
+	}
+	if len(sharedCandidateKernelBTF) != len(want) {
 		t.Fatalf("shared candidate matrix %v", sharedCandidateKernelBTF)
 	}
-	for digest, release := range sharedCandidateKernelBTF {
-		if len(digest) != 64 || strings.ToLower(digest) != digest || !strings.HasSuffix(release, ".amzn2023.x86_64") {
-			t.Errorf("malformed entry %q: %q", digest, release)
+	for digest, pin := range want {
+		if sharedCandidateKernelBTF[digest] != pin.Release {
+			t.Errorf("candidate matrix %s = %q, want %q", digest, sharedCandidateKernelBTF[digest], pin.Release)
 		}
 		if supportedKernelBTF(digest) {
-			t.Errorf("shared candidate kernel %s admitted by the persistent-owner matrix", release)
+			t.Errorf("shared candidate kernel %s admitted by the persistent-owner matrix", pin.Release)
 		}
 	}
 	for _, digest := range []string{SupportedKernelBTF, SupportedKubernetesKernelBTF} {
 		if _, ok := sharedCandidateKernelBTF[digest]; ok {
 			t.Errorf("persistent-owner kernel %s in the shared candidate matrix", digest)
+		}
+		if _, ok := sharedProductPins[digest]; ok {
+			t.Errorf("persistent-owner kernel %s in the shared product pins", digest)
 		}
 	}
 }

@@ -21,6 +21,13 @@ import (
 
 var ErrSharedNativeUnavailable = errors.New("shared native collection/publication is not implemented")
 
+// ErrSharedNodeNotReady types every reason a live product node's Ready
+// fails (errors.Is): a missing or changed attach receipt, the product
+// reaper, a witness (credit at exit, exec capsule, birth park, facts), a
+// fail-closed NotReady or Unknown, stopped health, a refused Strict
+// namespace, or a kernel control (ftrace off, livepatch) re-read at Ready.
+var ErrSharedNodeNotReady = errors.New("shared node NotReady")
+
 type SharedNodeConfig struct {
 	Profile             SharedProfile
 	ABI3Development     bool
@@ -132,6 +139,37 @@ type SharedBindingStatus struct {
 	// never a Fault, and it stays set until the gap is closed.
 	MigrationOutUnenforced bool
 	Fault                  error
+}
+
+// Protected reports whether s shows the binding enforced at the generation
+// the caller committed (plan Q6/F4; node Ready is separate and also
+// required): nil only if the binding is not removed, Fault is nil, every
+// receipt is Attached, the route is published and not WithdrawPending, its
+// Generation is generation, and no root-task adoption was refused.
+func (s SharedBindingStatus) Protected(generation uint64) error {
+	var errs []error
+	if s.Removed {
+		errs = append(errs, fmt.Errorf("binding removed"))
+	}
+	if s.Fault != nil {
+		errs = append(errs, s.Fault)
+	}
+	if !s.Attached {
+		errs = append(errs, fmt.Errorf("binding receipts not attached"))
+	}
+	if !s.RoutePublished {
+		errs = append(errs, fmt.Errorf("binding route not published"))
+	}
+	if s.WithdrawPending {
+		errs = append(errs, fmt.Errorf("binding route withdrawal pending"))
+	}
+	if generation == 0 || s.Generation != generation {
+		errs = append(errs, fmt.Errorf("binding route generation %d, committed %d", s.Generation, generation))
+	}
+	if s.Adoption != nil {
+		errs = append(errs, fmt.Errorf("binding root-task adoption refused: %s", s.Adoption.Reason))
+	}
+	return errors.Join(errs...)
 }
 
 // SharedBindingPolicy is one binding's compiled policy for its route slot.
@@ -438,7 +476,8 @@ type SharedNodeQualification struct {
 }
 
 // WithSharedNodeQualification selects the qualification-only candidate
-// StartNode path; product builds ignore it and StartNode stays unavailable.
+// StartNode path; product builds ignore it (only WithSharedNodeHost starts
+// a product node there).
 func WithSharedNodeQualification(ctx context.Context, q SharedNodeQualification) context.Context {
 	return context.WithValue(ctx, sharedQualificationKey{}, q)
 }
@@ -448,17 +487,79 @@ func sharedQualificationFrom(ctx context.Context) (SharedNodeQualification, bool
 	return q, ok && sharedQualificationBuild && q.Run != nil
 }
 
-// StartNode refuses until the real shared collection adapter validates metadata,
-// referenced maps and commands. A development image name is not capability proof.
-// Only a qualification build with WithSharedNodeQualification loads the shared
-// candidate collection; that node still never reports Ready.
+type sharedNodeHostKey struct{}
+
+// SharedNodeHost is the product StartNode host: Run must start the shared
+// product image once through the host's existing manager with opt applied
+// (its one StartGadget call) and return without waiting for the gadget to
+// finish; stop must tear that gadget down and join the manager's detach;
+// done yields the gadget run's result when it ends. It carries nothing else:
+// no publisher override and no test seam.
+type SharedNodeHost struct {
+	Run func(ctx context.Context, opt gadgetcontext.Option) (stop func(context.Context) error, done <-chan error, err error)
+}
+
+// WithSharedNodeHost selects the product StartNode path. StartNode then
+// admits only an exact pinned kernel build (sharedProductPins) and the
+// pinned product image; anything else is refused with
+// ErrSharedNativeUnavailable. A qualification build refuses it.
+func WithSharedNodeHost(ctx context.Context, h SharedNodeHost) context.Context {
+	return context.WithValue(ctx, sharedNodeHostKey{}, h)
+}
+
+func sharedNodeHostFrom(ctx context.Context) (SharedNodeHost, bool) {
+	h, ok := ctx.Value(sharedNodeHostKey{}).(SharedNodeHost)
+	return h, ok && h.Run != nil
+}
+
+// StartNode starts the node-wide shared collection. A qualification build
+// with WithSharedNodeQualification loads the shared candidate collection;
+// that node never reports Ready. Otherwise WithSharedNodeHost loads the
+// product image, only in a product build and only on an exact pinned kernel
+// build (verifySharedProductKernel, checked before the host runs anything).
+// Without either StartNode refuses with ErrSharedNativeUnavailable.
 func StartNode(ctx context.Context, config SharedNodeConfig) (*NodeEnforcer, error) {
 	if q, ok := sharedQualificationFrom(ctx); ok {
 		return startQualifiedSharedNode(ctx, config, q)
 	}
+	if h, ok := sharedNodeHostFrom(ctx); ok {
+		// Mutual exclusion: a qualification binary never reaches the
+		// product path.
+		if sharedQualificationBuild {
+			return nil, fmt.Errorf("shared product node refused: qualification build: %w", ErrSharedNativeUnavailable)
+		}
+		if _, _, err := sharedProductKernelCheck(); err != nil {
+			return nil, err
+		}
+		return startProductSharedNode(ctx, config, h)
+	}
 	return startSharedNode(ctx, config, func(context.Context, SharedNodeConfig, SharedAdmission) (sharedCollection, error) {
 		return nil, ErrSharedNativeUnavailable
 	})
+}
+
+// SelectSharedProductImage selects the agent's product image entry for the
+// running kernel at agent start (node-agent: kernel BTF sha256 -> image,
+// profile, expected manifest digest). It runs the full product kernel gate
+// (verifySharedProductKernel: pinned BTF, release, build-id, bpf LSM,
+// ftrace, no livepatch) and returns the running BTF sha256 and its entry. An
+// empty table, a refused kernel or no entry for the running digest is an
+// error wrapping ErrSharedNativeUnavailable with the reason; there is no
+// fallback entry.
+func SelectSharedProductImage[T any](entries map[string]T) (string, T, error) {
+	var zero T
+	if len(entries) == 0 {
+		return "", zero, fmt.Errorf("shared product image selection: no image entries: %w", ErrSharedNativeUnavailable)
+	}
+	digest, pin, err := sharedProductKernelCheck()
+	if err != nil {
+		return "", zero, err
+	}
+	entry, ok := entries[digest]
+	if !ok {
+		return "", zero, fmt.Errorf("shared product image selection: no image entry for kernel %s (BTF sha256 %s): %w", pin.Release, digest, ErrSharedNativeUnavailable)
+	}
+	return digest, entry, nil
 }
 
 func startSharedNode(ctx context.Context, config SharedNodeConfig, start func(context.Context, SharedNodeConfig, SharedAdmission) (sharedCollection, error)) (*NodeEnforcer, error) {
