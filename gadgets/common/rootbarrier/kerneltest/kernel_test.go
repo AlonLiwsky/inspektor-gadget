@@ -140,6 +140,15 @@ func TestRootBarrierKernel(t *testing.T) {
 	if err := rootbarrier.VerifyMaps(counters, probe, rootbarrier.Hooks); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
+	// A gadget with only the instance's maps reads the program IDs once and
+	// then attests by ID.
+	byID, err := rootbarrier.ProgramIDs(counters, rootbarrier.Hooks)
+	if err != nil {
+		t.Fatalf("program IDs: %v", err)
+	}
+	if err := rootbarrier.Attest(counters, byID); err != nil {
+		t.Fatalf("attest by program ID: %v", err)
+	}
 	cgroup := coverCgroup(t, collection)
 
 	commands := map[rootbarrier.Op]string{

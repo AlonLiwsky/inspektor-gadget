@@ -64,7 +64,9 @@ the gadget reports Ready:
 - `Hooks` lists the programs. `WithProgram` names the gadget's own program for
   a hook (a kernel name of at most 15 characters). `WithProgramID` matches it
   by kernel program ID, for a program whose name is longer than 15 characters
-  or shares its first 15 characters with other programs.
+  or shares its first 15 characters with other programs. A gadget that has
+  only the instance's maps calls `ProgramIDs` once after a verification
+  passed, then attests by program ID on each status read.
 - `Denials` and `Faults` read the counters. A nonzero fault count means the
   predicate could not decide for some task. The gadget should report a fault
   increase as degraded, and a `Faults` error as unknown, never as zero.
