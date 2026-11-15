@@ -227,9 +227,14 @@ no livepatch (`TAINT_LIVEPATCH` clear). Ftrace and livepatch are re-read at
 every `Ready`. Ftrace is detected, not guarded: on both pinned kernels
 `sysctl kernel.ftrace_enabled=0` is accepted while the node runs (no EBUSY),
 and `Ready` reports NotReady ("ftrace is not enabled") at its next call
-(G011 pass 2). Whether enforcement continues while ftrace is off has not been
-measured; treat a NotReady node as unprotected. Only root can change the
-sysctl. The image is bound to the build as well: its failure-frame
+(G011 pass 2). On both pinned kernels, under a Strict Deny policy, a uid-1000
+exec that returns 126 with ftrace on returned 0 (allowed) after
+`ftrace_enabled=0`, and returned 126 again once ftrace was re-enabled and
+Ready was nil (G011 pass 2, run g011p2-20261115t160735-f9e2). Ready had
+already gone NotReady before that exec. Only this one exec was measured
+(uid 1000, Deny fallback); nothing else about enforcement with ftrace off is
+known, so treat a NotReady node as unprotected. This is an accepted, detected
+limitation: only root can change the sysctl. The image is bound to the build as well: its failure-frame
 `attach_to` targets must equal the pinned symbols and the loaded eBPF object's
 sha256 (recorded by the eBPF operator for native owners,
 `operators.NativeProgramDigestKey`) must be one of the pinned product objects
