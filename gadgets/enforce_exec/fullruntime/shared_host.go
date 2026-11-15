@@ -22,9 +22,41 @@ import (
 
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf/nativeattach"
 )
 
 const sharedNodeKey = "enforce-exec/native-shared-node"
+
+// sharedNodeAttachRetry is the shared node's explicit, bounded native attach
+// retry (review A2): a capacity refusal (*nativeattach.ErrAttachCapacity) is
+// retried at most 8 times, and no wait starts that would end past 30 s from
+// the first attempt (so the bound is about 30 s plus the final attempt).
+// Then Start fails with the last refusal and StartNode returns it wrapped
+// in ErrSharedNodeNotReady. Nothing stays attached after a refused attempt,
+// so exhaustion fails closed. The retry runs inside Start, under the
+// manager's lifecycle lock: it can only wait for links held outside this
+// manager to go away; a stop on the same manager waits for the lock.
+func sharedNodeAttachRetry() nativeattach.Retry {
+	return nativeattach.Retry{
+		Initial:     500 * time.Millisecond,
+		Max:         5 * time.Second,
+		MaxAttempts: 8,
+		Budget:      30 * time.Second,
+	}
+}
+
+// sharedNodeAttachRetryBounded is the admission rule (review A2): the
+// effective NativeAttachRetryKey must be a nativeattach.Retry with an
+// attempt bound and a time budget, never the unbounded default or an
+// opt-out.
+func sharedNodeAttachRetryBounded(gc operators.GadgetContext) error {
+	value, ok := gc.GetVar(operators.NativeAttachRetryKey)
+	retry, isRetry := value.(nativeattach.Retry)
+	if !ok || !isRetry || retry.MaxAttempts <= 0 || retry.Budget <= 0 {
+		return fmt.Errorf("shared node requires a bounded native attach retry, got %T %+v", value, value)
+	}
+	return nil
+}
 
 type sharedBorrowedFD interface{ FD() int }
 
@@ -32,6 +64,8 @@ type sharedHostState struct {
 	// overlayFailure is the node's "overlay layout unavailable" reason from
 	// this node's constants computation (nil: the layout is set).
 	overlayFailure atomic.Pointer[error]
+	// attachRetry is the qualification seam's retry (nil: default).
+	attachRetry *nativeattach.Retry
 	sharedProtocolHostOwnership
 	borrowed                                 []sharedBorrowedFD
 	context                                  operators.GadgetContext
@@ -337,6 +371,24 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 	return func(gc *gadgetcontext.GadgetContext) {
 		gc.SetVar(sharedNodeKey, node)
 		gc.SetVar(operators.NativeOwnerRequiredKey, true)
+		retry := sharedNodeAttachRetry()
+		if node != nil && node.host != nil && node.host.attachRetry != nil {
+			retry = *node.host.attachRetry
+		}
+		retry.State = func(err error) {
+			// Only a capacity refusal is a NotReady attach state; nil or
+			// any other (final) error clears it.
+			var capErr *nativeattach.ErrAttachCapacity
+			if !errors.As(err, &capErr) {
+				err = nil
+			} else {
+				gc.Logger().Warnf("shared node native attach not ready: %v", err)
+			}
+			if node != nil && node.config.AttachState != nil {
+				node.config.AttachState(err)
+			}
+		}
+		gc.SetVar(operators.NativeAttachRetryKey, retry)
 		if node != nil && node.config.RecoveryDevelopment {
 			gc.SetVar(operators.NativeRecoveryTestRunKey, true)
 		}
@@ -356,6 +408,9 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 		gc.SetVar(operators.NativeResourceValidatorKey, func(resources *operators.NativeResources) error {
 			if node == nil || node.host == nil {
 				return fmt.Errorf("missing host-owned shared node")
+			}
+			if err := sharedNodeAttachRetryBounded(gc); err != nil {
+				return err
 			}
 			return node.admitSharedResources(resources)
 		})
@@ -1551,7 +1606,7 @@ func (n *NodeEnforcer) reserveLiveRoute(a *sharedPhysicalScope) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("shared route slots exhausted")
+	return fmt.Errorf("shared route slots exhausted: %w", ErrSharedBindingCapacity)
 }
 
 // startQualifiedSharedNode loads the shared candidate collection once per node
@@ -1586,6 +1641,7 @@ func startLiveSharedNode(ctx context.Context, config SharedNodeConfig, run func(
 	n.host.newProductPublisher = q.newProductPublisher
 	n.host.verdictCounters, n.host.verdictClock = q.verdictCounters, q.verdictClock
 	n.host.imageSource = q.imageSource
+	n.host.attachRetry = q.attachRetry
 	n.host.strictRefused = sharedNamespaceCheck()
 	stop, done, err := run(ctx, WithNodeEnforcer(n))
 	if stop == nil {
@@ -1608,6 +1664,11 @@ func startLiveSharedNode(ctx context.Context, config SharedNodeConfig, run func(
 	if err != nil {
 		// Typed refusals (nativeattach.ErrAttachCapacity, ErrNotReady) pass
 		// through; the transaction already rolled back, and teardown joins.
+		// An exhausted attach retry is a NotReady reason (review A2).
+		var capErr *nativeattach.ErrAttachCapacity
+		if errors.As(err, &capErr) && !errors.Is(err, ErrSharedNodeNotReady) {
+			err = fmt.Errorf("%w: native attach capacity: %w", ErrSharedNodeNotReady, err)
+		}
 		return nil, errors.Join(err, n.StopNode(context.WithoutCancel(ctx)))
 	}
 	return n, nil

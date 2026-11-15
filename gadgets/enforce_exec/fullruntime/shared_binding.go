@@ -229,7 +229,7 @@ func (n *NodeEnforcer) bindRefusalLocked(cgroup uint64) error {
 		// does not depend on the cgroup's init being alive.
 		return ErrSharedBindingWithdrawn
 	case uint64(len(n.preparations)) >= n.config.Profile.Bindings:
-		return fmt.Errorf("shared binding unavailable: %d binding preparations in flight (profile allows %d bindings)", len(n.preparations), n.config.Profile.Bindings)
+		return fmt.Errorf("shared binding unavailable: %d binding preparations in flight (profile allows %d bindings): %w", len(n.preparations), n.config.Profile.Bindings, ErrSharedBindingCapacity)
 	}
 	return nil
 }
@@ -255,7 +255,11 @@ func (n *NodeEnforcer) bindPhysicalScope(ctx context.Context, c SharedBindingCon
 	account := n.scopes[c.CgroupID]
 	fresh := account == nil
 	if fresh {
-		if uint64(len(n.scopes)) >= n.config.Profile.Bindings || n.nextPreparedID >= math.MaxUint64-1 {
+		if uint64(len(n.scopes)) >= n.config.Profile.Bindings {
+			n.mu.Unlock()
+			return nil, fmt.Errorf("shared binding unavailable: %d physical scopes retained (profile allows %d bindings): %w", len(n.scopes), n.config.Profile.Bindings, ErrSharedBindingCapacity)
+		}
+		if n.nextPreparedID >= math.MaxUint64-1 {
 			n.mu.Unlock()
 			return nil, fmt.Errorf("retained physical scope capacity exhausted")
 		}

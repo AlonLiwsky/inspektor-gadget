@@ -125,3 +125,33 @@ func TestRetryStateReportsFinalNonCapacityError(t *testing.T) {
 		t.Fatalf("first-attempt error: %v states %v", err, states)
 	}
 }
+
+func TestRetryBudgetBoundsTotalTime(t *testing.T) {
+	clock := time.Unix(0, 0)
+	oldNow := now
+	t.Cleanup(func() { now = oldNow })
+	now = func() time.Time { return clock }
+	// Each attempt itself takes 100ms; each wait advances the clock by its delay.
+	waits := stubWait(t, func(d time.Duration) { clock = clock.Add(d) })
+	attempts := 0
+	r := Retry{Initial: time.Second, Max: 4 * time.Second, Budget: 5 * time.Second}
+	err := r.Run(context.Background(), func() error {
+		attempts++
+		clock = clock.Add(100 * time.Millisecond)
+		return capacityErr("bprm_execve")
+	})
+	// 0.1 + 1 + 0.1 + 2 + 0.1 = 3.3s after attempt 3; a 4s wait would end at 7.3s > 5s.
+	var capErr *ErrAttachCapacity
+	if !errors.As(err, &capErr) || capErr.Target != "bprm_execve" || !errors.Is(err, unix.E2BIG) || attempts != 3 {
+		t.Fatalf("budget: %v after %d attempts", err, attempts)
+	}
+	if want := []time.Duration{time.Second, 2 * time.Second}; !slices.Equal(*waits, want) {
+		t.Fatalf("waits %v, want %v", *waits, want)
+	}
+	if clock.Sub(time.Unix(0, 0)) > r.Budget {
+		t.Fatalf("retry ran %s past budget %s", clock.Sub(time.Unix(0, 0)), r.Budget)
+	}
+	if err := (Retry{Initial: 1, Max: 1, Budget: -1}).Run(context.Background(), func() error { t.Fatal("attempt with invalid budget"); return nil }); err == nil {
+		t.Fatal("negative budget accepted")
+	}
+}

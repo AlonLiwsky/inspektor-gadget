@@ -20,6 +20,10 @@ type Retry struct {
 	Initial, Max time.Duration
 	// MaxAttempts bounds the attempts; 0 retries until the context is done.
 	MaxAttempts int
+	// Budget bounds the total time from the first attempt: a wait that would
+	// end past it is not started and the last refusal is returned. 0 means no
+	// time bound (only MaxAttempts and the context).
+	Budget time.Duration
 	// State, if set, is called with the *ErrAttachCapacity of every refused
 	// attempt (NotReady, naming the target), with nil once the family is
 	// attached (Ready), and with a final non-capacity error that follows a
@@ -30,6 +34,9 @@ type Retry struct {
 // DefaultRetry waits 500ms, 1s, 2s, ... up to 30s between attempts until the
 // context is done.
 var DefaultRetry = Retry{Initial: 500 * time.Millisecond, Max: 30 * time.Second}
+
+// now is a test seam.
+var now = time.Now
 
 // wait is a test seam.
 var wait = func(ctx context.Context, d time.Duration) error {
@@ -45,13 +52,14 @@ var wait = func(ctx context.Context, d time.Duration) error {
 
 // Run calls attempt until it succeeds. Only *ErrAttachCapacity is retried;
 // any other error is returned at once. When ctx is done or MaxAttempts is
-// reached, the error wraps both the context error (if any) and the last
-// capacity refusal.
+// reached, or the next wait would end past Budget, the error wraps both the
+// context error (if any) and the last capacity refusal.
 func (r Retry) Run(ctx context.Context, attempt func() error) error {
-	if r.Initial <= 0 || r.Max < r.Initial || r.MaxAttempts < 0 {
+	if r.Initial <= 0 || r.Max < r.Initial || r.MaxAttempts < 0 || r.Budget < 0 {
 		return fmt.Errorf("invalid native attach retry %+v", r)
 	}
 	delay := r.Initial
+	start := now()
 	for n := 1; ; n++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("native attach retry canceled before attempt %d: %w", n, err)
@@ -71,6 +79,9 @@ func (r Retry) Run(ctx context.Context, attempt func() error) error {
 		}
 		if r.MaxAttempts > 0 && n >= r.MaxAttempts {
 			return fmt.Errorf("native attach refused after %d attempt(s): %w", n, err)
+		}
+		if r.Budget > 0 && now().Sub(start)+delay > r.Budget {
+			return fmt.Errorf("native attach refused after %d attempt(s), retry budget %s exhausted: %w", n, r.Budget, err)
 		}
 		if werr := wait(ctx, delay); werr != nil {
 			return fmt.Errorf("native attach retry canceled after %d attempt(s): %w", n, errors.Join(werr, err))

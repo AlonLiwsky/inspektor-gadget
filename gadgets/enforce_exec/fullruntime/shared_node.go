@@ -17,6 +17,7 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf/nativeattach"
 )
 
 var ErrSharedNativeUnavailable = errors.New("shared native collection/publication is not implemented")
@@ -50,6 +51,15 @@ type SharedNodeConfig struct {
 	// agent (empty: "/proc" and "/").
 	ContainerdAddress            string
 	ImageProcRoot, ImageHostRoot string
+	// AttachState, if set, reports the native attach while StartNode is
+	// still blocked in the gadget's Start (review A2; NodeEnforcer.Ready is
+	// only reachable after StartNode returns): it is called with the
+	// *nativeattach.ErrAttachCapacity of every refused attempt (show the
+	// node NotReady with it), then once with nil when the refusal no longer
+	// applies (attached, or another error ended the start, which StartNode
+	// returns). When the bounded retry runs out, the last call is the last
+	// refusal and StartNode returns it. It must not block.
+	AttachState func(error)
 }
 
 func (c SharedNodeConfig) failClosedPollInterval() time.Duration {
@@ -316,6 +326,14 @@ var ErrSharedRouteFree = errors.New("shared route slot free")
 // Bind nor Publish may reuse its retained physical account.
 var ErrSharedBindingWithdrawn = errors.New("shared binding withdrawn")
 
+// ErrSharedBindingCapacity reports that Bind found no free binding (review
+// A4): the profile's Bindings (2 in every product object) are bound, being
+// prepared, or retained until their removed route is recycled. A host shows
+// it as the container's NotReady reason; it clears once a binding is
+// removed and its slot recycled. Changing the limit needs a new product
+// object (new pins).
+var ErrSharedBindingCapacity = errors.New("shared binding capacity exhausted")
+
 // ErrSharedRetryableRefusal marks every retryable publisher refusal (a
 // command's RETRY result, a stage with no free policy object until a
 // retired object's pins drain, ErrSharedRevisionDraining): in-flight claims
@@ -473,6 +491,9 @@ type SharedNodeQualification struct {
 	// image index (the real resolver and host attestation still run).
 	// Package tests only: the live image test's own overlay mount.
 	imageSource sharedImageLayerSource
+	// attachRetry replaces sharedNodeAttachRetry() (nil: the default).
+	// Package tests only; it must still be bounded (admission checks it).
+	attachRetry *nativeattach.Retry
 }
 
 // WithSharedNodeQualification selects the qualification-only candidate
