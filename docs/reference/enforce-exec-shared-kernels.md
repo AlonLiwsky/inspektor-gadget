@@ -17,12 +17,15 @@ on, and refuses every other kernel at agent start with a reported reason.
 
 A build is identified by its vmlinux BTF sha256, GNU build-id and release
 together. The build-ids come from the vmlinux of the AL2023 repo kernel RPMs
-and are not yet confirmed on a live boot; the pass 2 preflight will confirm them. The outer failure-frame
-symbol (`do_execveat_common.isra.0`) has a single source, the 2026-11-09
-preflight on the same AMIs; pass 2 logs the resolved symbol. Pass 1 ran the
-qualification build: product-build Ready on the plain AMIs is pending pass 2.
+and were confirmed live from `/sys/kernel/notes` in G011 pass 2 (plain AMIs) and pass 2b (EKS AMIs). The outer failure-frame
+symbol (`do_execveat_common.isra.0`) was first recorded by the 2026-11-09 preflight on the same AMIs; it was confirmed in the kallsyms symbol list on both pinned kernels in G011 pass 2 (`outer-symbol` rows) and pass 2b (identity `symbols` rows). Pass 1 ran the
+qualification build; product-build admission and Ready on both pinned kernels
+of the plain AMIs are proven (G011 pass 2, run g011p2-20261115t143731-5a41, 116 PASS / 0 FAIL).
 The EKS AMIs carry the same kernel builds as qualified; EKS product Ready is
-pending the EKS qualification pass (pass 2b).
+proven (G011 pass 2b, run g011eks-20261115t163442-6da1, 120 PASS / 0 FAIL): a default-build node-agent reached product Ready True on both.
+Limits of that evidence: SELinux was Permissive, and the EKS AMIs carry taint
+12288 (out-of-tree or unsigned modules), which is allowed (only the livepatch
+bit is gated).
 
 The rule is to keep nodes on these kernel builds: pin the AMI releases, with no
 in-place kernel update, no automatic AMI upgrade and no livepatch. Any newer or

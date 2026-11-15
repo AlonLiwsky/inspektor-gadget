@@ -199,11 +199,9 @@ were qualified:
 | `6.18.56-125.164.amzn2023.x86_64` | `d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee` | `884ed4548406a1461ac5fb658c0dffdd87f1b3b2` | `do_execveat_common.isra.0`, `exec_binprm` |
 
 Sources: the build-ids come from the vmlinux of the AL2023 repo kernel RPMs
-(the same packages the qualified AMIs carry); they are not yet confirmed on a
-live boot, and pass 2 preflight will confirm them from `/sys/kernel/notes`. The handler symbols come from the pass-1
-runner. The outer symbol `do_execveat_common.isra.0` has a single source,
-the 2026-11-09 preflight on the same AMIs (pass 1 resolved it from
-`/proc/kallsyms` without logging it); pass 2 logs the resolved symbol.
+(the same packages the qualified AMIs carry); they were confirmed live from
+`/sys/kernel/notes` in G011 pass 2 (plain AMIs) and pass 2b (EKS AMIs). The handler symbols come from the pass-1
+runner. The outer symbol `do_execveat_common.isra.0` was first recorded by the 2026-11-09 preflight on the same AMIs (pass 1 resolved it from `/proc/kallsyms` without logging it). It was then confirmed in the kallsyms symbol list on both pinned kernels: the `outer-symbol` PASS rows in G011 pass 2, and the identity `symbols` rows in G011 pass 2b.
 
 These builds ship in these AMI releases (the AMI IDs are the ones the
 qualification runs used; IDs differ per region, the release names do not):
@@ -211,14 +209,18 @@ qualification runs used; IDs differ per region, the release names do not):
 - plain AL2023 `al2023-ami-2023.12.20261026.1-kernel-6.12-x86_64`
   (`ami-0e8550404ae6ca4c6`) and `al2023-ami-2023.12.20261102.0-kernel-6.18-x86_64`
   (`ami-0516089d963059a51`): qualified (G011 pass 1, with the qualification
-  build); product-build Ready on these AMIs is pending pass 2;
+  build); product-build admission and Ready on both pinned kernels are proven
+  (G011 pass 2, run g011p2-20261115t143731-5a41, 116 PASS / 0 FAIL);
 - EKS-optimized `amazon-eks-node-al2023-x86_64-standard-1.35-v20261031`
   (`ami-0c50b8c0d6d72c152`, 6.12) and
   `amazon-eks-node-al2023-x86_64-standard-1.36-v20261031`
   (`ami-07ef7f0d9b6d0f123`, 6.18): the same kernel builds as qualified (the
   same BTF was recorded on both; the agent still checks the build-id and
-  release at start). **EKS product Ready is pending pass 2b**
-  (default-build node-agent on these AMIs) until that pass succeeds.
+  release at start). **EKS product Ready is proven** (G011 pass 2b, run g011eks-20261115t163442-6da1, 120 PASS / 0 FAIL):
+  a default-build node-agent (one DaemonSet, the per-kernel image map) reached
+  product Ready True ("Selected containers have active enforcement") on both
+  AMIs. The EKS AMIs carry taint 12288 (out-of-tree or unsigned modules),
+  which is allowed: only the livepatch bit is gated.
 
 Identity is the BTF sha256 **and** the GNU build-id (`/sys/kernel/notes`)
 **and** the release (`uname -r`); the BTF alone does not identify a build. The
@@ -270,13 +272,18 @@ operator moves it to another AMI or kernel.
 
 - An agent crash or restart leaves enforcement **off until the agent is
   restarted**: the in-kernel state dies with the agent's BPF objects. The gap
-  is reported as Ready False.
+  is reported as Ready False. Enforcement is off between agent processes during
+  a restart: about 85 s (6.12) and 88 s (6.18) observed on EKS (G011 pass 2b; the new agent needed about 77-78 s to reach Ready). A graceful stop reports `AgentStopping`; a crash restart was not exercised.
 - **Unproven:** SELinux enforcing (the qualification ran Permissive);
   lockdown modes other than none; other BPF users beyond the synthetic
-  coexistence tests; unsigned or out-of-tree kernel modules; arm64; any other
-  AMI.
+  coexistence tests; unsigned or out-of-tree kernel modules beyond the EKS AMIs'
+  taint 12288 (allowed); arm64; any other AMI.
 - Argv predicates are refused (D1). The AT_EXECVE_CHECK and RETIRING residuals
   (D3/D4) and the migration-out residual (`MigrationOutUnenforced`) apply.
+- Limits of the G011 evidence: in-pod reads cover verdicts and self-status
+  only, facts are shown by outcome, and the default build has no fact counters.
+  The restart ordering of Ready versus re-protection is ordered by code but not
+  decidable from the evidence at 1 s resolution. SELinux was Permissive. Selection of the per-kernel image map entry is evidenced only through the wrong-digest negative; the positive run shows the selected entry works, not which entry was chosen.
 
 ### Future work (not implemented)
 
