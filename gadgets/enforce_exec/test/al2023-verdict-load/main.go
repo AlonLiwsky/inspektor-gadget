@@ -1,3 +1,4 @@
+// Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
 
 // Command verdict-load is a test-only load gate for default-off enforce_exec

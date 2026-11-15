@@ -1,5 +1,6 @@
 //go:build routepinintegration
 
+// Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
 package main
 

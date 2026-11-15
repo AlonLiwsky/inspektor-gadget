@@ -1,3 +1,4 @@
+// Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
 
 // Command exec-capsule-runner drives the default-off exec-capsule fixture on

@@ -1,3 +1,4 @@
+// Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
 // Explicit isolated observer runner. Never loads/unloads the native module.
 package main
