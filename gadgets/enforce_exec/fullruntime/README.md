@@ -322,15 +322,56 @@ custom **amd64** kernel artifacts in [KERNEL-MATRIX.md](KERNEL-MATRIX.md). Stock
 distribution kernels and arm64 are not supported by this profile. BPF LSM and
 ftrace availability alone do not satisfy its admission checks.
 
-### Best-effort operational audit
+### Audit never blocks once the binding is classified
 
-**Audit is best effort across operational faults and reloads.** Audit policy
-evaluation must not intentionally deny audited decisions or evaluator
-unknown/error results, must not grant uncertain roles, and must preserve earlier
-LSM denials. This does not promise uninterrupted execution: tracking, resource or
-structural faults and closed admission during reload or re-attestation may block
-even audit-only workloads. Enforcement-capable policies remain fail-closed; do
-not fall open to hide an operational fault.
+**Audit never blocks once the generation is known.** After admission, the owner
+classifies the exec by its generation's policies (`fe_execution_class`). For an
+Audit-only generation, an evaluator error, a role-proposal error or a
+post-admission observation fault never denies that exec. The verdict comes from
+`fe_lsm_verdict`, the same rule as the ABI3 owner and the shared node. A fault
+never trusts the partially merged decision mode. Audit also never grants
+uncertain roles and keeps earlier LSM denials.
+
+Every such fault is counted (`count(2)`). For an evaluator or proposal error, the
+verdict event is a would-deny operational error: `error` is nonzero, `deny` is 1
+and `mode` is 1. An observation-allocation fault emits no event. What happens
+next depends on the fault:
+
+- **Recorded against the generation; admission stays open.** An evaluator error,
+  an observation fault, an errored decision and an authored role conflict are
+  data faults: they set a bit in the generation's fault row. `Owner.Check` then
+  reports the binding NotReady until a new generation is published, but the
+  owner-wide fault stays clear and later execs are still admitted.
+- **Counted and evented only.** Proposal work-buffer exhaustion (no `eo_work`
+  buffer), or a missing task record at proposal time (practically unreachable
+  after admission found the task), records no generation fault, so it causes
+  no NotReady.
+- **Owner-wide fault; admission closes.** A proposal state inconsistency
+  quarantines the task and sets `EO_FAULT_STATE`. A failure to store the
+  generation fault row sets `EO_FAULT_STORAGE`. The faulting Audit exec still
+  runs, but admission closes for the owner until recovery, so later execs deny.
+
+**Admission failures before the generation is known still deny.** Examples are
+tracking, gate or storage faults, an owner-wide fault, and closed admission
+during reload or re-attestation. An owner-wide fault set by an earlier
+proposal quarantine or by a failure to store a generation fault (above) is one
+such cause of later denials. With no generation there is no class, so these
+stay fail-closed, even for an Audit-only binding. The shared node uses the same
+rule. Strict, mixed and unclassifiable (invalid header or policy) generations
+remain fail-closed on every fault. Do not fall open to hide an operational
+fault.
+
+Follow-ups (G015 A1 review):
+
+- Tests that need a new test binary and a VM run: a mixed Audit/Strict
+  proposal-error case, an `Owner.Check` NotReady assertion after a data fault,
+  and an injected observation-allocation fault (LOW-3).
+- Classification timing: the legacy owner classifies after `eo_exec_begin`, in a
+  separate read of the generation's policies. Classify inside `eo_exec_begin`, as
+  ABI3 does, so one read admits and classifies.
+- Work-buffer exhaustion and a missing task record at proposal time should
+  record a generation fault. That is a BPF change
+  and needs new archives and a VM run.
 
 On a precommit candidate refusal, retain the last-good active policy and accepted
 history. The embedding must report failure/NotReady rather than advertise the

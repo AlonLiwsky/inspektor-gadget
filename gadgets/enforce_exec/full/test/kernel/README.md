@@ -121,6 +121,16 @@ verification failure. It checks update/delete refusal on the native frozen-ID
 and read-only-state handles. These injected failures do not substitute for real
 runtime lease churn or OCI teardown proof.
 
+`TestFullOwnerInjectedErrorKernel` uses the same environment. It compiles the
+owner with the test-only `ENFORCE_EXEC_TEST_INJECT_ERROR` switch (never in an
+archive) and forces an evaluator or propose error after the real evaluation.
+An Audit-only generation runs the exec, counts the fault and reports `error=1,
+deny=1, mode=1`. Strict and mixed Audit/Strict generations deny with EPERM.
+A second exec in the same generation checks that admission stays open after a
+data fault. Limit: the injected propose error is forced after a successful real
+proposal, so it proves the verdict and the event, but not suppression or
+quarantine on a real proposal failure.
+
 ### Native persistent OCI lifecycle (isolated synthetic-owner proof)
 
 `TestFullOwnerOCIRuntime` requires `IG_FULL_OWNER_OCI_TEST=1`, plus the actual

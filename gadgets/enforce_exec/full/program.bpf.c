@@ -222,6 +222,11 @@ struct {
 	__type(value, struct observation);
 } zero_observation SEC(".maps");
 #endif
+#ifdef ENFORCE_EXEC_TEST_INJECT_ERROR
+/* Kernel test harness only, never in an archive: 1 forces an evaluator error,
+ * 2 a propose error, after the real evaluation/proposal ran. */
+const volatile __u32 enforce_exec_test_inject_error = 0;
+#endif
 struct event {
 	__u64 generation, cgroup;
 	__u32 deny, mode;
@@ -497,7 +502,9 @@ BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
 		eo_exec_begin_development(bprm, &generation, &execution_class);
 #else
 	int admitted = eo_exec_begin(bprm, &generation);
-	const __u32 execution_class = 2;
+	/* Admission failures happen before the generation is known: unclassified,
+	 * so they stay fail-closed for every binding (as ABI3 and the shared node). */
+	__u32 execution_class = 2;
 #endif
 	if (admitted <= 0)
 		return admitted < 0 && execution_class == 2 ? -1 : 0;
@@ -510,6 +517,14 @@ BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
 		configuration
 			->cgroup; // Original binding, including a migrated in-flight exec.
 	__u32 zero = 0;
+#ifndef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	/* Once the generation is known, its policies classify the exec: Audit
+	 * (1) never blocks on a later fault; invalid or mixed classes are Strict. */
+	__u32 legacy_policies = 0, legacy_writers = 0;
+	if (fe_execution_class(0, generation, &legacy_policies,
+			       &legacy_writers) == 1)
+		execution_class = 1;
+#endif
 #ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
 #define FULL_OBSERVATION_FAULT(bit) eo_exec_observation_fault(generation, bit)
 #else
@@ -558,6 +573,10 @@ BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
 	int error = eo_fill_roles(&o->facts);
 	if (!error)
 		error = fe_evaluate(0, &o->facts, &o->evaluator);
+#ifdef ENFORCE_EXEC_TEST_INJECT_ERROR
+	if (enforce_exec_test_inject_error & 1)
+		error = 1;
+#endif
 #else
 	int error = fe_evaluate(&full_program, &o->facts, &o->evaluator);
 #endif
@@ -566,39 +585,43 @@ BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
 		FULL_OBSERVATION_FAULT(4);
 		if (!d->error)
 			d->error = FE_INVALID;
-#ifndef ENFORCE_EXEC_ABI3_DEVELOPMENT
-		d->deny = 1;
-		d->mode = 2;
-#endif
 		count(2);
 	}
 #ifdef ENFORCE_EXEC_PERSISTENT_OWNER
-	if (eo_exec_propose(bprm, d)) {
+	if (eo_exec_propose(bprm, d)
+#ifdef ENFORCE_EXEC_TEST_INJECT_ERROR
+	    || (enforce_exec_test_inject_error & 2)
+#endif
+	) {
 		error = 1;
 #ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
 		eo_exec_observation_fault(generation, 4);
 #endif
 		if (!d->error)
 			d->error = FE_INVALID;
-#ifndef ENFORCE_EXEC_ABI3_DEVELOPMENT
-		d->deny = 1;
-		d->mode = 2;
-#endif
 		count(2);
 	}
 #endif
+	/* A fault never trusts the partially merged d->mode: the invocation class
+	 * decides (Audit allows, Strict denies), as on the ABI3 and shared paths. */
 #ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
 	long result = fe_lsm_verdict(execution_class, ret, error, d);
 #else
-	int result = d->deny && d->mode == 2 ? -1 : 0;
+	int result = (int)fe_lsm_verdict(execution_class, ret, error, d);
 #endif
 	struct event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
 	if (event) {
 		__builtin_memset(event, 0, sizeof(*event));
 		event->generation = generation;
 		event->cgroup = cgroup;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
 		event->deny = d->deny;
 		event->mode = d->mode;
+#else
+		/* An error is a would-deny operational error in the binding's class. */
+		event->deny = error ? 1 : d->deny;
+		event->mode = error ? execution_class : d->mode;
+#endif
 		event->path_result = path_result;
 		event->host_pid = id >> 32;
 		event->error = d->error;

@@ -664,6 +664,39 @@ func TestLSMResultPreservesSignedPriorDenials(t *testing.T) {
 	}
 }
 
+// TestLegacyOwnerLSMVerdictTable pins the fe_lsm_verdict rows the legacy
+// (non-ABI3) owner relies on since G015 A1: it passes class 1 only for an
+// Audit-only generation and 2 otherwise, and a decision whose deny/mode an
+// error never forces. The legacy call always passes prior 0, because a nonzero
+// ret returns before the call; the prior rows only pin fe_lsm_verdict itself.
+// Audit never blocks once classified.
+func TestLegacyOwnerLSMVerdictTable(t *testing.T) {
+	runner := buildEvaluatorRunner(t)
+	for _, tc := range []struct {
+		name                             string
+		class, prior, failed, deny, mode int
+		want                             int
+	}{
+		{"audit-evaluator-error-allow-decision", 1, 0, 1, 0, 1, 0},
+		{"audit-error-partial-strict-mode", 1, 0, 1, 1, 2, 0},
+		{"audit-known-deny", 1, 0, 0, 1, 1, 0},
+		{"strict-error-allow-decision", 2, 0, 1, 0, 2, -1},
+		{"strict-error-partial-audit-mode", 2, 0, 1, 1, 1, -1},
+		{"strict-known-deny", 2, 0, 0, 1, 2, -1},
+		{"strict-audit-rule-deny", 2, 0, 0, 1, 1, 0},
+		{"strict-allow", 2, 0, 0, 0, 2, 0},
+		{"unclassified-zero", 0, 0, 0, 0, 1, -1},
+		{"unclassified-three", 3, 0, 0, 0, 1, -1},
+		{"prior-kept-audit", 1, -13, 1, 0, 1, -13},
+		{"prior-kept-strict", 2, -13, 0, 0, 2, -13},
+	} {
+		out, err := exec.Command(runner, "verdict", strconv.Itoa(tc.class), strconv.Itoa(tc.prior), strconv.Itoa(tc.failed), strconv.Itoa(tc.deny), strconv.Itoa(tc.mode)).CombinedOutput()
+		if err != nil || strings.TrimSpace(string(out)) != strconv.Itoa(tc.want) {
+			t.Fatalf("%s: want %d, got %s (%v)", tc.name, tc.want, out, err)
+		}
+	}
+}
+
 func TestImmutableClassLSMFaultMatrix(t *testing.T) {
 	runner := buildEvaluatorRunner(t)
 	for _, class := range []int{1, 2} {

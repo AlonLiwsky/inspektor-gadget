@@ -12,9 +12,13 @@ No new wire ABI, accepted-generation shared publication/reload, native withdrawa
 integration, physical Ready or shared kernel qualification follows from this
 reference. Legacy allocation credits are not proof of shared kernel reclamation.
 
-The [best-effort operational audit contract](README.md#best-effort-operational-audit)
-applies: operational faults and reloads may block; non-denying audit evaluation,
-no uncertain role grants and preservation of earlier LSM denials remain required.
+The [audit contract](README.md#audit-never-blocks-once-the-binding-is-classified)
+applies: once the generation is classified, Audit never blocks the faulting exec.
+Data faults are recorded against the generation and admission stays open; a
+proposal quarantine or a failure to store the generation fault sets the
+owner-wide fault, which closes admission until recovery. Admission failures
+before the generation is known, including reload and re-attestation, still deny.
+No uncertain role grants and preservation of earlier LSM denials remain required.
 These requirements are not evidence of shared kernel behavior. Enforcement
 remains fail-closed, with last-good state and truthful failure/NotReady on
 precommit refusal; recovery must respect the documented commit boundary.

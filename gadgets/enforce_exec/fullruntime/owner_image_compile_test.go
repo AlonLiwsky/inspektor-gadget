@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -45,6 +46,9 @@ func TestFullOwnerImageCompile(t *testing.T) {
 			}
 			if spec.Programs["enforce_exec_full"] == nil {
 				t.Fatal("missing enforcement hook")
+			}
+			if _, ok := spec.Variables["enforce_exec_test_inject_error"]; ok {
+				t.Fatal("production defines carry the test-only error injection switch")
 			}
 			if owner {
 				resources := &operators.NativeResources{Maps: map[string]operators.NativeMapResource{}, Programs: map[string]operators.NativeProgramResource{}}
@@ -119,5 +123,22 @@ clang -target bpf -O2 -g -D__TARGET_ARCH_x86 -Wno-missing-declarations -I"$(dirn
 	}
 	if spec.Programs["eo_command"] == nil || spec.Maps["eo_programs"] == nil {
 		t.Fatal("owner context lost owner profile")
+	}
+}
+
+// G015 A1 guard: a fault on the exec path must never force a Strict decision
+// (d->deny = 1; d->mode = 2), which blocked Audit bindings. The binding class
+// decides through fe_lsm_verdict, on both the legacy and the ABI3 owner.
+func TestOwnerExecFaultNeverForcesStrict(t *testing.T) {
+	source, err := os.ReadFile("../full/program.bpf.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forced := regexp.MustCompile(`\b(decision|d)\s*(->|\.)\s*(mode|deny)\s*=[^=]`).FindAll(source, -1); len(forced) != 0 {
+		t.Fatalf("program.bpf.c assigns the evaluator decision on a fault: %q", forced)
+	}
+	verdict := regexp.MustCompile(`fe_lsm_verdict\s*\(\s*execution_class\s*,\s*ret\s*,\s*error\s*,\s*d\s*\)`)
+	if got := len(verdict.FindAll(source, -1)); got != 2 {
+		t.Fatalf("want the ABI3 and legacy verdicts through fe_lsm_verdict, got %d", got)
 	}
 }
