@@ -45,8 +45,9 @@ import (
 //   IG_SHARED_PRODUCT_PROFILE  64, 128 (default), 256 or 512
 //   IG_SHARED_PRODUCT_CGROUP_A, IG_SHARED_PRODUCT_CGROUP_B
 //                              two dedicated ig15-g011-prod-* cgroups
-//   IG_SHARED_PRODUCT_FTRACE_NEG=1  run the ftrace negative (flips
-//                              kernel.ftrace_enabled to 0 and back)
+//   IG_SHARED_PRODUCT_FTRACE_NEG=1  run the ftrace negative: A is revised to a
+//                              deny policy (revision 3), then
+//                              kernel.ftrace_enabled is flipped to 0 and back
 //
 // The unshare -m run (plan step 9) is driven by the harness through the
 // child mode: IG_SHARED_PRODUCT_CHILD=1 starts the node, prints
@@ -278,9 +279,10 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 		t.Fatalf("B contract after A's revision: %v", err)
 	}
 
-	// Step 6 (opt-in): the ftrace negative.
+	// Step 6 (opt-in): the ftrace negative, measured on a deny revision
+	// (revision 3) of A.
 	if os.Getenv("IG_SHARED_PRODUCT_FTRACE_NEG") == "1" {
-		sharedProductFtraceNegative(t, ctx, node, gc, ia)
+		sharedProductFtraceNegative(t, ctx, node, gc, a, ia)
 	}
 
 	// Step 7: remove, stop, no leftovers.
@@ -337,30 +339,106 @@ func sharedProductRequireGone(t *testing.T, expected []nativeattach.Expected) {
 	}
 }
 
-// sharedProductFtraceNegative flips kernel.ftrace_enabled to 0: Ready must
-// fail; restored to 1, Ready is nil again. The exec verdicts inside the
-// window are recorded as evidence only.
-func sharedProductFtraceNegative(t *testing.T, ctx context.Context, node *NodeEnforcer, gc *gadgetcontext.GadgetContext, ia *sharedPipeInit) {
+// sharedProductFtraceNegative is step 6 (opt-in). It first publishes
+// revision 3 of A with fallback Deny (as step 3's policy) and requires
+// r1000=126 with ftrace on, so the window measures a DENY policy (step 5
+// left A on an allow fallback). It then sets kernel.ftrace_enabled=0, waits
+// for Ready to go NotReady naming ftrace, runs the same uid-0 and uid-1000
+// execs and prints
+//
+//	product-ftrace-window: deny-policy r0=<rc> r1000=<rc> ready=<NotReady reason>
+//
+// The window verdict is evidence only (either outcome is recorded, never
+// failed). ftrace is restored (also by a deferred restore on any failure),
+// Ready must return to nil, r1000 must be 126 again, and it prints
+//
+//	product-ftrace-restore: r1000=<rc>
+func sharedProductFtraceNegative(t *testing.T, ctx context.Context, node *NodeEnforcer, gc *gadgetcontext.GadgetContext, a *BindingSession, ia *sharedPipeInit) {
 	t.Helper()
 	const path = "/proc/sys/kernel/ftrace_enabled"
-	restore := func() {
-		if err := os.WriteFile(path, []byte("1"), 0); err != nil {
-			t.Errorf("restore ftrace_enabled: %v", err)
-		}
+	if _, err := a.Publish(ctx, SharedBindingPolicy{Source: sharedM4Policy("prod-a", "3", fullpolicy.Enforce, fullpolicy.Deny), Container: "a"}); err != nil {
+		t.Fatalf("product-ftrace-neg: revise A to deny: %v", err)
 	}
+	if err := a.Inspect().Protected(3); err != nil {
+		t.Fatalf("product-ftrace-neg: A contract after the deny revision: %v", err)
+	}
+	if err := node.Ready(gc); err != nil {
+		t.Fatalf("product-ftrace-neg: Ready before the toggle: %v", err)
+	}
+	if v := ia.smoke(t, ctx); v != "r0=0 r1000=126" {
+		t.Fatalf("product-ftrace-neg: deny policy before the toggle: %q, want r0=0 r1000=126", v)
+	}
+	restored := false
+	restore := func() error {
+		if restored {
+			return nil
+		}
+		if err := os.WriteFile(path, []byte("1"), 0); err != nil {
+			return fmt.Errorf("restore ftrace_enabled: %w", err)
+		}
+		restored = true
+		return nil
+	}
+	defer func() {
+		if err := restore(); err != nil {
+			t.Errorf("product-ftrace-neg: %v", err)
+		}
+	}()
 	if err := os.WriteFile(path, []byte("0"), 0); err != nil {
 		t.Fatalf("ftrace_enabled=0: %v", err)
 	}
-	err := node.Ready(gc)
-	verdict, verdictErr := ia.smokeE(ctx)
-	restore()
-	if !errors.Is(err, ErrSharedNodeNotReady) || !strings.Contains(err.Error(), "ftrace") {
-		t.Fatalf("product-ftrace-neg: Ready with ftrace off: %v", err)
+	notReady, ok := sharedProductWaitReady(ctx, node, gc, func(err error) bool {
+		return errors.Is(err, ErrSharedNodeNotReady) && strings.Contains(err.Error(), "ftrace")
+	})
+	if !ok {
+		t.Fatalf("product-ftrace-neg: Ready did not go NotReady naming ftrace: %v", notReady)
 	}
-	t.Logf("product-ftrace-neg: Ready %v; A verdicts in the window %q (%v), evidence only", err, verdict, verdictErr)
-	if err := node.Ready(gc); err != nil {
-		t.Fatalf("product-ftrace-neg: Ready after restore: %v", err)
+	window, windowErr := ia.smokeE(ctx)
+	r0, r1000 := sharedProductSmokeCodes(window)
+	fmt.Printf("product-ftrace-window: deny-policy r0=%s r1000=%s ready=%s\n", r0, r1000, strings.ReplaceAll(notReady.Error(), "\n", "; "))
+	// The harness keys on "product-ftrace-neg: Ready" (40-pass2.sh).
+	t.Logf("product-ftrace-neg: Ready %v; window verdicts %q (%v), evidence only", notReady, window, windowErr)
+	if err := restore(); err != nil {
+		t.Fatalf("product-ftrace-neg: %v", err)
 	}
+	if err, ok := sharedProductWaitReady(ctx, node, gc, func(err error) bool { return err == nil }); !ok {
+		t.Fatalf("product-ftrace-neg: Ready did not recover after restore: %v", err)
+	}
+	after := ia.smoke(t, ctx)
+	_, r1000 = sharedProductSmokeCodes(after)
+	fmt.Printf("product-ftrace-restore: r1000=%s\n", r1000)
+	if after != "r0=0 r1000=126" {
+		t.Fatalf("product-ftrace-neg: deny policy after restore: %q, want r0=0 r1000=126", after)
+	}
+}
+
+// sharedProductWaitReady polls Ready (100 ms, at most 10 s) until done
+// accepts its result; it returns that result and whether done accepted it.
+func sharedProductWaitReady(ctx context.Context, node *NodeEnforcer, gc *gadgetcontext.GadgetContext, done func(error) bool) (error, bool) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := node.Ready(gc)
+		if done(err) {
+			return err, true
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return err, false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// sharedProductSmokeCodes parses "r0=<rc> r1000=<rc>" ("?" when absent).
+func sharedProductSmokeCodes(out string) (string, string) {
+	r0, r1000 := "?", "?"
+	for _, field := range strings.Fields(out) {
+		if v, ok := strings.CutPrefix(field, "r0="); ok {
+			r0 = v
+		} else if v, ok := strings.CutPrefix(field, "r1000="); ok {
+			r1000 = v
+		}
+	}
+	return r0, r1000
 }
 
 // sharedProductRestart starts the node in a child test process, SIGKILLs
