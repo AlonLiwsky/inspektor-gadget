@@ -224,7 +224,12 @@ Identity is the BTF sha256 **and** the GNU build-id (`/sys/kernel/notes`)
 **and** the release (`uname -r`); the BTF alone does not identify a build. The
 node also requires x86_64, `bpf` in the active LSM list, `ftrace_enabled=1` and
 no livepatch (`TAINT_LIVEPATCH` clear). Ftrace and livepatch are re-read at
-every `Ready`. The image is bound to the build as well: its failure-frame
+every `Ready`. Ftrace is detected, not guarded: on both pinned kernels
+`sysctl kernel.ftrace_enabled=0` is accepted while the node runs (no EBUSY),
+and `Ready` reports NotReady ("ftrace is not enabled") at its next call
+(G011 pass 2). Whether enforcement continues while ftrace is off has not been
+measured; treat a NotReady node as unprotected. Only root can change the
+sysctl. The image is bound to the build as well: its failure-frame
 `attach_to` targets must equal the pinned symbols and the loaded eBPF object's
 sha256 (recorded by the eBPF operator for native owners,
 `operators.NativeProgramDigestKey`) must be one of the pinned product objects
