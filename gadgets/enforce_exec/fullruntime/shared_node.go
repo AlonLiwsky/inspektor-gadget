@@ -52,13 +52,13 @@ type SharedNodeConfig struct {
 	ContainerdAddress            string
 	ImageProcRoot, ImageHostRoot string
 	// AttachState, if set, reports the native attach while StartNode is
-	// still blocked in the gadget's Start (NodeEnforcer.Ready is
-	// only reachable after StartNode returns): it is called with the
-	// *nativeattach.ErrAttachCapacity of every refused attempt (show the
-	// node NotReady with it), then once with nil when the refusal no longer
-	// applies (attached, or another error ended the start, which StartNode
-	// returns). When the bounded retry runs out, the last call is the last
-	// refusal and StartNode returns it. It must not block.
+	// still retrying (NodeEnforcer.Ready is only reachable after StartNode
+	// returns): it is called with the *nativeattach.ErrAttachCapacity of
+	// every refused attempt (show the node NotReady with it), then once with
+	// nil when the refusal no longer applies (started, or another error ended
+	// the start, which StartNode returns). When the bounded retry runs out,
+	// the last call is the last refusal and StartNode returns it. It is
+	// called outside the host manager's lifecycle lock. It must not block.
 	AttachState func(error)
 }
 
@@ -450,10 +450,13 @@ type sharedQualificationKey struct{}
 // SharedNodeQualification is a TEST/QUALIFICATION-ONLY seam. It does nothing
 // unless the binary carries the enforce_exec_shared_qualification build tag.
 // Run must start the shared candidate image once through the host's existing
-// manager with opt applied (its one StartGadget call) and return without
+// manager with opt applied (one StartGadget call) and return without
 // waiting for the gadget to finish. stop must tear that gadget down and join
 // the manager's detach; done yields the gadget run's result when it ends. It is
-// never a product admission path.
+// never a product admission path. After a capacity refusal StartNode calls
+// Run again (a fresh opt) once stop has returned, as SharedNodeHost.Run; the
+// same rules apply: no two concurrent StartNode calls for one gadget ID, and
+// stop should be a no-op when its own StartGadget failed.
 type SharedNodeQualification struct {
 	Run func(ctx context.Context, opt gadgetcontext.Option) (stop func(context.Context) error, done <-chan error, err error)
 	// Publisher optionally builds the route publisher over the started host
@@ -492,7 +495,7 @@ type SharedNodeQualification struct {
 	// Package tests only: the live image test's own overlay mount.
 	imageSource sharedImageLayerSource
 	// attachRetry replaces sharedNodeAttachRetry() (nil: the default).
-	// Package tests only; it must still be bounded (admission checks it).
+	// Package tests only; it must still be bounded (StartNode checks it).
 	attachRetry *nativeattach.Retry
 }
 
@@ -512,10 +515,23 @@ type sharedNodeHostKey struct{}
 
 // SharedNodeHost is the product StartNode host: Run must start the shared
 // product image once through the host's existing manager with opt applied
-// (its one StartGadget call) and return without waiting for the gadget to
+// (one StartGadget call) and return without waiting for the gadget to
 // finish; stop must tear that gadget down and join the manager's detach;
 // done yields the gadget run's result when it ends. It carries nothing else:
 // no publisher override and no test seam.
+//
+// The gadget's Start never waits for attach capacity (WithNodeEnforcer opts
+// out of the in-Start retry): a capacity refusal fails that StartGadget at
+// once. StartNode then calls stop, and only after stop returns does it wait
+// (bounded, see sharedNodeAttachRetry) and call Run again with a fresh opt.
+// So the manager's lifecycle lock is never held across a backoff wait, and
+// the host must accept a later Run for the same gadget ID once stop returned
+// nil (a failed stop ends StartNode without a further attempt).
+//
+// The host must not run two StartNode calls for the same gadget ID
+// concurrently: stop targets the gadget ID, so a refused attempt's stop could
+// tear down the other caller's live gadget. stop should be a no-op (return
+// nil) when its own StartGadget failed.
 type SharedNodeHost struct {
 	Run func(ctx context.Context, opt gadgetcontext.Option) (stop func(context.Context) error, done <-chan error, err error)
 }

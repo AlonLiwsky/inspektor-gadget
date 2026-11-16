@@ -30,7 +30,11 @@ const (
 	// the whole transaction with capped exponential backoff until it attaches
 	// or the gadget context is done. A nativeattach.Retry replaces the default
 	// (reporting through Retry.State); false opts out and refuses at once, as
-	// the legacy per-cgroup Owner does. Ordinary gadgets ignore it.
+	// the legacy per-cgroup Owner and the shared node do. The retry runs
+	// inside Start, so a gadget started through an instance manager holds
+	// the manager's lifecycle lock across every backoff wait; such hosts
+	// opt out and retry the whole start outside the lock instead (the shared
+	// node's StartNode does). Ordinary gadgets ignore it.
 	NativeAttachRetryKey = "ebpf/native-attach-retry"
 	// NativeLoadedProgramPrefix borrows every program in the exact admitted
 	// recovered collection for H's pin/FD ledger. It is not an invocation
