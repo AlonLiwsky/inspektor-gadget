@@ -320,49 +320,19 @@ var sharedProductKernelCheck = verifySharedProductKernel
 
 // verifySharedProductKernel admits only an exact sharedProductPins build:
 // x86_64, a pinned vmlinux BTF digest, its release and GNU build-id, the bpf
-// LSM active, ftrace enabled and no livepatch. It returns the BTF digest and
-// its pin. Every refusal wraps ErrSharedNativeUnavailable with the reason.
+// LSM active, ftrace enabled and no livepatch (verifyKernelIdentity, the
+// check exported as VerifyKernel). It returns the BTF digest and its pin.
+// Every refusal wraps ErrSharedNativeUnavailable with the reason.
 func verifySharedProductKernel() (string, sharedProductPin, error) {
-	refuse := func(cause error) (string, sharedProductPin, error) {
-		return "", sharedProductPin{}, fmt.Errorf("shared product node refused: %w: %w", cause, ErrSharedNativeUnavailable)
-	}
-	p := sharedProductKernelProbes
-	if arch := p.arch(); arch != "amd64" {
-		return refuse(fmt.Errorf("shared product node requires x86_64, running on %s", arch))
-	}
-	digest, err := p.btfDigest()
+	id, err := verifyKernelIdentity(sharedProductKernelProbes, sharedProductIdentities)
 	if err != nil {
-		return refuse(fmt.Errorf("kernel BTF: %w", err))
+		return "", sharedProductPin{}, fmt.Errorf("shared product node refused: %w: %w", err, ErrSharedNativeUnavailable)
 	}
-	pin, ok := sharedProductPins[digest]
+	pin, ok := sharedProductPins[id.BTF]
 	if !ok {
-		return refuse(fmt.Errorf("kernel BTF sha256 %s is not a qualified shared product kernel build", digest))
+		return "", sharedProductPin{}, fmt.Errorf("shared product node refused: no product pin for BTF %s: %w", id.BTF, ErrSharedNativeUnavailable)
 	}
-	release, err := p.release()
-	if err != nil {
-		return refuse(fmt.Errorf("kernel release: %w", err))
-	}
-	if release != pin.Release {
-		return refuse(fmt.Errorf("kernel release %q, the pinned BTF %s is %q", release, digest, pin.Release))
-	}
-	buildID, err := p.buildID()
-	if err != nil {
-		return refuse(fmt.Errorf("kernel build-id: %w", err))
-	}
-	if buildID != pin.BuildID {
-		return refuse(fmt.Errorf("kernel build-id %s, %s is pinned to %s", buildID, pin.Release, pin.BuildID))
-	}
-	lsm, err := p.lsm()
-	if err != nil {
-		return refuse(fmt.Errorf("LSM list: %w", err))
-	}
-	if err := requireBPFLSM(lsm); err != nil {
-		return refuse(err)
-	}
-	if err := checkSharedProductKernelRuntime(p); err != nil {
-		return refuse(err)
-	}
-	return digest, pin, nil
+	return id.BTF, pin, nil
 }
 
 // taintLivepatch is TAINT_LIVEPATCH (bit 15, include/linux/panic.h).
@@ -375,21 +345,21 @@ const taintLivepatch = 1 << 15
 func checkSharedProductKernelRuntime(p sharedProductKernelProbe) error {
 	ftrace, err := p.ftrace()
 	if err != nil {
-		return fmt.Errorf("ftrace_enabled: %w", err)
+		return kernelCheckFailed(KernelCheckFtrace, fmt.Errorf("ftrace_enabled: %w", err))
 	}
 	if strings.TrimSpace(ftrace) != "1" {
-		return fmt.Errorf("ftrace is not enabled (kernel.ftrace_enabled=%s)", strings.TrimSpace(ftrace))
+		return kernelCheckFailed(KernelCheckFtrace, fmt.Errorf("ftrace is not enabled (kernel.ftrace_enabled=%s)", strings.TrimSpace(ftrace)))
 	}
 	tainted, err := p.tainted()
 	if err != nil {
-		return fmt.Errorf("kernel taint: %w", err)
+		return kernelCheckFailed(KernelCheckLivepatch, fmt.Errorf("kernel taint: %w", err))
 	}
 	mask, err := strconv.ParseUint(strings.TrimSpace(tainted), 10, 64)
 	if err != nil {
-		return fmt.Errorf("kernel taint %q: %w", strings.TrimSpace(tainted), err)
+		return kernelCheckFailed(KernelCheckLivepatch, fmt.Errorf("kernel taint %q: %w", strings.TrimSpace(tainted), err))
 	}
 	if mask&taintLivepatch != 0 {
-		return fmt.Errorf("kernel is livepatched (taint %d has TAINT_LIVEPATCH)", mask)
+		return kernelCheckFailed(KernelCheckLivepatch, fmt.Errorf("kernel is livepatched (taint %d has TAINT_LIVEPATCH)", mask))
 	}
 	return nil
 }

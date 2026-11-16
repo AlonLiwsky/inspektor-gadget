@@ -274,6 +274,34 @@ The job only builds: **loading the objects on the two AL2023 kernels stays
 a manual EC2 gate** (the product attached tests with
 `IG_SHARED_PRODUCT_OBJECT`), because there are no AL2023 CI runners.
 
+### Exported kernel check (other enforcement sections)
+
+The identity check that gates the shared engine is exported for other BPF
+LSM sections (`kernel_identity.go`), so they do not keep a copy of it:
+
+- `QualifiedKernels() []KernelIdentity`: the pinned builds above
+  (`Arch`, `Release`, `BTF`, `BuildID`), sorted by release.
+- `VerifyKernel(qualified []KernelIdentity) (KernelIdentity, error)`: the
+  start check. It admits the running kernel only if it is exactly one entry
+  of `qualified` (architecture, BTF sha256, release and GNU build-id), `bpf`
+  is in the active LSM list, `ftrace_enabled=1` and `TAINT_LIVEPATCH` is
+  clear. The shared engine's own gate runs the same code over its pins.
+- `CheckKernelRuntime() error`: re-reads ftrace and the livepatch taint.
+  Call it at every status computation; it is never cached.
+
+Every failure is a `*KernelCheckError` whose `Check` names the failed check
+(`qualified-list`, `arch`, `btf`, `release`, `build-id`, `bpf-lsm`, `ftrace`,
+`livepatch`) and whose message gives the reason. A read failure is a failed
+check, and so is an empty list, a malformed entry (an empty field, a BTF
+digest that is not 64 lowercase hex characters such as `"*"`, a non-hex
+build-id) or a BTF digest listed twice. There is no wildcard and no way to
+pass a check without a listed build. A section passes its own compiled-in
+list, built from `QualifiedKernels()` or from entries with its own posted
+evidence; configuration must never add an entry. If `VerifyKernel` fails, the
+section must not load. If `CheckKernelRuntime` fails, the section is NotReady
+and counts as unprotected: ftrace off stops BPF trampolines, so it is
+detected, not guarded (see the measurement above).
+
 ### Why an allowlist
 
 CO-RE relocates field offsets but cannot verify:

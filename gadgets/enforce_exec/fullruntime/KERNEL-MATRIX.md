@@ -5,6 +5,11 @@ require the existing architecture, BPF LSM, ftrace, sysfs provenance, size and
 trusted-owner checks. A release string, Linux source SHA or similar configuration
 is not an admission substitute. No arbitrary-kernel or arm64 support is claimed.
 
+This is the persistent-owner matrix only. The shared engine's kernel builds
+(two AL2023 kernels, identified by BTF sha256, release and GNU build-id) and
+its identity check, exported for other sections as `VerifyKernel` and
+`CheckKernelRuntime`, are in README.md, "Shared engine: supported kernels".
+
 ## Original artifact (preserved)
 
 BTF SHA-256: `12f7d6270d8090e944941d3ff77c13339cebe1c394f4ef0d27be1bff0d09561b`.

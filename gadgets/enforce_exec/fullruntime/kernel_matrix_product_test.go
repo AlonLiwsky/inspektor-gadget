@@ -65,19 +65,19 @@ func TestSharedProductPinsMatchTestdata(t *testing.T) {
 
 // fakeProductKernel is a pinned kernel's identity as the probe reads it.
 type fakeProductKernel struct {
-	arch, digest, release, buildID, lsm, ftrace, tainted string
-	digestErr                                            error
+	arch, digest, release, buildID, lsm, ftrace, tainted             string
+	digestErr, releaseErr, buildIDErr, lsmErr, ftraceErr, taintedErr error
 }
 
 func (k *fakeProductKernel) probe() sharedProductKernelProbe {
 	return sharedProductKernelProbe{
 		arch:      func() string { return k.arch },
 		btfDigest: func() (string, error) { return k.digest, k.digestErr },
-		release:   func() (string, error) { return k.release, nil },
-		buildID:   func() (string, error) { return k.buildID, nil },
-		lsm:       func() (string, error) { return k.lsm, nil },
-		ftrace:    func() (string, error) { return k.ftrace, nil },
-		tainted:   func() (string, error) { return k.tainted, nil },
+		release:   func() (string, error) { return k.release, k.releaseErr },
+		buildID:   func() (string, error) { return k.buildID, k.buildIDErr },
+		lsm:       func() (string, error) { return k.lsm, k.lsmErr },
+		ftrace:    func() (string, error) { return k.ftrace, k.ftraceErr },
+		tainted:   func() (string, error) { return k.tainted, k.taintedErr },
 	}
 }
 
@@ -139,7 +139,7 @@ func TestSharedProductKernelGate(t *testing.T) {
 		"no bpf LSM":                 {func(k *fakeProductKernel) { k.lsm = "lockdown,capability,selinux" }, "BPF LSM not active"},
 		"bpf LSM prefix only":        {func(k *fakeProductKernel) { k.lsm = "bpfx,selinux" }, "BPF LSM not active"},
 		"ftrace off":                 {func(k *fakeProductKernel) { k.ftrace = "0\n" }, "ftrace is not enabled"},
-		"non-amd64":                  {func(k *fakeProductKernel) { k.arch = "arm64" }, "requires x86_64"},
+		"non-amd64":                  {func(k *fakeProductKernel) { k.arch = "arm64" }, "require amd64, running on arm64"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
