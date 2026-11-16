@@ -49,6 +49,7 @@ func (e *KernelCheckError) Error() string {
 	}
 	return e.Err.Error()
 }
+
 func (e *KernelCheckError) Unwrap() error {
 	if e == nil {
 		return nil

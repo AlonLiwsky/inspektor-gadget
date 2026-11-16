@@ -532,8 +532,10 @@ func (c *productCommander) publishFirst(ctx context.Context, slot uint32, cgroup
 	if cause == nil {
 		cause = fmt.Errorf("invariant code %d", int32(code))
 	}
-	return code, &ErrSharedPublishUnknown{Slot: slot, Cgroup: cgroup, Scope: scope,
-		Err: fmt.Errorf("publish slot %d (route read back %+v): %w: %w", slot, route.State, cause, errSharedPublishUnknown)}
+	return code, &ErrSharedPublishUnknown{
+		Slot: slot, Cgroup: cgroup, Scope: scope,
+		Err: fmt.Errorf("publish slot %d (route read back %+v): %w: %w", slot, route.State, cause, errSharedPublishUnknown),
+	}
 }
 
 func (c *productCommander) revise(ctx context.Context, slot uint32, cgroup uint64, policy SharedBindingPolicy) (uint32, error) {
