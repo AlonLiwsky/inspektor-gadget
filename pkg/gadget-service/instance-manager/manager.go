@@ -16,10 +16,14 @@ package instancemanager
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 
+	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
+
 	log "github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/logger"
@@ -45,6 +49,10 @@ type Service interface {
 // Manager manages running gadgets headless. It can run gadgets in the background as
 // well as buffer and multiplex their output.
 type Manager struct {
+	// lifecycleMu serializes lifecycle operations; initialization is safe for a zero-value Manager.
+	lifecycleOnce sync.Once
+	lifecycleMu   chan struct{}
+
 	// mu is to be used whenever a gadget is installed or a new client wants to attach to a gadget
 	mu              sync.Mutex
 	gadgetInstances map[string]*GadgetInstance
@@ -79,6 +87,12 @@ func New(runtime runtime.Runtime, options ...Option) (*Manager, error) {
 
 // RemoveGadget cancels and removes a gadget
 func (m *Manager) RemoveGadget(id string) error {
+	_ = m.lockLifecycle(context.Background())
+	defer m.unlockLifecycle()
+	return m.removeGadget(id)
+}
+
+func (m *Manager) removeGadget(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	gadgetInstance, ok := m.gadgetInstances[id]
@@ -91,32 +105,38 @@ func (m *Manager) RemoveGadget(id string) error {
 }
 
 func (m *Manager) RunGadget(instance *api.GadgetInstance) {
+	_ = m.lockLifecycle(context.Background())
+	defer m.unlockLifecycle()
+	if _, err := m.runGadget(instance); err != nil {
+		log.Errorf("creating gadget: %v", err)
+	}
+}
+
+func (m *Manager) runGadget(instance *api.GadgetInstance, options ...gadgetcontext.Option) (*GadgetInstance, error) {
+	if instance == nil || instance.GadgetConfig == nil || instance.Id == "" {
+		return nil, fmt.Errorf("missing gadget ID or configuration")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.gadgetInstances[instance.Id]; exists {
+		return nil, fmt.Errorf("gadget %q already exists", instance.Id)
+	}
+	instance = proto.Clone(instance).(*api.GadgetInstance)
 	ctx, cancel := context.WithCancel(context.Background())
 	gi := &GadgetInstance{
 		id:              instance.Id,
 		name:            instance.Name,
 		mgr:             m,
-		request:         instance.GadgetConfig,
+		request:         proto.Clone(instance.GadgetConfig).(*api.GadgetRunRequest),
 		eventBuffer:     make([]*bufferedEvent, 1024),
 		eventBufferOffs: 0,
 		cancel:          cancel,
 		clients:         map[*GadgetInstanceClient]struct{}{},
 		ready:           make(chan struct{}),
+		started:         make(chan struct{}),
+		stopped:         make(chan struct{}),
 	}
-	m.mu.Lock()
 	m.gadgetInstances[gi.id] = gi
-	// Adopt all clients in the waiting room
-	if m.asyncGadgetRunCreation {
-		m.waitingRoom.Range(func(key, value any) bool {
-			if value.(string) == gi.id {
-				log.Debugf("adopting client for gadget instance %q", gi.id)
-				gi.AddClient(key.(api.GadgetManager_RunGadgetServer))
-				m.waitingRoom.Delete(key)
-			}
-			return true
-		})
-	}
-	m.mu.Unlock()
 	go func() {
 		defer cancel()
 		l := log.StandardLogger()
@@ -127,16 +147,26 @@ func (m *Manager) RunGadget(instance *api.GadgetInstance) {
 			"instanceName": instance.Name,
 			"gadget":       instance.GadgetConfig.ImageName,
 		}), logLevel: logger.Level(instance.GadgetConfig.LogLevel)}
-		err := gi.Run(ctx, m.runtime, lwr)
+		err := gi.Run(ctx, m.runtime, lwr, options...)
+		gi.mu.Lock()
+		if gi.state != stateRunning && err == nil {
+			err = fmt.Errorf("gadget exited before startup completed")
+		}
 		if err != nil {
-			log.Errorf("running gadget: %v", err)
-			gi.mu.Lock()
 			gi.state = stateError
 			gi.error = err
-			gi.mu.Unlock()
+		} else {
+			gi.state = stateInvalid
 		}
+		gi.mu.Unlock()
+		if err != nil {
+			log.Errorf("running gadget: %v", err)
+		}
+		gi.readyOnce.Do(func() { close(gi.ready) })
 		gi.RemoveClients()
+		close(gi.stopped)
 	}()
+	return gi, nil
 }
 
 func (m *Manager) LookupInstance(gadgetInstanceID string) *GadgetInstance {
@@ -170,6 +200,8 @@ func (m *Manager) InstanceState(gadgetInstanceID string) (*api.GadgetInstanceSta
 	if gi == nil {
 		return nil, ErrNotFound
 	}
+	gi.mu.Lock()
+	defer gi.mu.Unlock()
 	var msg string
 	if gi.error != nil {
 		msg = gi.error.Error()

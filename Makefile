@@ -357,6 +357,20 @@ clang-format:
 		-v $(shell pwd):/work -w /work $(GADGET_BUILDER) \
 		make clang-format-outside-docker
 
+# Rebuild the pinned enforce_exec product objects in the CI job's pinned
+# Debian trixie image and compare them with their pins (objects in
+# $(ENFORCE_EXEC_PRODUCT_OUT)).
+ENFORCE_EXEC_PRODUCT_IMAGE ?= debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
+ENFORCE_EXEC_PRODUCT_OUT ?= $(shell pwd)/enforce-exec-product-objects
+.PHONY: enforce-exec-product-objects
+enforce-exec-product-objects:
+	mkdir -p $(ENFORCE_EXEC_PRODUCT_OUT)
+	docker run --rm -e ENFORCE_EXEC_PRODUCT_CONTAINER=1 \
+		-v $(shell pwd):/checkout:ro -v $(ENFORCE_EXEC_PRODUCT_OUT):/out \
+		$(ENFORCE_EXEC_PRODUCT_IMAGE) bash -c ' \
+		/checkout/gadgets/enforce_exec/fullruntime/bpf/install-product-toolchain.sh /tmp/debs && \
+		/checkout/gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check /out'
+
 .PHONY: clang-format-outside-docker
 clang-format-outside-docker:
 	find ./ -type f \( \( -iname '*.h' ! -iname "vmlinux.h" \) -o -iname '*.c' \) -execdir $(CLANG_FORMAT) -i {} \;

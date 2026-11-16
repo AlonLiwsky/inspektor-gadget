@@ -15,12 +15,26 @@
 package ig
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/pflag"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/client-go/kubernetes"
+
+	igconfig "github.com/inspektor-gadget/inspektor-gadget/pkg/config"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/k8sutil"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/params"
+	grpcruntime "github.com/inspektor-gadget/inspektor-gadget/pkg/runtime/grpc"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/testing/utils"
 )
 
@@ -203,45 +217,297 @@ func (ig *runner) WaitForReady(t *testing.T) {
 	if !ig.waitReady || ig.readyWatcher == nil {
 		return
 	}
-
 	nodeMode := utils.CurrentTestComponent == utils.KubectlGadgetTestComponent
+	partial, err := waitForReadiness(ig.readyWatcher, nodeMode, readinessTimeout, ig.ExitCh(), ig.ExitErr)
+	if err != nil {
+		t.Fatalf("[%s] %v (%s)", ig.Name, err, ig.readyWatcher.summary())
+	}
+	if partial {
+		t.Logf("[%s] gadget readiness timed out after %s; proceeding with partial readiness (%s)",
+			ig.Name, readinessTimeout, ig.readyWatcher.summary())
+	} else {
+		t.Logf("[%s] gadget ready (%s)", ig.Name, ig.readyWatcher.summary())
+	}
+}
 
-	deadline := time.NewTimer(readinessTimeout)
+// waitForReadiness returns partial=true only for a live gadget with at least one
+// capturing instance when the deadline expires. A known process exit wins over
+// both the complete-ready and partial-ready paths, regardless of select order.
+func waitForReadiness(w *readinessWatcher, nodeMode bool, timeout time.Duration, exitCh <-chan struct{}, exitErr func() error) (partial bool, err error) {
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
-
-	// exitCh fires if the gadget process exits before becoming ready (nil when exit tracking
-	// is disabled, which blocks forever in the select and is thus a no-op).
-	exitCh := ig.ExitCh()
-
-	for {
-		if ig.readyWatcher.ready(nodeMode) {
-			t.Logf("[%s] gadget ready (%s)", ig.Name, ig.readyWatcher.summary())
-			return
+	exited := func() error {
+		if err := exitErr(); err != nil {
+			return fmt.Errorf("gadget exited before it started capturing: %w", err)
 		}
+		return fmt.Errorf("gadget exited before it started capturing")
+	}
+	checkExit := func() error {
 		select {
-		case <-ig.readyWatcher.updated:
 		case <-exitCh:
-			// The process exited before all instances reported ready. A StartAndStop gadget
-			// must keep running to capture, so an early exit is always a failure; fail now
-			// instead of waiting for the timeout. The deferred Stop() prints the gadget's
-			// stderr (the actual error).
-			if err := ig.ExitErr(); err != nil {
-				t.Fatalf("[%s] gadget exited before it started capturing: %v (%s)",
-					ig.Name, err, ig.readyWatcher.summary())
-			}
-			t.Fatalf("[%s] gadget exited before it started capturing (%s)",
-				ig.Name, ig.readyWatcher.summary())
-		case <-deadline.C:
-			// If at least one instance is capturing, proceed rather than failing: a lagging
-			// or unreachable node (or an over-counted "want") must not turn an otherwise
-			// capturing run into a hard failure. Only fail if nothing became ready at all.
-			if ig.readyWatcher.someReady(nodeMode) {
-				t.Logf("[%s] gadget readiness timed out after %s; proceeding with partial readiness (%s)",
-					ig.Name, readinessTimeout, ig.readyWatcher.summary())
-				return
-			}
-			t.Fatalf("[%s] gadget did not become ready within %s (%s)",
-				ig.Name, readinessTimeout, ig.readyWatcher.summary())
+			return exited()
+		default:
+			return nil
 		}
 	}
+	for {
+		if w.ready(nodeMode) {
+			if err := checkExit(); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+		select {
+		case <-w.updated:
+		case <-exitCh:
+			return false, exited()
+		case <-deadline.C:
+			// A closed exit channel and an expired timer can both be selected. Never
+			// release a workload after a known exit, even if some nodes were ready.
+			if err := checkExit(); err != nil {
+				return false, err
+			}
+			if w.someReady(nodeMode) {
+				return true, nil
+			}
+			return false, fmt.Errorf("gadget did not become ready within %s", timeout)
+		}
+	}
+}
+
+// stderr is piped, so logrus uses its non-terminal text format. Require the
+// complete remote message: the bare client "running..." precedes subscription.
+// A target can finish while the client is still waiting for other targets.
+// Both error and clean remote termination invalidate the startup barrier.
+var remoteTerminated = regexp.MustCompile(`(?:^| )level=debug msg="([a-zA-Z0-9._-]+) +\| (done from server side \(.*\))"(?: |$)`)
+
+var remoteRunning = regexp.MustCompile(`(?:^| )level=debug msg="([a-zA-Z0-9._-]+) +\| running\.\.\."(?: |$)`)
+
+type nodeReadiness struct {
+	expected    map[string]bool
+	mu          sync.Mutex
+	pending     string
+	missing     map[string]bool
+	ready       chan struct{}
+	failed      chan struct{}
+	terminalErr error
+}
+
+func newNodeReadiness(nodes []string) *nodeReadiness {
+	r := &nodeReadiness{
+		expected: make(map[string]bool),
+		missing:  make(map[string]bool),
+		ready:    make(chan struct{}),
+		failed:   make(chan struct{}),
+	}
+	for _, node := range nodes {
+		r.missing[node] = true
+		r.expected[node] = true
+	}
+	return r
+}
+
+func (r *nodeReadiness) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pending += string(p)
+	for {
+		line, rest, ok := strings.Cut(r.pending, "\n")
+		if !ok {
+			break
+		}
+		r.pending = rest
+		if match := remoteTerminated.FindStringSubmatch(line); len(match) == 3 && r.expected[match[1]] && r.terminalErr == nil {
+			r.terminalErr = fmt.Errorf("node %s terminated before capture: %s", match[1], match[2])
+			close(r.failed)
+		}
+		match := remoteRunning.FindStringSubmatch(line)
+		if len(match) == 2 && r.missing[match[1]] {
+			delete(r.missing, match[1])
+			if len(r.missing) == 0 {
+				close(r.ready)
+			}
+		}
+	}
+	return len(p), nil
+}
+
+func (r *nodeReadiness) failure(cause error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	nodes := make([]string, 0, len(r.missing))
+	for node := range r.missing {
+		nodes = append(nodes, node)
+	}
+	sort.Strings(nodes)
+	return fmt.Errorf("remote gadget readiness missing nodes [%s]: %w", strings.Join(nodes, ", "), cause)
+}
+
+func (r *nodeReadiness) wait(ctx context.Context, exited <-chan struct{}, exitError func() error) error {
+	if len(r.expected) == 0 {
+		return fmt.Errorf("no expected gadget nodes")
+	}
+	exitFailure := func() error {
+		err := exitError()
+		if err == nil {
+			err = fmt.Errorf("command exited before capture")
+		}
+		return r.failure(err)
+	}
+	select {
+	case <-ctx.Done():
+		return r.failure(ctx.Err())
+	case <-exited:
+		return exitFailure()
+	case <-r.failed:
+		return r.failure(r.terminalErr)
+	case <-r.ready:
+		// Do not release a workload if cancellation or target/process exit is known.
+		if err := ctx.Err(); err != nil {
+			return r.failure(err)
+		}
+		select {
+		case <-r.failed:
+			return r.failure(r.terminalErr)
+		case <-exited:
+			return exitFailure()
+		default:
+			return nil
+		}
+	}
+}
+
+func (ig *runner) kubernetesTargets(ctx context.Context) ([]string, string, error) {
+	flags := pflag.NewFlagSet("test readiness", pflag.ContinueOnError)
+	flags.ParseErrorsAllowlist.UnknownFlags = true
+	config := genericclioptions.NewConfigFlags(false)
+	config.AddFlags(flags)
+	var configPath string
+	flags.StringVar(&configPath, "config", "", "")
+	var selection string
+	var namespace string
+	flags.StringVar(&selection, "node", "", "")
+	flags.StringVar(&namespace, "gadget-namespace", grpcruntime.DefaultGadgetNamespace, "")
+	if err := flags.Parse(ig.flags); err != nil {
+		return nil, "", err
+	}
+	if err := rejectImplicitTargetConfig(flags, configPath); err != nil {
+		return nil, "", err
+	}
+	client, err := k8sutil.NewClientsetFromConfigFlags(config)
+	if err != nil {
+		return nil, "", err
+	}
+	if !flags.Changed("gadget-namespace") {
+		namespace, err = gadgetNamespace(ctx, client)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	nodes, err := gadgetNodes(ctx, client, namespace, params.SplitStringSlice(selection))
+	if err != nil {
+		return nil, "", err
+	}
+	// Replace discovery inputs with the exact frozen targets used by the barrier.
+	filtered := make([]string, 0, len(ig.flags))
+	for i := 0; i < len(ig.flags); i++ {
+		arg := ig.flags[i]
+		if arg == "--node" || arg == "--gadget-namespace" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--node=") || strings.HasPrefix(arg, "--gadget-namespace=") {
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	ig.flags = filtered
+	return nodes, namespace, nil
+}
+
+func gadgetNodes(ctx context.Context, client kubernetes.Interface, namespace string, selected []string) ([]string, error) {
+	pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "k8s-app=gadget"})
+	if err != nil {
+		return nil, err
+	}
+	available := make(map[string]bool)
+	for _, pod := range pods.Items {
+		if pod.Spec.NodeName == "" && len(selected) == 0 {
+			return nil, fmt.Errorf("gadget pod %s/%s has no assigned node", namespace, pod.Name)
+		}
+		available[pod.Spec.NodeName] = true
+	}
+	if len(available) == 0 {
+		return nil, fmt.Errorf("no gadget pods found in namespace %q", namespace)
+	}
+	nodes := make([]string, 0, len(available))
+	if len(selected) > 0 {
+		seen := make(map[string]bool)
+		for _, node := range selected {
+			if !available[node] {
+				return nil, fmt.Errorf("node %q does not have a gadget pod in namespace %q", node, namespace)
+			}
+			if seen[node] {
+				return nil, fmt.Errorf("duplicate selected node %q", node)
+			}
+			nodes = append(nodes, node)
+			seen[node] = true
+		}
+	} else {
+		for node := range available {
+			nodes = append(nodes, node)
+		}
+	}
+	sort.Strings(nodes)
+	return nodes, nil
+}
+
+// Match kubectl-gadget namespace auto-discovery, but fail closed on API errors.
+func gadgetNamespace(ctx context.Context, client kubernetes.Interface) (string, error) {
+	daemonSets, err := client.AppsV1().DaemonSets("").List(ctx, metav1.ListOptions{
+		FieldSelector: "metadata.name=gadget", LabelSelector: "k8s-app=gadget",
+	})
+	if err != nil {
+		return "", err
+	}
+	switch len(daemonSets.Items) {
+	case 0:
+		return grpcruntime.DefaultGadgetNamespace, nil
+	case 1:
+		return daemonSets.Items[0].Namespace, nil
+	default:
+		return "", fmt.Errorf("multiple gadget namespaces; specify --gadget-namespace")
+	}
+}
+
+// The CLI applies its own config/env overrides before loading Kubernetes config.
+// Keep this test helper small: require those target overrides to be explicit,
+// rather than silently discovering in a different cluster or reimplementing CLI
+// configuration. The standard KUBECONFIG loader is still used normally.
+func rejectImplicitTargetConfig(flags *pflag.FlagSet, path string) error {
+	explicit := path != ""
+	if !explicit {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		path = filepath.Join(home, ".ig", "config.yaml")
+	}
+	config := igconfig.NewWithPath(path)
+	if err := config.ReadInConfig(); explicit && err != nil {
+		return err
+	}
+	for _, name := range []string{"kubeconfig", "context", "cluster", "user", "server", "tls-server-name", "insecure-skip-tls-verify", "certificate-authority", "client-certificate", "client-key", "token", "as", "as-group", "as-uid", "username", "password", "gadget-namespace", "node"} {
+		key := name
+		if name == "gadget-namespace" || name == "node" {
+			key = igconfig.RuntimeKey + "." + name
+		}
+		if err := config.BindEnv(key); err != nil {
+			return err
+		}
+		if config.IsSet(key) && !flags.Changed(name) {
+			return fmt.Errorf("readiness discovery requires explicit --%s instead of implicit Inspektor Gadget config/environment override", name)
+		}
+	}
+	return nil
 }

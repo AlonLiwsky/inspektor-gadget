@@ -16,6 +16,7 @@ package tests
 
 import (
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -71,7 +72,11 @@ func TestTraceloop(t *testing.T) {
 		testContainer.Stop(t)
 	})
 
-	var runnerOpts []igrunner.Option
+	// Stream phase diagnostics while synchronous Run is still executing.
+	runnerOpts := []igrunner.Option{
+		igrunner.WithFlags("--verbose"),
+		igrunner.WithStdErrWriter(os.Stderr),
+	}
 	var testingOpts []igtesting.Option
 	commonDataOpts := []utils.CommonDataOption{utils.WithContainerImageName(containerImage), utils.WithContainerID(testContainer.ID())}
 
@@ -83,6 +88,9 @@ func TestTraceloop(t *testing.T) {
 		testingOpts = append(testingOpts, igtesting.WithCbBeforeCleanup(utils.PrintLogsFn(ns)))
 		commonDataOpts = append(commonDataOpts, utils.WithK8sNamespace(ns))
 	}
+
+	// Only syscall events match traceloopEvent; keep container events internal.
+	runnerOpts = append(runnerOpts, igrunner.WithOutputMode("traceloop:json,containers:none"))
 
 	runnerOpts = append(runnerOpts, igrunner.WithValidateOutput(
 		func(t *testing.T, output string) {

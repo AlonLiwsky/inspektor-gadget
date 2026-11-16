@@ -104,13 +104,13 @@ func TestMetricsCounterAndGauge(t *testing.T) {
 		for _, m := range sm.Metrics {
 			if m.Name == "ctr" {
 				foundCtr = true
-				data, ok := (m.Data).(metricdata.Sum[int64])
+				data, ok := m.Data.(metricdata.Sum[int64])
 				assert.True(t, ok)
 				assert.Equal(t, int64(10), data.DataPoints[0].Value)
 			}
 			if m.Name == "gauge" {
 				foundGauge = true
-				data, ok := (m.Data).(metricdata.Gauge[int64])
+				data, ok := m.Data.(metricdata.Gauge[int64])
 				assert.True(t, ok)
 				assert.Equal(t, int64(9), data.DataPoints[0].Value)
 			}
@@ -184,7 +184,7 @@ func TestMetricsHistogram(t *testing.T) {
 		for _, m := range sm.Metrics {
 			if m.Name == "duration" {
 				found = true
-				data, ok := (m.Data).(metricdata.Histogram[int64])
+				data, ok := m.Data.(metricdata.Histogram[int64])
 				assert.True(t, ok)
 				assert.Equal(t, 1, len(data.DataPoints))
 				assert.Equal(t, len(expectedBuckets), len(data.DataPoints[0].BucketCounts))

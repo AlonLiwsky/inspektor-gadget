@@ -259,10 +259,26 @@ func (c *GadgetContext) Run(paramValues api.ParamValues) error {
 		return fmt.Errorf("starting operators: %w", err)
 	}
 
-	c.Logger().Debugf("running...")
-	WaitForTimeoutOrDone(c)
-
 	var errs []error
+	for _, op := range c.localOperators {
+		if ready, ok := op.(operators.Readiness); ok {
+			if err := ready.Ready(c); err != nil {
+				errs = append(errs, fmt.Errorf("checking operator %q readiness: %w", op.Name(), err))
+				break
+			}
+		}
+	}
+	if len(errs) == 0 && c.onStarted != nil {
+		if err := c.ctx.Err(); err != nil {
+			errs = append(errs, fmt.Errorf("startup canceled: %w", err))
+		} else if err := c.onStarted(); err != nil {
+			errs = append(errs, fmt.Errorf("running startup callback: %w", err))
+		}
+	}
+	if len(errs) == 0 {
+		c.Logger().Debugf("running...")
+		WaitForTimeoutOrDone(c)
+	}
 
 	if err := c.preStop(); err != nil {
 		errs = append(errs, fmt.Errorf("pre-stopping operators: %w", err))

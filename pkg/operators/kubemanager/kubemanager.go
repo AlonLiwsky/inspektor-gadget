@@ -254,6 +254,9 @@ type KubeManagerInstance struct {
 	eventWrappers map[datasource.DataSource]*compat.EventWrapperBase
 
 	containersPublisher *common.ContainersPublisher
+	// A restrictive publisher signal, not an authorization grant. Persisted
+	// scoped instances run without the original authenticated request context.
+	namespaceScopeRequired bool
 }
 
 func (m *KubeManagerInstance) Name() string {
@@ -360,7 +363,7 @@ func (m *KubeManagerInstance) handleGadgetInstance(log logger.Logger) error {
 				case containercollection.EventTypePreCreateContainer:
 					// nothing to do
 				default:
-					log.Errorf("unknown event type, expected either %s, %s, %s or %s, got %s",
+					log.Errorf("unknown event type, expected either %v, %v, %v or %v, got %v",
 						containercollection.EventTypePreCreateContainer,
 						containercollection.EventTypeAddContainer,
 						containercollection.EventTypeRemoveContainer,
@@ -462,13 +465,16 @@ func (k *KubeManager) InstantiateDataOperator(gadgetCtx operators.GadgetContext,
 		containersPublisher: containersPublisher,
 	}
 
-	activate := false
+	// Keep notification-only activation separate from the pre-existing manager
+	// activation paths. Notifications do not establish isolation for another
+	// datasource emitted by the gadget.
+	legacyActivation := false
 
 	// Check, whether the gadget requested a map from us
 	if t, ok := gadgetCtx.GetVar(gadgets.MntNsFilterMapName); ok {
 		if _, ok := t.(*ebpf.Map); ok {
 			gadgetCtx.Logger().Debugf("gadget requested map %s", gadgets.MntNsFilterMapName)
-			activate = true
+			legacyActivation = true
 		}
 	}
 
@@ -476,7 +482,7 @@ func (k *KubeManager) InstantiateDataOperator(gadgetCtx operators.GadgetContext,
 	// require the Attacher interface to be aware of containers
 	if val, ok := gadgetCtx.GetVar("NeedContainerEvents"); ok {
 		if b, ok := val.(bool); ok && b {
-			activate = true
+			legacyActivation = true
 		}
 	}
 
@@ -486,16 +492,22 @@ func (k *KubeManager) InstantiateDataOperator(gadgetCtx operators.GadgetContext,
 	}
 	traceInstance.eventWrappers = wrappers
 	if len(wrappers) > 0 {
-		activate = true
+		legacyActivation = true
 	}
 
 	_, hasPolicyScope := auth.PolicyScopeFromContext(gadgetCtx.Context())
 	policyRequired := hasPolicyScope || strings.EqualFold(paramValues[paramPolicyScope], "true")
-	if !activate {
+	// The persisted policy marker can only add a restriction here. It is not
+	// trusted to authorize namespaces or exempt a gadget from isolation checks.
+	traceInstance.namespaceScopeRequired = policyRequired
+	if !legacyActivation && !enableContainersDs {
 		if policyRequired {
 			return nil, status.Error(codes.PermissionDenied, "gadget does not support Kubernetes namespace isolation")
 		}
 		return nil, nil
+	}
+	if policyRequired && !legacyActivation {
+		return nil, status.Error(codes.PermissionDenied, "container notifications alone do not establish Kubernetes namespace isolation for gadget output")
 	}
 
 	if err := kubemanagerpolicy.EnforcePolicyScopeFromContext(gadgetCtx.Context(), paramValues); err != nil {
@@ -557,7 +569,7 @@ func (m *KubeManagerInstance) Start(gadgetCtx operators.GadgetContext) error {
 
 	containerSelector := newContainerSelector(m.params)
 
-	return m.containersPublisher.PublishContainers(true, []*containercollection.Container{}, containerSelector)
+	return m.containersPublisher.PublishContainers(true, []*containercollection.Container{}, containerSelector, m.namespaceScopeRequired)
 }
 
 func (m *KubeManagerInstance) Stop(gadgetCtx operators.GadgetContext) error {

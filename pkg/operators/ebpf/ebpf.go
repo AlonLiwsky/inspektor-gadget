@@ -42,6 +42,7 @@ import (
 	"oras.land/oras-go/v2"
 
 	"github.com/inspektor-gadget/inspektor-gadget/internal/version"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/config"
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
@@ -116,6 +117,8 @@ func (o *ebpfOperator) InstantiateImageOperator(
 	}
 	r.Close()
 
+	recordNativeProgramDigest(gadgetCtx, program)
+
 	// TODO: do some pre-checks in here, maybe validate hashes, signatures, etc.
 
 	newInstance := &ebpfInstance{
@@ -186,6 +189,11 @@ type ebpfInstance struct {
 	logger         logger.Logger
 	collectionSpec *ebpf.CollectionSpec
 	collection     *ebpf.Collection
+	policy         *policy
+	// Snapshotted during setup: TC setup, publication and attachment must
+	// never observe different recovery selections for one collection.
+	recoveryTestRunFrozen, recoveryTestRunSelected, recoveryTestRunFault bool
+	recoveryTestRunAdmitted                                              bool
 
 	tracers   map[string]*Tracer
 	structs   map[string]*Struct
@@ -217,8 +225,16 @@ type ebpfInstance struct {
 	// map from ebpf variable name to ebpfVar struct
 	vars map[string]*ebpfVar
 
-	links   []link.Link
-	perfFds []int
+	links             []link.Link
+	nativeAttachments map[string]*operators.NativeAttachment
+	perfFds           []int
+
+	// nativeTxn is set once a native resource validator admitted the final
+	// collection. Only then is attach transactional (nativeattach); ordinary
+	// gadgets keep the original attach loop.
+	nativeTxn bool
+	// nativeConstants are the NativeConstantsKey constants set (name -> size).
+	nativeConstants map[string]uint32
 
 	// rawDetachers undo BPF_PROG_ATTACH attachments that don't return a Link
 	// (sk_skb stream_parser/verdict). Run on Stop().
@@ -234,7 +250,9 @@ type ebpfInstance struct {
 
 	gadgetCtx operators.GadgetContext
 	done      chan struct{}
+	doneOnce  sync.Once
 	stopOnce  sync.Once
+	closeOnce sync.Once
 
 	// used to be sure all tracers are done before returning from Stop()
 	wg sync.WaitGroup
@@ -420,6 +438,20 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 		return fmt.Errorf("initializing: %w", err)
 	}
 
+	// Snapshot only administrator configuration; image metadata and request
+	// parameters never supply or override the BPF admission policy.
+	policyConfig, err := NewConfigFromViper(config.Config)
+	if err != nil {
+		return fmt.Errorf("loading BPF policy: %w", err)
+	}
+	i.policy, err = NewPolicy(policyConfig)
+	if err != nil {
+		return fmt.Errorf("creating BPF policy: %w", err)
+	}
+	if err := verifyCollectionSpec(i.collectionSpec, i.policy); err != nil {
+		return err
+	}
+
 	// add extra info to gadgetcontext if requested
 	if gadgetCtx.ExtraInfo() {
 		err = i.addExtraInfo(gadgetCtx)
@@ -451,9 +483,58 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 		return fmt.Errorf("evaluating map params: %w", err)
 	}
 
+	if err := i.initProgramTracers(gadgetCtx); err != nil {
+		return err
+	}
+
+	if len(i.tcHandlers) > 0 {
+		// For now, override enrichment
+		gadgetCtx.SetVar("NeedContainerEvents", true)
+		i.params["iface"] = &param{
+			Param: &api.Param{
+				Key:         ParamIface,
+				Description: "Network interface to attach to",
+			},
+		}
+	}
+
+	i.params[ParamTraceKernel] = &param{
+		Param: &api.Param{
+			Key:          ParamTraceKernel,
+			Title:        "Print Kernel Tracing Messages",
+			Description:  "Prints kernel messages from the trace pipe (e.g. coming from bpf_trace_printk)",
+			DefaultValue: "false",
+			TypeHint:     api.TypeBool,
+			Tags:         []string{api.TagAdvanced, "group:eBPF"},
+		},
+	}
+
+	for name, m := range i.collectionSpec.Maps {
+		gadgetCtx.SetVar(operators.MapSpecPrefix+name, m)
+	}
+	i.publishNativeResources(gadgetCtx)
+
+	return nil
+}
+
+// initProgramTracers creates the per-program network tracers, uprobe tracers
+// and TC handlers selected by section name.
+func (i *ebpfInstance) initProgramTracers(gadgetCtx operators.GadgetContext) error {
 	// Create network tracers, one for each socket filter program
 	// The same applies to uprobe / uretprobe as well.
 	for _, p := range i.collectionSpec.Programs {
+		recovery, err := i.nativeRecoveryTestRunProgram(gadgetCtx, p)
+		if err != nil {
+			return err
+		}
+		if recovery {
+			continue
+		}
+		// A disabled program is never attached (see attachProgram), so its
+		// section name selects no tracer or handler and is not parsed.
+		if i.programAttachTarget(p) == disabledProgram {
+			continue
+		}
 		switch p.Type {
 		case ebpf.Kprobe:
 			if strings.HasPrefix(p.SectionName, "uprobe/") ||
@@ -533,33 +614,6 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 			}
 		}
 	}
-
-	if len(i.tcHandlers) > 0 {
-		// For now, override enrichment
-		gadgetCtx.SetVar("NeedContainerEvents", true)
-		i.params["iface"] = &param{
-			Param: &api.Param{
-				Key:         ParamIface,
-				Description: "Network interface to attach to",
-			},
-		}
-	}
-
-	i.params[ParamTraceKernel] = &param{
-		Param: &api.Param{
-			Key:          ParamTraceKernel,
-			Title:        "Print Kernel Tracing Messages",
-			Description:  "Prints kernel messages from the trace pipe (e.g. coming from bpf_trace_printk)",
-			DefaultValue: "false",
-			TypeHint:     api.TypeBool,
-			Tags:         []string{api.TagAdvanced, "group:eBPF"},
-		},
-	}
-
-	for name, m := range i.collectionSpec.Maps {
-		gadgetCtx.SetVar(operators.MapSpecPrefix+name, m)
-	}
-
 	return nil
 }
 
@@ -838,10 +892,14 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 
 	opts := ebpf.CollectionOptions{
 		MapReplacements: mapReplacements,
-		Cache:           i.bpfOperator.btfCache,
 		Maps: ebpf.MapOptions{
 			PinPath: "/sys/fs/bpf",
 		},
+	}
+	// Partial instances used during preflight may not have an operator, but
+	// must still reach final native-resource validation before allocating.
+	if i.bpfOperator != nil {
+		opts.Cache = i.bpfOperator.btfCache
 	}
 
 	if seBtfSpecI, ok := gadgetCtx.GetVar("socketEnricherbtf"); ok {
@@ -936,6 +994,18 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		}
 		opts.Programs.KernelTypes = btfSpec
 	}
+	// Recheck transformed instructions before kernel map or program loading.
+	if err := verifyCollectionSpec(i.collectionSpec, i.policy); err != nil {
+		return fmt.Errorf("verifying BPF policy before loading: %w", err)
+	}
+	if err := i.applyNativeConstants(gadgetCtx); err != nil {
+		return fmt.Errorf("setting native constants: %w", err)
+	}
+	// Parameters, context variables and enrichers can change map dimensions
+	// after native preflight. Validate the exact final spec before allocating.
+	if err := i.validateNativeResources(gadgetCtx); err != nil {
+		return fmt.Errorf("validating native resources before loading: %w", err)
+	}
 	collection, err := ebpf.NewCollectionWithOptions(i.collectionSpec, opts)
 	if err != nil {
 		var verifierErr *ebpf.VerifierError
@@ -946,6 +1016,12 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		return fmt.Errorf("creating eBPF collection: %w", err)
 	}
 	i.collection = collection
+	if err := i.installNativePoolReaperChain(gadgetCtx); err != nil {
+		return fmt.Errorf("installing native pool reaper chain: %w", err)
+	}
+	if err := i.installNativeTailCalls(); err != nil {
+		return fmt.Errorf("installing native tail calls: %w", err)
+	}
 
 	// Load the OTel entry programs into their type-matching prog-array maps.
 	// OTel symbolization uses BPF tail calls, which require the tail-called
@@ -1056,39 +1132,34 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		}
 	}
 
-	// Attach programs
-	for progName, p := range i.collectionSpec.Programs {
-		l, err := i.attachProgram(gadgetCtx, p, i.collection.Programs[progName])
-		if err != nil {
-			return fmt.Errorf("attaching eBPF program %q: %w", progName, err)
+	if err := i.publishCommandPrograms(gadgetCtx); err != nil {
+		return err
+	}
+
+	// Attach programs. Native (enforcement) collections attach transactionally;
+	// see attachNativeProgramsRetrying. Ordinary gadgets keep this loop unchanged.
+	if i.nativeTxn {
+		if err := i.attachNativeProgramsRetrying(gadgetCtx); err != nil {
+			return err
 		}
-
-		if l == nil {
-			continue
-		}
-
-		i.links = append(i.links, l)
-
-		// We need to store iterators' links because we need them to run the programs
-		if p.Type == ebpf.Tracing && strings.HasPrefix(p.SectionName, iterPrefix) {
-			lIter, ok := l.(*link.Iter)
-			if !ok {
-				return fmt.Errorf("link is not an iterator")
+	} else {
+		for progName, p := range i.collectionSpec.Programs {
+			l, err := i.attachProgram(gadgetCtx, p, i.collection.Programs[progName])
+			if err != nil {
+				return fmt.Errorf("attaching eBPF program %q: %w", progName, err)
 			}
 
-			found := false
-			for _, iter := range i.iterators {
-				if _, ok := iter.iterators[progName]; ok {
-					iter.links[progName] = &linkIterator{
-						link: lIter,
-						typ:  p.AttachTo,
-					}
-					found = true
-					break
-				}
+			if l == nil {
+				continue
 			}
-			if !found {
-				i.logger.Warnf("No iterator will run iterator program %q", progName)
+
+			i.links = append(i.links, l)
+			if err = i.publishNativeAttachment(gadgetCtx, progName, p, l); err != nil {
+				return err
+			}
+
+			if err := i.registerIteratorLink(progName, p, l); err != nil {
+				return err
 			}
 		}
 	}
@@ -1111,8 +1182,32 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 	return nil
 }
 
+// registerIteratorLink stores iterators' links because we need them to run
+// the programs.
+func (i *ebpfInstance) registerIteratorLink(progName string, p *ebpf.ProgramSpec, l link.Link) error {
+	if p.Type != ebpf.Tracing || !strings.HasPrefix(p.SectionName, iterPrefix) {
+		return nil
+	}
+	lIter, ok := l.(*link.Iter)
+	if !ok {
+		return fmt.Errorf("link is not an iterator")
+	}
+
+	for _, iter := range i.iterators {
+		if _, ok := iter.iterators[progName]; ok {
+			iter.links[progName] = &linkIterator{
+				link: lIter,
+				typ:  p.AttachTo,
+			}
+			return nil
+		}
+	}
+	i.logger.Warnf("No iterator will run iterator program %q", progName)
+	return nil
+}
+
 func (i *ebpfInstance) PreStop(gadgetCtx operators.GadgetContext) error {
-	i.stopOnce.Do(func() {
+	i.doneOnce.Do(func() {
 		if i.done != nil {
 			close(i.done)
 		}
@@ -1132,33 +1227,36 @@ func (i *ebpfInstance) detachRawPrograms() {
 func (i *ebpfInstance) Stop(gadgetCtx operators.GadgetContext) error {
 	// Startup-error cleanup calls Stop without the normal PreStop phase.
 	i.PreStop(gadgetCtx)
-	for _, t := range i.tracers {
-		t.close()
-	}
-	i.tracers = nil
-
-	i.detachRawPrograms()
-
-	for _, l := range i.links {
-		gadgets.CloseLink(l)
-	}
-	i.links = nil
-
-	for _, fd := range i.perfFds {
-		// Disable perf event.
-		err := unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_DISABLE, 0)
-		if err != nil {
-			i.logger.Errorf("disabling perf fd: %v", err)
+	i.stopOnce.Do(func() {
+		for _, t := range i.tracers {
+			t.close()
 		}
+		i.tracers = nil
 
-		err = unix.Close(fd)
-		if err != nil {
-			i.logger.Errorf("closing perf fd: %v", err)
+		i.unpublishNativeAttachments(gadgetCtx)
+		i.detachRawPrograms()
+		// Reverse attach order: a native collection's links were appended in
+		// nativeattach.Order, so teardown mirrors attach (nativeattach.Rank).
+		for k := len(i.links) - 1; k >= 0; k-- {
+			gadgets.CloseLink(i.links[k])
 		}
-	}
-	i.perfFds = nil
+		i.links = nil
 
-	i.wg.Wait()
+		for _, fd := range i.perfFds {
+			// Disable perf event.
+			err := unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_DISABLE, 0)
+			if err != nil {
+				i.logger.Errorf("disabling perf fd: %v", err)
+			}
+
+			err = unix.Close(fd)
+			if err != nil {
+				i.logger.Errorf("closing perf fd: %v", err)
+			}
+		}
+		i.perfFds = nil
+		i.wg.Wait()
+	})
 	return nil
 }
 
@@ -1176,25 +1274,29 @@ func (i *ebpfInstance) Close(gadgetCtx operators.GadgetContext) error {
 		i.mappedLibTimers.cancelAll()
 	}
 	i.Stop(gadgetCtx)
+	i.closeOnce.Do(func() {
+		if i.collection != nil {
+			i.unpublishCommandPrograms(gadgetCtx)
+			i.collection.Close()
+			i.collection = nil
+		}
 
-	if i.collection != nil {
-		i.collection.Close()
-		i.collection = nil
-	}
+		for _, networkTracer := range i.networkTracers {
+			networkTracer.Close()
+		}
+		for _, handler := range i.tcHandlers {
+			handler.Close()
+		}
+		for _, uprobeTracer := range i.uprobeTracers {
+			uprobeTracer.Close()
+		}
 
-	for _, networkTracer := range i.networkTracers {
-		networkTracer.Close()
-	}
-	for _, handler := range i.tcHandlers {
-		handler.Close()
-	}
-	for _, uprobeTracer := range i.uprobeTracers {
-		uprobeTracer.Close()
-	}
-
-	i.bpfOperator.mu.Lock()
-	delete(i.bpfOperator.gadgetObjs, gadgetCtx)
-	i.bpfOperator.mu.Unlock()
+		if i.bpfOperator != nil {
+			i.bpfOperator.mu.Lock()
+			delete(i.bpfOperator.gadgetObjs, gadgetCtx)
+			i.bpfOperator.mu.Unlock()
+		}
+	})
 
 	return nil
 }

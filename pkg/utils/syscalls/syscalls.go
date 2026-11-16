@@ -82,8 +82,8 @@ func parseLine(l string, idx int) (*param, error) {
 		return nil, nil
 	}
 
-	// ignore
-	if mp["name"] == "__syscall_nr" {
+	// Ignore the syscall number and internal copies of string arguments.
+	if mp["name"] == "__syscall_nr" || mp["type"] == "__data_loc char[]" {
 		return nil, nil
 	}
 	// Dynamic trace storage holds captured data such as filename strings;

@@ -311,7 +311,7 @@ func (m *EcsManagerInstance) handleGadgetInstance(log logger.Logger) error {
 				case containercollection.EventTypePreCreateContainer:
 					// nothing to do
 				default:
-					log.Errorf("unknown event type, expected either %s, %s or %s, got %s",
+					log.Errorf("unknown event type, expected either %v, %v or %v, got %v",
 						containercollection.EventTypePreCreateContainer,
 						containercollection.EventTypeAddContainer,
 						containercollection.EventTypeRemoveContainer,
@@ -500,7 +500,7 @@ func (m *EcsManagerInstance) Start(gadgetCtx operators.GadgetContext) error {
 
 	containerSelector := newEcsContainerSelector(m.params)
 
-	return m.containersPublisher.PublishContainers(true, []*containercollection.Container{}, containerSelector)
+	return m.containersPublisher.PublishContainers(true, []*containercollection.Container{}, containerSelector, false)
 }
 
 func (m *EcsManagerInstance) Stop(gadgetCtx operators.GadgetContext) error {

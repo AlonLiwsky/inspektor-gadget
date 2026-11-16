@@ -48,3 +48,6 @@ pkg/btfgen/btfs/arm64/*
 
 !gadgets/*.o
 !testdata/*.o
+
+# make enforce-exec-product-objects output
+/enforce-exec-product-objects/

@@ -1,0 +1,30 @@
+Validation on Debian 13 amd64 / Linux 6.12.111, BPF LSM enabled.
+Docker 26.1.5, containerd 1.7.24, runc 1.5.2, crictl 1.32.0.
+Go race detector enabled; no reported races or skips in these passing runs.
+
+Complete kernel suite (three runs):
+--- PASS: TestExecTraceLSMCoexistence (7.08s)
+--- PASS: TestExecKernel (22.12s)
+--- PASS: TestExecRestrictedCRI (5.78s)
+--- PASS: TestExecRestrictedDocker (7.36s)
+--- PASS: TestExecRuntime (3.31s)
+--- PASS: TestExecTraceLSMCoexistence (7.33s)
+--- PASS: TestExecKernel (21.61s)
+--- PASS: TestExecRestrictedCRI (5.33s)
+--- PASS: TestExecRestrictedDocker (6.50s)
+--- PASS: TestExecRuntime (3.35s)
+--- PASS: TestExecTraceLSMCoexistence (8.07s)
+--- PASS: TestExecKernel (25.78s)
+--- PASS: TestExecRestrictedCRI (5.79s)
+--- PASS: TestExecRestrictedDocker (6.96s)
+--- PASS: TestExecRuntime (3.32s)
+PASS
+
+Final additional child-namespace regression (three runs):
+--- PASS: TestExecRestrictedCRI (5.70s)
+--- PASS: TestExecRestrictedDocker (6.41s)
+--- PASS: TestExecRestrictedCRI (6.35s)
+--- PASS: TestExecRestrictedDocker (7.28s)
+--- PASS: TestExecRestrictedCRI (5.75s)
+--- PASS: TestExecRestrictedDocker (6.29s)
+PASS

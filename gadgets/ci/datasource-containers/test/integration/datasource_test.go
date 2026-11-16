@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	ocispec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/require"
@@ -74,8 +75,10 @@ func TestDatasourceContainers(t *testing.T) {
 
 	switch utils.CurrentTestComponent {
 	case utils.IgLocalTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithLocalReady(2*time.Minute))
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-r=%s", utils.Runtime)))
 	case utils.KubectlGadgetTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithKubernetesReady(2*time.Minute))
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-n=%s", ns)))
 		testingOpts = append(testingOpts, igtesting.WithCbBeforeCleanup(utils.PrintLogsFn(ns)))
 	}
@@ -114,6 +117,8 @@ func TestDatasourceContainers(t *testing.T) {
 
 	steps := []igtesting.TestStep{
 		datasourceContainersCmd,
+		// Capture after remote readiness; local ig retains its existing startup delay.
+		utils.Sleep(3 * time.Second),
 	}
 	igtesting.RunTestSteps(steps, t, testingOpts...)
 }
@@ -149,8 +154,10 @@ func TestDatasourceContainersPreCreate(t *testing.T) {
 
 	switch utils.CurrentTestComponent {
 	case utils.IgLocalTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithLocalReady(2*time.Minute))
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-r=%s", utils.Runtime)))
 	case utils.KubectlGadgetTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithKubernetesReady(2*time.Minute))
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-n=%s", ns)))
 		testingOpts = append(testingOpts, igtesting.WithCbBeforeCleanup(utils.PrintLogsFn(ns)))
 	}
@@ -182,9 +189,11 @@ func TestDatasourceContainersPreCreate(t *testing.T) {
 	runnerOpts = append(runnerOpts, igrunner.WithStartAndStop())
 	datasourceContainersCmd := igrunner.New("ci/datasource-containers", runnerOpts...)
 
-	steps := []igtesting.TestStep{
-		datasourceContainersCmd,
-		testContainer,
+	steps := []igtesting.TestStep{datasourceContainersCmd}
+	if utils.CurrentTestComponent != utils.KubectlGadgetTestComponent {
+		// Local ig does not yet have a registration barrier.
+		steps = append(steps, utils.Sleep(5*time.Second))
 	}
+	steps = append(steps, testContainer)
 	igtesting.RunTestSteps(steps, t, testingOpts...)
 }

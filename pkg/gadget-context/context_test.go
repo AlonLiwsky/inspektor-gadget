@@ -75,6 +75,7 @@ func TestOperatorOrder(t *testing.T) {
 		out := ""
 		t.Run("", func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			var ops []operators.DataOperator
 			for _, op := range tc.operators {
 				ops = append(ops, newSimpleOperator(op.name, op.priority, &out, cancel))

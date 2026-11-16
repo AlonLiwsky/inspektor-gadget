@@ -1,0 +1,190 @@
+// Copyright 2026 The Inspektor Gadget authors
+// SPDX-License-Identifier: Apache-2.0
+
+//go:build enforce_exec_shared_qualification
+
+package fullruntime
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"testing"
+
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/spf13/viper"
+	"oras.land/oras-go/v2/content"
+	"oras.land/oras-go/v2/content/memory"
+
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/oci"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
+)
+
+// sharedMinimalObject compiles a one-program, one-map BPF object (no
+// interpreter continuation, not a product object).
+func sharedMinimalObject(t *testing.T) []byte {
+	t.Helper()
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("clang required")
+	}
+	dir := t.TempDir()
+	source, object := filepath.Join(dir, "minimal.bpf.c"), filepath.Join(dir, "minimal.bpf.o")
+	const program = `#define SEC(n) __attribute__((section(n), used))
+struct { int (*type)[2]; int (*max_entries)[1]; unsigned int *key; unsigned int *value; } minimal_map SEC(".maps");
+SEC("socket") int minimal_prog(void *ctx) { return 0; }
+char LICENSE[] SEC("license") = "GPL";
+`
+	if err := os.WriteFile(source, []byte(program), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(clang, "-target", "bpf", "-O2", "-g", "-c", source, "-o", object).CombinedOutput(); err != nil {
+		t.Fatalf("clang: %v\n%s", err, out)
+	}
+	elf, err := os.ReadFile(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return elf
+}
+
+// TestBuildSharedCandidateImage: the image resolves under the normalized
+// reference to an index of one manifest for this GOARCH whose layers are the
+// packaged candidate metadata (geometry annotations, failure-frame targets)
+// and the object; a rebuild reuses the blobs; an entry outside the matrix,
+// without symbols or with an invalid profile is refused.
+func TestBuildSharedCandidateImage(t *testing.T) {
+	elf := sharedMinimalObject(t)
+	var release string
+	var pin sharedProductPin
+	for _, p := range sharedProductPins {
+		release, pin = p.Release, p
+		break
+	}
+	kernel := KernelMatrixEntry{Release: release, OuterSymbol: pin.OuterSymbol, HandlerSymbol: pin.HandlerSymbol, Profile: sharedCandidateQualificationProfile()}
+	store := memory.New()
+	ref, err := BuildSharedCandidateImage(t.Context(), store, elf, kernel)
+	if err != nil || ref != SharedCandidateImage {
+		t.Fatalf("build: %q %v", ref, err)
+	}
+	if _, err := BuildSharedCandidateImage(t.Context(), store, elf, kernel); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	fetch := func(desc ocispec.Descriptor, into any) []byte {
+		t.Helper()
+		r, err := store.Fetch(t.Context(), desc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		data, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if into != nil {
+			if err := json.Unmarshal(data, into); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return data
+	}
+	domain, remainder := oci.SplitIGDomain(ref)
+	top, err := store.Resolve(t.Context(), domain+"/"+remainder)
+	if err != nil || top.MediaType != ocispec.MediaTypeImageIndex {
+		t.Fatalf("resolve %s: %+v %v", ref, top, err)
+	}
+	var index ocispec.Index
+	fetch(top, &index)
+	if len(index.Manifests) != 1 || index.Manifests[0].Platform == nil || index.Manifests[0].Platform.Architecture != runtime.GOARCH || index.Manifests[0].Platform.OS != "linux" {
+		t.Fatalf("index %+v", index)
+	}
+	var manifest ocispec.Manifest
+	fetch(index.Manifests[0], &manifest)
+	if len(manifest.Layers) != 1 || manifest.Layers[0].MediaType != "application/vnd.gadget.ebpf.program.v1+binary" || manifest.Config.MediaType != "application/vnd.gadget.config.v1+yaml" {
+		t.Fatalf("manifest %+v", manifest)
+	}
+	if !bytes.Equal(fetch(manifest.Layers[0], nil), elf) || manifest.Layers[0].Digest != content.NewDescriptorFromBytes("", elf).Digest {
+		t.Fatal("program layer is not the object")
+	}
+	config := viper.New()
+	config.SetConfigType("yaml")
+	if err := config.ReadConfig(bytes.NewReader(fetch(manifest.Config, nil))); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range sharedGeometryAnnotations(kernel.Profile) {
+		if got := config.GetString(key); got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
+	for _, check := range [][2]string{
+		{"annotations.enforce-exec-owner-abi", "3"},
+		{"annotations.enforce-exec-shared-profile", "1"},
+		{"programs.opaque_real_owner_failure_outer_enter.attach_to", kernel.OuterSymbol},
+		{"programs.opaque_real_owner_failure_outer_exit.attach_to", kernel.OuterSymbol},
+		{"programs.opaque_real_owner_failure_handler_enter.attach_to", kernel.HandlerSymbol},
+		{"programs.opaque_real_owner_failure_handler_exit.attach_to", kernel.HandlerSymbol},
+	} {
+		if got := config.GetString(check[0]); got != check[1] {
+			t.Fatalf("%s = %q, want %q", check[0], got, check[1])
+		}
+	}
+	// A pre-continuation non-product object: the packaging drops the
+	// continuation tail-call slots (sharedPackagingForObject).
+	var calls []operators.NativeTailCall
+	if err := config.UnmarshalKey("tail_calls", &calls); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range sharedInterpContinuationTailCalls {
+		if slices.Contains(calls, c) {
+			t.Fatalf("continuation slot %+v kept for an object without it", c)
+		}
+	}
+	// The event ABI annotation follows the single switch: once the emitter
+	// landed the builder must write it, otherwise it must be absent.
+	if sharedVerdictEmitterLanded {
+		if got := config.GetString("annotations." + SharedEventABIAnnotation); got != SharedEventABIVersion {
+			t.Fatalf("event ABI annotation %q, want %q", got, SharedEventABIVersion)
+		}
+	} else if config.IsSet("annotations." + SharedEventABIAnnotation) {
+		t.Fatal("event ABI annotated before the emitter landed")
+	}
+	if err := admitSharedEventABI(config); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, bad := range map[string]KernelMatrixEntry{
+		"outside the matrix": {Release: "6.1.0-generic", OuterSymbol: "a", HandlerSymbol: "b", Profile: kernel.Profile},
+		"no symbols":         {Release: release, Profile: kernel.Profile},
+		"invalid profile":    {Release: release, OuterSymbol: pin.OuterSymbol, HandlerSymbol: pin.HandlerSymbol},
+		"unpinned outer":     {Release: release, OuterSymbol: "do_execveat_common.isra.38", HandlerSymbol: pin.HandlerSymbol, Profile: kernel.Profile},
+		"unpinned handler":   {Release: release, OuterSymbol: pin.OuterSymbol, HandlerSymbol: "a", Profile: kernel.Profile},
+	} {
+		if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), elf, bad); err == nil {
+			t.Fatalf("%s: built", name)
+		}
+	}
+	// Every pin builds with its own symbols and refuses the other kernel's.
+	for _, own := range sharedProductPins {
+		for _, other := range sharedProductPins {
+			entry := KernelMatrixEntry{Release: own.Release, OuterSymbol: other.OuterSymbol, HandlerSymbol: other.HandlerSymbol, Profile: kernel.Profile}
+			_, err := BuildSharedCandidateImage(t.Context(), memory.New(), elf, entry)
+			if want := own.HandlerSymbol == other.HandlerSymbol && own.OuterSymbol == other.OuterSymbol; (err == nil) != want {
+				t.Fatalf("%s with %s/%s: %v", own.Release, other.OuterSymbol, other.HandlerSymbol, err)
+			}
+			// A diagnostic twin may select another handler source.
+			entry.Diagnostic = true
+			if err := entry.validate(); err != nil {
+				t.Fatalf("diagnostic %s with %s/%s: %v", own.Release, other.OuterSymbol, other.HandlerSymbol, err)
+			}
+		}
+	}
+	if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), []byte("not an ELF"), kernel); err == nil || !strings.Contains(err.Error(), "candidate object") {
+		t.Fatalf("not an object: %v", err)
+	}
+}

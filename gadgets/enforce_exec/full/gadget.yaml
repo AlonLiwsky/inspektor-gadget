@@ -1,0 +1,15 @@
+name: enforce_exec_full
+behavior: mutator
+description: "Experimental immutable exec policy evaluator; capabilities require isolated kernel proof"
+annotations:
+  enforce-exec: "true"
+  enforce-exec-full: "true"
+  # Proven by the isolated attached-image fixture; unsupported predicates refuse admission.
+  # image requires a trusted-owner complete immutable lower index and validated mount matrix.
+  enforce-exec-full-features: "path,uid,argv,actor-path,ancestor,stdin,image,fs"
+datasources:
+  verdict:
+    fields:
+      path:
+        annotations:
+          description: resolved executable path

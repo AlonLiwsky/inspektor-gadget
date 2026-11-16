@@ -17,6 +17,7 @@ package tests
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	gadgettesting "github.com/inspektor-gadget/inspektor-gadget/gadgets/testing"
 	igtesting "github.com/inspektor-gadget/inspektor-gadget/pkg/testing"
@@ -74,6 +75,7 @@ func TestTraceOomKill(t *testing.T) {
 	case utils.IgK8sTestComponent:
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-r=%s", utils.Runtime)), igrunner.WithStartAndStop())
 	case utils.KubectlGadgetTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithKubernetesReady(2*time.Minute))
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-n=%s", ns)), igrunner.WithStartAndStop())
 		testingOpts = append(testingOpts, igtesting.WithCbBeforeCleanup(utils.PrintLogsFn(ns)))
 		commonDataOpts = append(commonDataOpts, utils.WithK8sNamespace(ns))

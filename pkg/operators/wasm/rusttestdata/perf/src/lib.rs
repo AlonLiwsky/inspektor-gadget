@@ -56,8 +56,8 @@ fn gadgetStart() -> i32 {
         return 1;
     }
 
-    if let Err(_) = perf_reader.read(&sample) {
-        errorf!("reading perf record");
+    if let Err(err) = perf_reader.read(&sample) {
+        errorf!("reading perf record: {}", err);
         return 1;
     }
 

@@ -1,0 +1,120 @@
+{
+  "status": "proposed manifest, not a whole-owner physical ceiling",
+  "possible_cpus": {
+    "exact_artifact_config_nr_cpus": 64,
+    "runtime_source": "/sys/devices/system/cpu/possible",
+    "online_cpu_count_is_invalid": true
+  },
+  "support_maps": [
+    {
+      "name": "admin_nonce",
+      "type": "TASK_STORAGE",
+      "flags": [
+        "NO_PREALLOC"
+      ],
+      "value_size": 8,
+      "max_entries": 0,
+      "intended_owned_entries": 1,
+      "gap": "single authenticated control-task ownership/lifetime enforcement",
+      "key_size": 4
+    },
+    {
+      "name": "image_origins",
+      "type": "HASH",
+      "flags": [
+        "NO_PREALLOC",
+        "RDONLY_PROG"
+      ],
+      "key_size": 16,
+      "value_size": 1,
+      "max_entries": 65536,
+      "gap": "per-revision replacement/freeze/readers and deferred retirement count; single permanent map NOT assumed"
+    },
+    {
+      "name": "image_ready",
+      "type": "ARRAY",
+      "flags": [
+        "RDONLY_PROG"
+      ],
+      "key_size": 4,
+      "value_size": 4,
+      "max_entries": 1,
+      "gap": "index-generation lifecycle pairing"
+    },
+    {
+      "name": "events",
+      "type": "RINGBUF",
+      "max_entries": 262144,
+      "gap": "data and metadata pages plus user mapping accounting"
+    },
+    {
+      "name": "counters",
+      "type": "PERCPU_ARRAY",
+      "key_size": 4,
+      "value_size": 8,
+      "max_entries": 3,
+      "payload_formula": "24 * possible_cpus"
+    },
+    {
+      "name": "generation_faults",
+      "type": "LRU_HASH",
+      "flags": [
+        "RDONLY"
+      ],
+      "key_size": 8,
+      "value_size": 8,
+      "max_entries": 64,
+      "gap": "LRU nodes, buckets, possible-CPU freelists and allocator rounding"
+    },
+    {
+      "name": "shared_gates",
+      "type": "ARRAY",
+      "flags": [
+        "MMAPABLE"
+      ],
+      "key_size": 4,
+      "value_size": 8,
+      "max_entries": 65536,
+      "gap": "shared ownership count and mmap/metadata accounting"
+    },
+    {
+      "name": "fs_inode_origins",
+      "type": "INODE_STORAGE",
+      "flags": [
+        "NO_PREALLOC"
+      ],
+      "key_size": 4,
+      "value_size": 8,
+      "max_entries": 0,
+      "lifetime_credit_limit": 65536,
+      "gap": "local storage inode/allocator overhead and nonrecycling lifetime credits; included unconditionally by full/filesystem.h"
+    },
+    {
+      "name": "fs_diagnostics",
+      "type": "ARRAY",
+      "key_size": 4,
+      "value_size": 16,
+      "max_entries": 1
+    }
+  ],
+  "non_map_resources": [
+    "native candidate/inventory/command/readback buffers and libbpf allocations",
+    "BPF interpreted/JIT program pages and retained versions",
+    "BTF and line/function metadata",
+    "links/trampolines and foreign-consumer pressure",
+    "map element/bucket/freelist/page/slab/allocator metadata",
+    "native mmap regions and event consumers",
+    "pins/FDs/task references and deferred kernel reclamation",
+    "exact-owner implicit ELF .bss/.rodata/.data maps, including GADGET_TRACER pointer globals; named map list does not prove absence"
+  ],
+  "unresolved_replacement_map_audit": [
+    "ABI2 eo_health/eo_phase/eo_anchor/eo_rows consolidation into proposed core",
+    "ABI2 eo_task_ids/eo_work/eo_birth_groups removal requires lifecycle proof; not additive assumptions or authorized production deletions",
+    "non-owner legacy policy/full_program/bindings/full_faults excluded only by exact owner compilation profile"
+  ],
+  "core_payload_bytes": 39637624,
+  "core_hash_key_bytes": 573440,
+  "proposed_core_kernel_formula_p64_bytes": 43707304,
+  "formula_is_physical_ceiling": false,
+  "whole_profile_total_bytes": null
+}

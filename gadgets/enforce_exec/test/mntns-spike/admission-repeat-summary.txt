@@ -1,0 +1,61 @@
+Linux ig-admission-spike-20261026 6.12.111+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.111-1 (2026-09-28) x86_64 GNU/Linux
+runc version 1.5.2
+PASS: host-only rule blocks new-namespace bypass; host-namespace entry bypass reproduced
+Linux ig-admission-spike-20261026 6.12.111+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.111-1 (2026-09-28) x86_64 GNU/Linux
+runc version 1.5.2
+PROFILE default-caps-fd cgroup=13438 mntns=4026532382 userns=4026531837
+ATTEMPT default-caps-fd error=exit status 1 output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_FAILED errno=1 Operation not permitted\n"
+PASS PROFILE default-caps-fd
+PROFILE no-admin-hostpid cgroup=13510 mntns=4026532382 userns=4026531837
+ATTEMPT no-admin-hostpid error=exit status 1 output="nsenter: cannot open /proc/1/ns/mnt: Permission denied\n"
+PASS PROFILE no-admin-hostpid
+PROFILE no-admin-fd cgroup=13582 mntns=4026532382 userns=4026531837
+ATTEMPT no-admin-fd error=exit status 1 output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_FAILED errno=1 Operation not permitted\n"
+PASS PROFILE no-admin-fd
+PROFILE admin-hostpid-ptrace cgroup=13654 mntns=4026532382 userns=4026531837
+ATTEMPT admin-hostpid-ptrace error=<nil> output="host-entered\n"
+PASS PROFILE admin-hostpid-ptrace
+PROFILE admin-fd cgroup=13726 mntns=4026532382 userns=4026531837
+ATTEMPT admin-fd error=<nil> output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_SUCCEEDED\nhost-entered\n"
+PASS PROFILE admin-fd
+PROFILE effective-only cgroup=13798 mntns=4026532382 userns=4026531837
+ATTEMPT effective-only error=<nil> output="CLEARED_EFFECTIVE; permitted and bounding unchanged\nRECEIVED_HOST_NAMESPACE_FD\nSETNS_SUCCEEDED\nhost-entered\n"
+PASS PROFILE effective-only
+PROFILE privileged-exec cgroup=13870 mntns=4026532382 userns=4026531837
+ATTEMPT privileged-exec error=<nil> output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_SUCCEEDED\nhost-entered\n"
+PRIVILEGED-EXEC: runtime granted host entry despite restricted init
+PASS PROFILE privileged-exec
+PROFILE child-userns cgroup=13942 mntns=4026532382 userns=4026531837
+ATTEMPT child-userns error=exit status 1 output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_FAILED errno=1 Operation not permitted\n"
+CHILD-EXEC error=exit status 126 output="unshare: failed to execute /tmp/busybox: Operation not permitted\n"
+PASS PROFILE child-userns
+PASS ADMISSION: capability-boundary matrix completed
+Linux ig-admission-spike-20261026 6.12.111+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.111-1 (2026-09-28) x86_64 GNU/Linux
+runc version 1.5.2
+PROFILE default-caps-fd cgroup=14086 mntns=4026532382 userns=4026531837
+ATTEMPT default-caps-fd error=exit status 1 output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_FAILED errno=1 Operation not permitted\n"
+PASS PROFILE default-caps-fd
+PROFILE no-admin-hostpid cgroup=14158 mntns=4026532382 userns=4026531837
+ATTEMPT no-admin-hostpid error=exit status 1 output="nsenter: cannot open /proc/1/ns/mnt: Permission denied\n"
+PASS PROFILE no-admin-hostpid
+PROFILE no-admin-fd cgroup=14230 mntns=4026532382 userns=4026531837
+ATTEMPT no-admin-fd error=exit status 1 output="SETNS_FAILED errno=1 Operation not permitted\nRECEIVED_HOST_NAMESPACE_FD\n"
+PASS PROFILE no-admin-fd
+PROFILE admin-hostpid-ptrace cgroup=14302 mntns=4026532382 userns=4026531837
+ATTEMPT admin-hostpid-ptrace error=<nil> output="host-entered\n"
+PASS PROFILE admin-hostpid-ptrace
+PROFILE admin-fd cgroup=14374 mntns=4026532382 userns=4026531837
+ATTEMPT admin-fd error=<nil> output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_SUCCEEDED\nhost-entered\n"
+PASS PROFILE admin-fd
+PROFILE effective-only cgroup=14446 mntns=4026532382 userns=4026531837
+ATTEMPT effective-only error=<nil> output="CLEARED_EFFECTIVE; permitted and bounding unchanged\nRECEIVED_HOST_NAMESPACE_FD\nSETNS_SUCCEEDED\nhost-entered\n"
+PASS PROFILE effective-only
+PROFILE privileged-exec cgroup=14518 mntns=4026532382 userns=4026531837
+ATTEMPT privileged-exec error=<nil> output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_SUCCEEDED\nhost-entered\n"
+PRIVILEGED-EXEC: runtime granted host entry despite restricted init
+PASS PROFILE privileged-exec
+PROFILE child-userns cgroup=14590 mntns=4026532382 userns=4026531837
+ATTEMPT child-userns error=exit status 1 output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_FAILED errno=1 Operation not permitted\n"
+CHILD-EXEC error=exit status 126 output="unshare: failed to execute /tmp/busybox: Operation not permitted\n"
+PASS PROFILE child-userns
+PASS ADMISSION: capability-boundary matrix completed

@@ -8,3 +8,8 @@
 !tools
 !Makefile*
 !*.mk
+# cmd/ig imports these host-side enforcement packages, not gadget build inputs.
+!gadgets/enforce_exec/policy/*.go
+!gadgets/enforce_exec/fullpolicy/*.go
+!gadgets/enforce_exec/runtime/*.go
+gadgets/enforce_exec/**/*_test.go

@@ -1,0 +1,258 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "name": "actor-path",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Actor": {"Path": ["/usr/bin/*"]}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"ActorPath": "/usr/bin/sh"},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"ActorPath": "/usr/bin/sub/sh"},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "actor-image-false",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Actor": {"FromImage": false}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"ActorFromImage": false},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"ActorFromImage": true},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {"ActorFromImage": null},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "ancestor",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Actor": {"Ancestor": {"Path": ["/init"], "Depth": 2}}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"Ancestors": ["/parent", "/init"]},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"Ancestors": ["/other", "/not-init"]},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {"Ancestors": ["/parent"]},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}},
+        {"name": "genuine-root",
+         "facts": {"Ancestors": [], "AncestorsComplete": true},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "outside-depth",
+         "facts": {"Ancestors": ["/one", "/two", "/init"]},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "actor-role",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Actor": {"Role": ["agent"]}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"Roles": {"p": "agent"}},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"Roles": {"p": "tool"}},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {"Roles": {}},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}},
+        {"name": "foreign-policy-is-not-root",
+         "facts": {"Roles": {"foreign": "agent"}},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}},
+        {"name": "explicit-root-bootstrap",
+         "facts": {"RoleBootstrap": true},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "effective-uid-zero",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Actor": {"UID": [0]}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"EffectiveUID": 0},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"EffectiveUID": 1000},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {"EffectiveUID": null},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "container",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Actor": {"Container": ["app"]}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"Container": "app"},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"Container": "sidecar"},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "target-path",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Target": {"Path": ["/tmp/**/tool?"]}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"TargetPath": "/tmp/sub/tool1"},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"TargetPath": "/opt/tool1"},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "target-image-false",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Target": {"FromImage": false}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"TargetFromImage": false},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"TargetFromImage": true},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {"TargetFromImage": null},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "filesystem-deleted",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Target": {"FSType": ["deleted"]}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"FSType": "tmpfs", "FileKinds": ["memfd", "deleted"]},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"FSType": "tmpfs", "FileKindsKnown": ["deleted"]},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {"FSType": "tmpfs"},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "argv-contains",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Target": {"Argv": {"Contains": ["-c", "--unsafe"]}}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"Argv": ["tool", "-c"], "ArgvComplete": true},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"Argv": ["tool", "prefix-c-suffix"], "ArgvComplete": true},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {"Argv": ["tool", "-c"], "ArgvComplete": false},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}},
+        {"name": "empty-complete-argv",
+         "facts": {"Argv": [], "ArgvComplete": true},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "argv-prefix",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Target": {"Argv": {"Prefix": ["--option="]}}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"Argv": ["tool", "--option=value"], "ArgvComplete": true},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"Argv": ["tool", "x--option=value"], "ArgvComplete": true},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {"Argv": ["tool", "--option=value"]},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "stdin-not-pipe",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Target": {"Argv": {"StdinIsPipe": false}}}]}
+      ],
+      "cases": [
+        {"name": "match",
+         "facts": {"StdinIsPipe": false},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "non-match",
+         "facts": {"StdinIsPipe": true},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unknown",
+         "facts": {"StdinIsPipe": null},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "full-conjunction",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Actor": {"Path": ["/usr/bin/*"], "FromImage": true, "Ancestor": {"Path": ["/init"], "Depth": 2}, "Role": ["tool"], "UID": [1000], "Container": ["app"]}, "Target": {"Path": ["/tmp/**/tool?"], "FromImage": false, "FSType": ["deleted"], "Argv": {"Contains": ["-c", "--unsafe"], "Prefix": ["--option="], "StdinIsPipe": false}}}]}
+      ],
+      "cases": [
+        {"name": "all-match",
+         "facts": {"ActorPath": "/usr/bin/sh", "ActorFromImage": true, "Ancestors": ["/parent", "/init"], "Roles": {"p": "tool"}, "EffectiveUID": 1000, "Container": "app", "TargetPath": "/tmp/sub/tool1", "TargetFromImage": false, "FSType": "tmpfs", "FileKinds": ["deleted"], "Argv": ["tool1", "-c", "--option=value"], "ArgvComplete": true, "StdinIsPipe": false},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "one-known-false",
+         "facts": {"ActorPath": "/usr/bin/sh", "ActorFromImage": true, "Ancestors": ["/parent", "/init"], "Roles": {"p": "tool"}, "EffectiveUID": 0, "Container": "app", "TargetPath": "/tmp/sub/tool1", "TargetFromImage": false, "FSType": "tmpfs", "FileKinds": ["deleted"], "Argv": ["tool1", "-c", "--option=value"], "ArgvComplete": true, "StdinIsPipe": false},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "one-unknown",
+         "facts": {"ActorPath": "/usr/bin/sh", "ActorFromImage": true, "Ancestors": ["/parent", "/init"], "Roles": {"p": "tool"}, "EffectiveUID": null, "Container": "app", "TargetPath": "/tmp/sub/tool1", "TargetFromImage": false, "FSType": "tmpfs", "FileKinds": ["deleted"], "Argv": ["tool1", "-c", "--option=value"], "ArgvComplete": true, "StdinIsPipe": false},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "filesystem-or",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "rule", "Origin": "authored", "Action": "deny", "Target": {"FSType": ["deleted", "memfd"]}}]}
+      ],
+      "cases": [
+        {"name": "known-positive-beats-other-unknown",
+         "facts": {"FileKinds": ["memfd"]},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "rule", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "all-known-false",
+         "facts": {"FileKindsKnown": ["deleted", "memfd"]},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "one-known-false-one-unknown",
+         "facts": {"FileKindsKnown": ["deleted"]},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    }
+  ]
+}

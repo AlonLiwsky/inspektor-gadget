@@ -67,7 +67,7 @@ func gadgetStart() int32 {
 	}
 
 	if err := perfReader.Read(sample); err != nil {
-		api.Errorf("reading perf record")
+		api.Errorf("reading perf record: %v", err)
 		return 1
 	}
 

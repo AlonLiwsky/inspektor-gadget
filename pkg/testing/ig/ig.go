@@ -18,12 +18,16 @@
 package ig
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	igtesting "github.com/inspektor-gadget/inspektor-gadget/pkg/testing"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/testing/command"
@@ -38,29 +42,102 @@ type runner struct {
 
 	// command.Command contains *exec.Cmd and additional properties and methods for the same.
 	command.Command
-	flags []string
-
-	// waitReady and readyWatcher implement the readiness gate (see readiness.go). They are set
-	// for StartAndStop gadgets so the harness waits for the gadget to actually be capturing
-	// before running the workload, instead of relying on a fixed sleep.
-	waitReady    bool
-	readyWatcher *readinessWatcher
-
-	// noReadinessGate disables the readiness gate even for StartAndStop gadgets. It is used by
-	// gadgets that do not emit the standard "running..." readiness marker in a usable way (e.g.
-	// the OTel eBPF profiler, which samples over a window and has its own initialization
-	// timing), so they keep relying on an explicit sleep instead.
+	flags            []string
+	readinessTimeout time.Duration
+	kubernetesReady  bool
+	localReady       bool
+	// Mainline default readiness gate is used for StartAndStop unless opted out.
+	waitReady       bool
+	readyWatcher    *readinessWatcher
 	noReadinessGate bool
 }
 
 func (ig *runner) createCmd() {
-	ig.flags = append(ig.flags, "-o="+ig.outputMode)
 	args := append([]string{"run", ig.image}, ig.flags...)
+	args = append(args, "-o="+ig.outputMode)
 
 	ig.Cmd = exec.Command(ig.path, args...)
 }
 
+// Start waits for gadget startup only when a readiness option is enabled.
+func (ig *runner) Start(t *testing.T) {
+	if (!ig.kubernetesReady && !ig.localReady) || ig.Running() {
+		ig.Command.Start(t)
+		return
+	}
+	require.NoError(t, ig.validateReadiness(), "invalid readiness options")
+	ctx, cancel := context.WithTimeout(t.Context(), ig.readinessTimeout)
+	defer cancel()
+	var writer io.Writer
+	var waitReady func() error
+	if ig.localReady {
+		ready := newLocalReadiness()
+		writer = ready
+		waitReady = func() error { return ready.wait(ctx, ig.Exited(), ig.ExitError) }
+	} else {
+		nodes, namespace, err := ig.kubernetesTargets(ctx)
+		require.NoError(t, err, "discovering gadget nodes")
+		ig.flags = append(ig.flags, "--node="+strings.Join(nodes, ","), "--gadget-namespace="+namespace)
+		ready := newNodeReadiness(nodes)
+		writer = ready
+		waitReady = func() error { return ready.wait(ctx, ig.Exited(), ig.ExitError) }
+	}
+	ig.flags = append(ig.flags, "--verbose")
+	ig.createCmd()
+	if ig.StdErrWriter != nil {
+		writer = io.MultiWriter(ig.StdErrWriter, writer)
+	}
+	ig.StdErrWriter = writer
+	ig.ObserveExit = true
+	ig.Command.Start(t)
+	// RunTestSteps normally stops the command first. Also cover a direct Start
+	// caller whose readiness check fails before it can arrange cleanup.
+	t.Cleanup(func() {
+		if ig.Running() {
+			ig.Stop(t)
+		}
+	})
+	require.NoError(t, waitReady(), "waiting for gadget readiness")
+}
+
+func (ig *runner) validateReadiness() error {
+	if ig.localReady && ig.kubernetesReady {
+		return fmt.Errorf("local and Kubernetes readiness options are mutually exclusive")
+	}
+	if (ig.localReady || ig.kubernetesReady) && ig.readinessTimeout <= 0 {
+		return fmt.Errorf("readiness timeout must be positive")
+	}
+	return nil
+}
+
 type Option func(*runner)
+
+// WithLocalReady gates Start on the local GadgetContext.Run debug marker after
+// operator Start, final Readiness checks and the startup callback. It does not
+// wait for later asynchronous AddContainer callbacks. Use only with local ig,
+// never a remote client, whose bare marker is emitted before remote readiness.
+// The timeout bounds startup, not capture; it cannot be combined with
+// WithKubernetesReady.
+func WithLocalReady(timeout time.Duration) Option {
+	return func(ig *runner) {
+		ig.localReady = true
+		ig.readinessTimeout = timeout
+	}
+}
+
+// WithKubernetesReady gates Start on the existing remote, node-prefixed debug
+// marker. The timeout bounds discovery and startup, not the capture interval.
+func WithKubernetesReady(timeout time.Duration) Option {
+	return func(ig *runner) {
+		ig.kubernetesReady = true
+		ig.readinessTimeout = timeout
+	}
+}
+
+// WithoutReadinessGate opts out of the default StartAndStop marker gate.
+func WithoutReadinessGate() Option {
+	return func(ig *runner) { ig.noReadinessGate = true }
+}
 
 // WithPath used for providing custom path to ig executable.
 func WithPath(path string) Option {
@@ -83,15 +160,6 @@ func WithStartAndStop() Option {
 	}
 }
 
-// WithoutReadinessGate disables the readiness gate for a StartAndStop gadget. Use it for gadgets
-// that do not emit the standard "running..." readiness marker in a usable way (e.g. the OTel
-// eBPF profiler), which instead rely on an explicit sleep before the workload.
-func WithoutReadinessGate() Option {
-	return func(ig *runner) {
-		ig.noReadinessGate = true
-	}
-}
-
 // WithValidateOutput used to compare the actual output with expected output.
 func WithValidateOutput(validateOutput func(t *testing.T, output string)) Option {
 	return func(ig *runner) {
@@ -110,6 +178,13 @@ func WithValidateStderrOutput(validateOutput func(t *testing.T, output string)) 
 func WithStdOutWriter(writer io.Writer) Option {
 	return func(ig *runner) {
 		ig.StdOutWriter = writer
+	}
+}
+
+// WithStdErrWriter forwards stderr while retaining its full captured output.
+func WithStdErrWriter(writer io.Writer) Option {
+	return func(ig *runner) {
+		ig.StdErrWriter = writer
 	}
 }
 
@@ -144,6 +219,7 @@ func New(image string, opts ...Option) igtesting.TestStep {
 		split := strings.Split(flags, " ")
 		factoryRunner.flags = append(factoryRunner.flags, split...)
 	}
+
 	if publicKey := os.Getenv("IG_PUBLIC_KEY"); publicKey != "" {
 		factoryRunner.flags = append(factoryRunner.flags, "--public-keys="+publicKey)
 	}
@@ -152,10 +228,7 @@ func New(image string, opts ...Option) igtesting.TestStep {
 		opt(factoryRunner)
 	}
 
-	// StartAndStop gadgets run concurrently with the workload; enable the readiness gate so the
-	// harness waits for the gadget to be capturing before the workload runs (see readiness.go),
-	// unless the gadget opted out (it does not emit a usable readiness marker).
-	if factoryRunner.StartAndStop && !factoryRunner.noReadinessGate {
+	if factoryRunner.StartAndStop && !factoryRunner.noReadinessGate && !factoryRunner.localReady && !factoryRunner.kubernetesReady {
 		factoryRunner.enableReadinessGate()
 	}
 

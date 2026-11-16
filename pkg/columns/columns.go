@@ -504,7 +504,7 @@ func GetFieldFuncExt[OT any, T any](column ColumnInternals, raw bool) func(entry
 				}
 			}
 		}
-		return *(*OT)(unsafe.Add(start, (sub)[subLen-1].offset))
+		return *(*OT)(unsafe.Add(start, sub[subLen-1].offset))
 	}
 }
 
@@ -567,7 +567,7 @@ func SetFieldFunc[OT any, T any](column ColumnInternals) func(entry *T, val OT) 
 				}
 			}
 		}
-		*(*OT)(unsafe.Add(start, (sub)[subLen-1].offset)) = val
+		*(*OT)(unsafe.Add(start, sub[subLen-1].offset)) = val
 	}
 }
 

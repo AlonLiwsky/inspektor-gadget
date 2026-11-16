@@ -217,18 +217,6 @@ func (s *Service) RunGadget(runGadget api.GadgetManager_RunGadgetServer) error {
 				}
 			}()
 
-			go func() {
-				// Message pump to handle slow readers
-				for {
-					select {
-					case ev := <-outputBuffer:
-						runGadget.Send(ev)
-					case <-done:
-						return
-					}
-				}
-			}()
-
 			seq := uint32(0)
 			var seqLock sync.Mutex
 
@@ -281,9 +269,23 @@ func (s *Service) RunGadget(runGadget api.GadgetManager_RunGadgetServer) error {
 				Payload: d,
 			})
 			if err != nil {
-				s.logger.Warnf("sending gadgetInfo: %v", err)
+				return fmt.Errorf("sending gadget info: %w", err)
 			}
 			s.logger.Debugf("sent gadget info")
+
+			// Metadata must precede queued output. After this point, only the
+			// message pump sends on the stream; concurrent gRPC Sends are unsafe.
+			go func() {
+				// Message pump to handle slow readers
+				for {
+					select {
+					case ev := <-outputBuffer:
+						runGadget.Send(ev)
+					case <-done:
+						return
+					}
+				}
+			}()
 
 			return nil
 		}),

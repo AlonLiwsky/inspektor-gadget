@@ -1,0 +1,28 @@
+# Shared product node pins (G011 pass 2, checklist step 0). One line per
+# qualified kernel build; TestSharedProductPinsMatchTestdata requires
+# sharedProductPins to equal these lines exactly.
+#
+# Sources (recorded 2026-11-15):
+# - release, btf-sha256, gnu-build-id: AL2023 repo kernel RPMs
+#   (kernel6.12-6.12.113-138.209.amzn2023, kernel6.18-6.18.56-125.164.amzn2023),
+#   extracted by g011-pass2-pins-20261114/extract-pins.sh; the vmlinuz sha256
+#   equals the G011 pass-1 instances' ident and the BTF sha256 equals the
+#   pass-1 btf-pin.
+# - outer-symbol: /proc/kallsyms on the same AMIs (ami-0e8550404ae6ca4c6,
+#   ami-0516089d963059a51), g011-public-al2023-ami-preflight-20261109
+#   6.1{2,8}/success.log "diagnostic outer exec source"; pass 1 resolved it at
+#   run time from /proc/kallsyms with the same resolver but did not log it, so
+#   this value has a SINGLE source. Pass 2 must log the resolved symbol.
+# - gnu-build-id: from the RPM vmlinux only; pass 2 preflight must confirm it
+#   live from /sys/kernel/notes.
+# - handler-symbol: pass-1 run g011ec2-20261114t161448-998a
+#   k/61{2,8}/d/run-g19pkg.sh:175 (exec_binprm on 6.18 only; 6.12 uses the
+#   resolver default search_binary_handler), cross-checked against the
+#   2026-11-09 preflight logs "diagnostic handler source".
+# - product-elf-sha256: pass-1 evidence/build/artifacts-sha256.txt,
+#   g19pkg64/128/256/512-<kernel>.bpf.o (REPORT section 2: BYTE identical to
+#   the VM chain), in that order.
+#
+# release	btf-sha256	gnu-build-id	outer-symbol	handler-symbol	product-elf-sha256
+6.12.113-138.209.amzn2023.x86_64	0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82	1d135d67e6d0ea8f77d60a2984915eadd28a5fcf	do_execveat_common.isra.0	search_binary_handler	2e2b033bde0ece73ac9f95fd7455fcf36be7aa32250f52e527aff4bd86546be9,b7245ddfbb7bac323921d0583b67295789e9f3f22cd7460e36f9f37b65b10c31,86f04ecc2f919c91992487c85b7be038feee39cec9dfd99187dcd64bc863e5b3,16dfb0eaa510d3d5ae9c744d3c8f9023047724f6a2ad253da33629d6a74c3404
+6.18.56-125.164.amzn2023.x86_64	d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee	884ed4548406a1461ac5fb658c0dffdd87f1b3b2	do_execveat_common.isra.0	exec_binprm	1ab606ec132732984cd682438dd2ca6be0e98f6bfa567c263d1263326ee351ce,142ae885221167eaf258678f508999eb0528447b53355eb5d776ae009b6115ae,074ce03442631ab34462de5802addb67c3e783109c6de8b9ec55f05091b2d38a,370f971574941b15fcee31dbeb6d6d2467db189a1618a877d8c4636d5afc940c

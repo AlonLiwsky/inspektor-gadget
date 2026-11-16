@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "name": "merge-deny-wins",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "grant", "Origin": "authored", "Action": "allow", "Actor": {"Role": ["agent"]}, "Target": {"SetRole": "tool"}}]},
+        {"ID": "q", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "block", "Origin": "authored", "Action": "deny"}]}
+      ],
+      "cases": [
+        {"name": "deny-cancels-role-proposal",
+         "facts": {"RoleBootstrap": true},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "grant", "Origin": "authored", "Action": "allow", "Mode": "enforce"}, {"PolicyID": "q", "Revision": "r1", "Rule": "block", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {"p": true}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "merged-defaults",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "deny", "Rules": []},
+        {"ID": "q", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "deny", "Rules": [{"Name": "allow", "Origin": "authored", "Action": "allow", "Target": {"Path": ["/bin/tool"]}}]}
+      ],
+      "cases": [
+        {"name": "foreign-allow-suppresses-default",
+         "facts": {"TargetPath": "/bin/tool"},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [{"PolicyID": "q", "Revision": "r1", "Rule": "allow", "Origin": "authored", "Action": "allow", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unmatched-deny-defaults",
+         "facts": {"TargetPath": "/bin/other"},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "enforce"}, {"PolicyID": "q", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "audit-deny-with-enforced-default",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "deny", "Rules": [{"Name": "audit-deny", "Origin": "authored", "Action": "deny", "Target": {"Path": ["/bin/tool"]}, "Mode": "audit"}, {"Name": "enforce-allow", "Origin": "authored", "Action": "allow", "Target": {"Path": ["/bin/tool"]}}]}
+      ],
+      "cases": [
+        {"name": "known-audit-deny-is-not-enforced",
+         "facts": {"TargetPath": "/bin/tool"},
+         "want": {"decision": {"Action": "deny", "Mode": "audit", "Block": false, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "audit-deny", "Origin": "authored", "Action": "deny", "Mode": "audit"}, {"PolicyID": "p", "Revision": "r1", "Rule": "enforce-allow", "Origin": "authored", "Action": "allow", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unmatched-default-is-enforced",
+         "facts": {"TargetPath": "/bin/other"},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "audit-unknown-grant-isolation",
+      "policies": [
+        {"ID": "a", "Revision": "r1", "Mode": "audit", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "unknown-grant", "Origin": "authored", "Action": "allow", "Actor": {"FromImage": true}, "Target": {"SetRole": "tool"}}]},
+        {"ID": "b", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "known-grant", "Origin": "authored", "Action": "allow", "Target": {"SetRole": "helper"}}]}
+      ],
+      "cases": [
+        {"name": "foreign-known-grant-retained",
+         "facts": {},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [{"PolicyID": "b", "Revision": "r1", "Rule": "known-grant", "Origin": "authored", "Action": "allow", "Mode": "enforce"}], "SetRoles": {"b": "helper"}, "AuditUnknown": {"a": true}, "UncertainRoles": {"a": true}, "RoleWrites": {"a": true, "b": true}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "audit-unknown-deny-suppresses-grants",
+      "policies": [
+        {"ID": "a", "Revision": "r1", "Mode": "audit", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "unknown-deny", "Origin": "authored", "Action": "deny", "Actor": {"FromImage": true}}]},
+        {"ID": "b", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "known-grant", "Origin": "authored", "Action": "allow", "Target": {"SetRole": "helper"}}]}
+      ],
+      "cases": [
+        {"name": "nonblocking-but-no-role-proposal",
+         "facts": {},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [{"PolicyID": "b", "Revision": "r1", "Rule": "known-grant", "Origin": "authored", "Action": "allow", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {"a": true}, "UncertainRoles": {"b": true}, "RoleWrites": {"b": true}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "enforced-unknown-after-audit-match",
+      "policies": [
+        {"ID": "a", "Revision": "r1", "Mode": "audit", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "known-grant", "Origin": "authored", "Action": "allow", "Target": {"SetRole": "helper"}}]},
+        {"ID": "b", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "unknown-deny", "Origin": "authored", "Action": "deny", "Actor": {"UID": [0]}}]}
+      ],
+      "cases": [
+        {"name": "partial-audit-mode-cannot-disable-block",
+         "facts": {},
+         "want": {"decision": {"Action": "allow", "Mode": "audit", "Block": true, "Matches": [{"PolicyID": "a", "Revision": "r1", "Rule": "known-grant", "Origin": "authored", "Action": "allow", "Mode": "audit"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {"a": true}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "uncertain-audit-fallback",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "audit", "RootRole": "agent", "Default": "deny", "Rules": [{"Name": "image-allow", "Origin": "authored", "Action": "allow", "Target": {"FromImage": true, "SetRole": "tool"}, "Mode": "audit"}]}
+      ],
+      "cases": [
+        {"name": "unknown-allow",
+         "facts": {},
+         "want": {"decision": {"Action": "deny", "Mode": "audit", "Block": false, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "audit"}], "SetRoles": {}, "AuditUnknown": {"p": true}, "UncertainRoles": {"p": true}, "RoleWrites": {"p": true}, "SuppressRoles": true, "UncertainFallback": true}, "evaluationError": false}},
+        {"name": "known-allow",
+         "facts": {"TargetFromImage": true},
+         "want": {"decision": {"Action": "allow", "Mode": "audit", "Block": false, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "image-allow", "Origin": "authored", "Action": "allow", "Mode": "audit"}], "SetRoles": {"p": "tool"}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {"p": true}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "known-nonmatch",
+         "facts": {"TargetFromImage": false},
+         "want": {"decision": {"Action": "deny", "Mode": "audit", "Block": false, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "audit"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "enforced-default-with-unknown-audit-allow",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "deny", "Rules": [{"Name": "image-allow", "Origin": "authored", "Action": "allow", "Target": {"FromImage": true, "SetRole": "tool"}, "Mode": "audit"}]}
+      ],
+      "cases": [
+        {"name": "unknown-does-not-suppress-enforced-default",
+         "facts": {},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {"p": true}, "UncertainRoles": {"p": true}, "RoleWrites": {"p": true}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "policy-local-role-proposals",
+      "policies": [
+        {"ID": "a", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "deny", "Rules": [{"Name": "transition", "Origin": "authored", "Action": "allow", "Actor": {"Role": ["agent"]}, "Target": {"SetRole": "tool"}}]},
+        {"ID": "b", "Revision": "r1", "Mode": "enforce", "RootRole": "worker", "Default": "deny", "Rules": [{"Name": "transition", "Origin": "authored", "Action": "allow", "Actor": {"Role": ["worker"]}, "Target": {"SetRole": "helper"}}]}
+      ],
+      "cases": [
+        {"name": "authenticated-bootstrap",
+         "facts": {"RoleBootstrap": true},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [{"PolicyID": "a", "Revision": "r1", "Rule": "transition", "Origin": "authored", "Action": "allow", "Mode": "enforce"}, {"PolicyID": "b", "Revision": "r1", "Rule": "transition", "Origin": "authored", "Action": "allow", "Mode": "enforce"}], "SetRoles": {"a": "tool", "b": "helper"}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {"a": true, "b": true}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "retained-policy-local-roles",
+         "facts": {"Roles": {"a": "agent", "b": "worker"}},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [{"PolicyID": "a", "Revision": "r1", "Rule": "transition", "Origin": "authored", "Action": "allow", "Mode": "enforce"}, {"PolicyID": "b", "Revision": "r1", "Rule": "transition", "Origin": "authored", "Action": "allow", "Mode": "enforce"}], "SetRoles": {"a": "tool", "b": "helper"}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {"a": true, "b": true}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "crossed-roles-not-interchangeable",
+         "facts": {"Roles": {"a": "worker", "b": "agent"}},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "a", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "enforce"}, {"PolicyID": "b", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "foreign-role-is-not-root",
+         "facts": {"Roles": {"foreign": "agent"}},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "a", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "enforce"}, {"PolicyID": "b", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}},
+        {"name": "missing-neighbor-cancels-proposal",
+         "facts": {"Roles": {"a": "agent"}},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "a", "Revision": "r1", "Rule": "transition", "Origin": "authored", "Action": "allow", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {"a": true}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "enforced-role-conflict",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "first", "Origin": "authored", "Action": "allow", "Target": {"SetRole": "one"}}, {"Name": "second", "Origin": "authored", "Action": "allow", "Target": {"SetRole": "two"}}]}
+      ],
+      "cases": [
+        {"name": "no-arbitrary-winner",
+         "facts": {},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "first", "Origin": "authored", "Action": "allow", "Mode": "enforce"}, {"PolicyID": "p", "Revision": "r1", "Rule": "second", "Origin": "authored", "Action": "allow", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {"p": true}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": true}}
+      ]
+    },
+    {
+      "name": "audit-role-conflict",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "audit", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "first", "Origin": "authored", "Action": "allow", "Target": {"SetRole": "one"}}, {"Name": "second", "Origin": "authored", "Action": "allow", "Target": {"SetRole": "two"}}]}
+      ],
+      "cases": [
+        {"name": "nonblocking-without-role",
+         "facts": {},
+         "want": {"decision": {"Action": "allow", "Mode": "audit", "Block": false, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "first", "Origin": "authored", "Action": "allow", "Mode": "audit"}, {"PolicyID": "p", "Revision": "r1", "Rule": "second", "Origin": "authored", "Action": "allow", "Mode": "audit"}], "SetRoles": {}, "AuditUnknown": {"p": true}, "UncertainRoles": {"p": true}, "RoleWrites": {"p": true}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "decision-stage-argv-relevance",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "deny-interpreter-argument", "Origin": "authored", "Action": "deny", "Target": {"Path": ["/usr/bin/interpreter"], "Argv": {"Contains": ["--restricted"]}}}]}
+      ],
+      "cases": [
+        {"name": "initial-script-irrelevant-unknown-argv",
+         "facts": {"TargetPath": "/work/script", "ArgvComplete": false},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "final-elf-matching-argv",
+         "facts": {"TargetPath": "/usr/bin/interpreter", "Argv": ["/usr/bin/interpreter", "--restricted", "/work/script"], "ArgvComplete": true},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "deny-interpreter-argument", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "final-elf-nonmatching-argv",
+         "facts": {"TargetPath": "/usr/bin/interpreter", "Argv": ["/usr/bin/interpreter", "--allowed", "/work/script"], "ArgvComplete": true},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    }
+  ]
+}

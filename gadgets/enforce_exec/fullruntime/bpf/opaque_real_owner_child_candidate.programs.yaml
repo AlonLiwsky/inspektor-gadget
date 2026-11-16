@@ -1,0 +1,73 @@
+# Attach-set packaging of the exec verdict candidate
+# (opaque_real_owner_child_candidate.bpf.c, qualified as g25final128).
+#
+# This is the gadget.yaml `programs:` block the future product image merges
+# into its gadget.yaml. The eBPF operator reads `programs.<name>.attach_to`
+# from the gadget metadata, and `gadget_program_disabled` makes it never attach
+# that program (the native transaction also leaves it out of the family need
+# K). The candidate has no product image yet; the qualified loader is
+# TestOpaqueRealPolicyVerdictAttached.
+#
+# Every trampoline program outside the qualified steady-state attach set is
+# listed here. The resulting attach set (G009, pinned by
+# TestCandidateAttachSetObjects in attach_inventory_test.go) is:
+#   bpf_lsm_task_free 1, bpf_lsm_task_alloc 1, bprm_execve 3,
+#   security_bprm_creds_for_exec 1, bpf_lsm_bprm_check_security 1.
+# A new trampoline program fails that test until it is either listed here or
+# deliberately added to the pinned attach set.
+#
+# G019 M1 (ENFORCE_EXEC_POOL_OPAQUE_REAP_EVENTS_CANDIDATE) adds no attached
+# program: opaque_real_reap is a syscall command (BPF_PROG_TEST_RUN by the
+# node Reaper, never attached), and opaque_real_reap_events is a plain
+# ringbuf the Reaper reads (no gadget tracer is declared on it).
+#
+# G019 credit at exit (ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE) adds
+# one attached program, opaque_real_owner_child_exit_candidate
+# (tp_btf/sched_process_exit: a BTF raw tracepoint, not a trampoline, so the
+# trampoline attach set above is unchanged). It is in the product probe set
+# (sharedCandidateProbeSet, 16 links in all): nativeattach.Rank attaches it
+# after lsm/task_free and before task_alloc, and Stop detaches in exact
+# reverse, so it is detached before task_free. The two lsm/task_free programs
+# (the final free and the exec-capsule death retire real_owner_capsule_free)
+# are attached first and detached last.
+#
+# Programs that only diagnostic twins contain (live bootstrap) are disabled
+# by opaque_real_owner_child_candidate.programs.diagnostic.yaml, so that
+# every entry here is a program of the product object.
+programs:
+  # Tail-call targets: installed in PROG_ARRAYs, never attached.
+  opaque_real_owner_policy_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_policy_strict:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_prepare_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_prepare_strict:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_stage_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_stage_strict:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_rule_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_rule_strict:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_finish_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_finish_strict:
+    attach_to: gadget_program_disabled
+  # G019 gap 4: interpreter continuation entries (product objects only,
+  # ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE).
+  opaque_real_owner_continue_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_continue_strict:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_terminal_retain_target:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_child_target_candidate:
+    attach_to: gadget_program_disabled
+  # Diagnostics the qualified loader never loads.
+  opaque_real_owner_birth_signal0_diagnostic:
+    attach_to: gadget_program_disabled
+  se_publication_arm:
+    attach_to: gadget_program_disabled

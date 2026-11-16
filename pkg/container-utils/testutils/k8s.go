@@ -211,7 +211,7 @@ func deleteTestNamespaceCommand(t *testing.T, namespace string) *command.Command
 }
 
 func deleteK8sNamespace(t *testing.T, namespace string) {
-	igtesting.RunTestSteps([]igtesting.TestStep{(deleteTestNamespaceCommand(t, namespace))}, t)
+	igtesting.RunTestSteps([]igtesting.TestStep{deleteTestNamespaceCommand(t, namespace)}, t)
 }
 
 // waitUntilPodReadyCommand returns a Command which waits until pod with the specified name in

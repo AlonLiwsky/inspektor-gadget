@@ -15,13 +15,17 @@
 package tests
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	gadgettesting "github.com/inspektor-gadget/inspektor-gadget/gadgets/testing"
-	igtesting "github.com/inspektor-gadget/inspektor-gadget/pkg/testing"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/testing/containers"
 	igrunner "github.com/inspektor-gadget/inspektor-gadget/pkg/testing/ig"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/testing/match"
@@ -63,8 +67,8 @@ func TestTraceTCPretrans(t *testing.T) {
 		ns = utils.GenerateTestNamespaceName(t, "test-trace-tcpretrans")
 		containerOpts = append(containerOpts, containers.WithContainerNamespace(ns))
 	}
-	// for testing purpose drop 30% of packets and wget 1.1.1.1 every 0.1 seconds
-	cmds := "tc qdisc add dev eth0 root netem drop 30% && while true; do wget --no-check-certificate -q -O /dev/null https://1.1.1.1; sleep 0.1; done"
+	// Keep the container idle until the tracer reports readiness.
+	cmds := "exec tail -f /dev/null"
 	testContainer := containerFactory.NewContainer(
 		containerName,
 		cmds,
@@ -74,16 +78,35 @@ func TestTraceTCPretrans(t *testing.T) {
 	t.Cleanup(func() {
 		testContainer.Stop(t)
 	})
-	var runnerOpts []igrunner.Option
-	var testingOpts []igtesting.Option
+	// Drop only the test TCP destination, not ARP or unrelated control traffic.
+	// All unclassified priorities use band 1; only the explicit filter uses 3.
+	tcSetup := "tc qdisc add dev eth0 root handle 1: prio bands 3 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 && " +
+		"tc qdisc add dev eth0 parent 1:3 handle 30: netem loss 100% && " +
+		"tc filter add dev eth0 protocol ip parent 1: prio 1 u32 " +
+		"match ip dst 1.1.1.1/32 match ip protocol 6 0xff match ip dport 443 0xffff flowid 1:3"
+	dockerExec := func(script string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return exec.CommandContext(ctx, "docker", "exec", testContainer.ID(), "sh", "-c", script).CombinedOutput()
+	}
+	t.Cleanup(func() {
+		out, err := dockerExec("tc -s qdisc show dev eth0; tc -s filter show dev eth0 parent 1:; cat /proc/net/snmp; cat /tmp/retrans-wget.stderr")
+		t.Logf("retransmission stimulus diagnostics (error=%v):\n%s", err, out)
+	})
+	out, err := dockerExec(tcSetup)
+	require.NoError(t, err, "installing targeted packet loss: %s", out)
+	// Retain tracer startup and attachment diagnostics.
+	runnerOpts := []igrunner.Option{
+		igrunner.WithFlags("--verbose"),
+		igrunner.WithStdErrWriter(os.Stderr),
+	}
 	commonDataOpts := []utils.CommonDataOption{utils.WithContainerImageName(containerImage), utils.WithContainerID(testContainer.ID())}
 
 	switch utils.CurrentTestComponent {
 	case utils.IgLocalTestComponent:
-		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-r=%s", utils.Runtime), "--timeout=5"))
+		runnerOpts = append(runnerOpts, igrunner.WithLocalReady(2*time.Minute), igrunner.WithFlags(fmt.Sprintf("-r=%s", utils.Runtime), "--timeout=5"))
 	case utils.KubectlGadgetTestComponent:
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-n=%s", ns), "--timeout=5"))
-		testingOpts = append(testingOpts, igtesting.WithCbBeforeCleanup(utils.PrintLogsFn(ns)))
 		commonDataOpts = append(commonDataOpts, utils.WithK8sNamespace(ns))
 	}
 	runnerOpts = append(runnerOpts, igrunner.WithValidateOutput(
@@ -134,5 +157,51 @@ func TestTraceTCPretrans(t *testing.T) {
 	))
 	traceTCPCmd := igrunner.New("trace_tcpretrans", runnerOpts...)
 
-	igtesting.RunTestSteps([]igtesting.TestStep{traceTCPCmd}, t, testingOpts...)
+	// Readiness enables observed exit on the existing runner. Do not use the
+	// generic start/stop test-step path, which adds a fixed ten-second sleep.
+	observed, ok := traceTCPCmd.(interface {
+		Exited() <-chan struct{}
+		ExitError() error
+	})
+	require.True(t, ok, "tracer must expose observed completion")
+	traceTCPCmd.Start(t)
+	require.NotNil(t, observed.Exited(), "tracer must observe natural completion")
+
+	// One fresh connection starts AFTER attach/readiness. Success is neither
+	// expected nor required: every test SYN is deliberately dropped.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	workload := exec.CommandContext(ctx, "docker", "exec", testContainer.ID(), "sh", "-c",
+		"echo $$ > /tmp/retrans-wget.pid; "+
+			"unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY; "+
+			"exec wget --no-check-certificate -O /dev/null https://1.1.1.1 2>/tmp/retrans-wget.stderr")
+	var workloadOutput bytes.Buffer
+	workload.Stdout = &workloadOutput
+	workload.Stderr = &workloadOutput
+	require.NoError(t, workload.Start(), "starting retransmission workload")
+	workloadDone := make(chan struct{})
+	var workloadErr error
+	go func() {
+		workloadErr = workload.Wait()
+		close(workloadDone)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-workloadDone // Join the docker client; container cleanup joins wget.
+		t.Logf("workload client completed (error=%v): %s", workloadErr, workloadOutput.String())
+	})
+	select {
+	case <-workloadDone:
+		t.Fatalf("wget exited before capture completed: %v: %s", workloadErr, workloadOutput.String())
+	case <-observed.Exited():
+		require.NoError(t, observed.ExitError(), "tracer natural completion")
+	}
+	select {
+	case <-workloadDone:
+		t.Fatalf("wget did not remain alive for capture: %v: %s", workloadErr, workloadOutput.String())
+	default:
+	}
+	out, err = dockerExec("pid=$(cat /tmp/retrans-wget.pid) && kill -0 \"$pid\" && test \"$(cat /proc/$pid/comm)\" = wget")
+	require.NoError(t, err, "checking live wget after capture: %s", out)
+	traceTCPCmd.Stop(t) // Already exited: validate the original event assertions.
 }
