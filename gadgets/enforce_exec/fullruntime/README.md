@@ -1182,6 +1182,14 @@ refusal must fail the container start or report the binding unprotected
 (NotReady). An Audit refusal must not fail the start: Audit
 never blocks a workload.
 
+A first publication whose outcome is unknown (a lost reply or a failed
+undo, and a route read back that is not this node's) latches the slot until
+node teardown (`PublishUnconfirmed`, Degraded). Its error
+(`ErrSharedPublishUnknown`) carries the slot, the cgroup and the route
+scope the commander minted for the request. That scope is unconfirmed: a
+caller may use it only to tombstone the latched route's late events after
+unbinding, never to attribute an event. The binding still fails as before.
+
 Refused adoptions are reported in three places, until the slot is recycled:
 `SharedBindingStatus.Adoption`, `NodeEnforcer.AdoptionReport` (the slots and
 per-node counters by reason, `AdoptionStuck` included) and `Ready`

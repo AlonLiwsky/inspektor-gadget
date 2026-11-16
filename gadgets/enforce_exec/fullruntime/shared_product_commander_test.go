@@ -839,22 +839,54 @@ func TestProductCommanderUnconfirmedFirstPublish(t *testing.T) {
 			t.Fatalf("uncommitted lost reply: %d %v used %v", code, err, f.cmd.used)
 		}
 	})
+	// C3: an unknown outcome carries the scope this commander minted (the
+	// request's), typed, while errors.Is on the sentinel and the cause holds.
+	minted := func(t *testing.T, err error, scope uint64) {
+		t.Helper()
+		var unknown *ErrSharedPublishUnknown
+		if !errors.As(err, &unknown) || unknown.Slot != 0 || unknown.Cgroup != 0xc0 || unknown.Scope == 0 || unknown.Scope != scope {
+			t.Fatalf("typed unknown outcome %+v (want slot 0 cgroup 0xc0 scope %d): %v", unknown, scope, err)
+		}
+	}
+	requestScope := func(r []byte) uint64 { return binary.LittleEndian.Uint64(r[sharedProductHeaderBytes+8:]) }
 	t.Run("failed undo", func(t *testing.T) {
 		f := newSharedCommanderFixture(t)
-		f.fakes["opaque_real_route_publish"].respond = func(r []byte) uint32 { f.routes.set(0, routeOf(r, 0xc0)); return sharedProductInvariant }
+		var scope uint64
+		f.fakes["opaque_real_route_publish"].respond = func(r []byte) uint32 {
+			scope = requestScope(r)
+			f.routes.set(0, routeOf(r, 0xc0))
+			return sharedProductInvariant
+		}
 		_, err := f.cmd.publishFirst(t.Context(), 0, 0xc0, policy, init)
 		if !errors.Is(err, errSharedPublishUnknown) || f.cmd.slots[0] != nil || len(f.cmd.used) != 1 {
 			t.Fatalf("failed undo: %v used %v", err, f.cmd.used)
 		}
+		minted(t, err, scope)
 	})
 	t.Run("foreign route", func(t *testing.T) {
 		f := newSharedCommanderFixture(t)
-		f.fakes["opaque_real_route_publish"].respond = func(r []byte) uint32 { f.routes.set(0, routeOf(r, 0xd0)); return 0 }
+		var scope uint64
+		f.fakes["opaque_real_route_publish"].respond = func(r []byte) uint32 {
+			scope = requestScope(r)
+			f.routes.set(0, routeOf(r, 0xd0))
+			return 0
+		}
 		f.fakes["opaque_real_route_publish"].runErr = lost
-		if _, err := f.cmd.publishFirst(t.Context(), 0, 0xc0, policy, init); !errors.Is(err, errSharedPublishUnknown) {
+		_, err := f.cmd.publishFirst(t.Context(), 0, 0xc0, policy, init)
+		if !errors.Is(err, errSharedPublishUnknown) || !errors.Is(err, lost) {
 			t.Fatalf("foreign route: %v", err)
 		}
+		minted(t, err, scope)
 	})
+}
+
+// TestErrSharedPublishUnknownNilErr: a zero-value typed error falls back to
+// the sentinel instead of panicking.
+func TestErrSharedPublishUnknownNilErr(t *testing.T) {
+	err := error(&ErrSharedPublishUnknown{Scope: 1})
+	if err.Error() != errSharedPublishUnknown.Error() || !errors.Is(err, errSharedPublishUnknown) {
+		t.Fatalf("nil Err: %q", err)
+	}
 }
 
 // TestProductCommanderRevisionKeepsIdentity: a revision changing the root

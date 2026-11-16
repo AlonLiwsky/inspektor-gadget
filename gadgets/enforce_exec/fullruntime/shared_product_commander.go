@@ -106,6 +106,29 @@ const sharedProductInvariant = ^uint32(0)
 // teardown (reported Degraded, PublishUnconfirmed).
 var errSharedPublishUnknown = errors.New("first publication outcome unknown")
 
+// ErrSharedPublishUnknown is the typed errSharedPublishUnknown (it wraps it
+// and the cause, so errors.Is on either still holds). Scope is the route
+// scope this commander minted for the request: the latched route, if the
+// kernel committed it, carries it in its events. It is NOT a confirmed
+// scope: a caller may use it only to tombstone the binding's late events
+// on unbind, never to attribute one (the outcome stays unknown).
+type ErrSharedPublishUnknown struct {
+	Slot   uint32
+	Cgroup uint64
+	Scope  uint64
+	Err    error
+}
+
+func (e *ErrSharedPublishUnknown) Error() string { return e.Unwrap().Error() }
+
+// Unwrap returns Err, or the sentinel when Err is nil (never panics).
+func (e *ErrSharedPublishUnknown) Unwrap() error {
+	if e.Err == nil {
+		return errSharedPublishUnknown
+	}
+	return e.Err
+}
+
 func newProductCommander(control *sharedProductControl, routes, objects, adoptState sharedBytesMap, profile SharedProfile) *productCommander {
 	return &productCommander{
 		control: control, routes: routes, objects: objects, adoptState: adoptState, profile: profile,
@@ -509,7 +532,8 @@ func (c *productCommander) publishFirst(ctx context.Context, slot uint32, cgroup
 	if cause == nil {
 		cause = fmt.Errorf("invariant code %d", int32(code))
 	}
-	return code, fmt.Errorf("publish slot %d (route read back %+v): %w: %w", slot, route.State, cause, errSharedPublishUnknown)
+	return code, &ErrSharedPublishUnknown{Slot: slot, Cgroup: cgroup, Scope: scope,
+		Err: fmt.Errorf("publish slot %d (route read back %+v): %w: %w", slot, route.State, cause, errSharedPublishUnknown)}
 }
 
 func (c *productCommander) revise(ctx context.Context, slot uint32, cgroup uint64, policy SharedBindingPolicy) (uint32, error) {

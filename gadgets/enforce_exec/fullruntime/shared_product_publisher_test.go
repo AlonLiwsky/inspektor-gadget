@@ -478,9 +478,11 @@ func TestProductPublisherRecycleUncleanAndRevisionRefusal(t *testing.T) {
 // (PublishUnconfirmed, failed), counted, never adopted, withdrawn or
 // recycled before node teardown.
 func TestProductPublisherUnconfirmedFirstPublishLatches(t *testing.T) {
-	cmd := &sharedFakeCommander{publishErr: fmt.Errorf("lost: %w", errSharedPublishUnknown)}
+	cmd := &sharedFakeCommander{publishErr: &ErrSharedPublishUnknown{Slot: 2, Cgroup: 11, Scope: 0x5c09e, Err: fmt.Errorf("lost: %w", errSharedPublishUnknown)}}
 	p, _ := newTestProductPublisher(cmd, &sharedFakeThreads{tids: []uint32{7}})
-	if _, err := p.Publish(t.Context(), 2, 11, SharedBindingPolicy{Class: 2, Fallback: 2, Rules: 1}, true, sharedTestInit); !errors.Is(err, errSharedPublishUnknown) {
+	_, err := p.Publish(t.Context(), 2, 11, SharedBindingPolicy{Class: 2, Fallback: 2, Rules: 1}, true, sharedTestInit)
+	var unknown *ErrSharedPublishUnknown
+	if !errors.Is(err, errSharedPublishUnknown) || !errors.As(err, &unknown) || unknown.Scope != 0x5c09e {
 		t.Fatalf("publish: %v", err)
 	}
 	st, reported := p.adoptionStatus(2)
