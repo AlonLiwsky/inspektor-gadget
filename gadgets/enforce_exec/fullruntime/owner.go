@@ -552,79 +552,58 @@ func (o *Owner) Check(ctx context.Context) error {
 			return err
 		}
 	}
-	h, err := o.control.Call(ctx, ControlCommand{Operation: OwnerRootCheck})
+	return checkProtection(ctx, o.control, o.gate, o.slot.Generation())
+}
+
+// checkProtection is the read-only heartbeat behind Owner.Check. It never
+// closes the admission gate and never re-attests: a closed gate denies
+// not-yet-owned execs (gate_denials) and fails forks with EAGAIN in the bound
+// cgroup in every mode, including Audit, so a same-plan refresh must not close
+// it. Live kernel facts that show drift are checked and fail closed, but
+// physical cgroup membership is not inventoried: a dormant unverified task in
+// the bound cgroup is caught when it execs or forks (quarantine, owner fault,
+// NotReady) or at the next publication.
+//
+// The coarse movement receipt (ValidatedMovementSequence) goes stale on any
+// cgroup migration on the node, so a stale receipt is not drift and is not
+// renewed here. No admission hook reads it: exec and fork in the bound cgroup
+// validate the task's roles on every operation, and an invalid task is denied
+// and quarantined, which raises Faults and fails this check. Each publication
+// (Activate, Update, Resume) re-validates the physical inventory under a
+// drained gate before it commits and again after the swap.
+func checkProtection(ctx context.Context, control publicationControl, gate *Gate, generation uint64) error {
+	h, err := control.Call(ctx, ControlCommand{Operation: OwnerRootCheck})
 	if err != nil {
 		return err
 	}
-	generation := o.slot.Generation()
 	if h.RootMatch != 1 || h.ActiveGeneration != generation || h.Faults != 0 || h.Retired != 0 || h.MovementArmed != 1 || h.MovementFault != 0 || h.MovementSequence&1 != 0 {
 		return fmt.Errorf("owner kernel protection is not confirmed")
 	}
-	phase, err := o.control.Phase()
+	// A failed validation, a fault or an invalidated publication receipt clears
+	// the readiness generation. Only a new publication restores it.
+	if h.ReadyGeneration != generation {
+		return fmt.Errorf("owner readiness for generation %d is not attested", generation)
+	}
+	phase, err := control.Phase()
 	if err != nil {
 		return err
 	}
 	if phase.State != OwnerIdle || phase.CommittedGeneration != generation {
 		return fmt.Errorf("owner publication phase is not idle")
 	}
-	if phase.ValidatedMovementSequence != h.MovementSequence || h.ReadyGeneration != generation {
-		if err = o.reattest(ctx); err != nil {
-			return err
-		}
-	}
-	faults, err := o.control.GenerationFault(generation)
+	faults, err := control.GenerationFault(generation)
 	if err != nil {
 		return err
 	}
 	if faults != 0 {
 		return fmt.Errorf("active generation observation/semantic fault %#x", faults)
 	}
-	closed, _, err := o.gate.State()
+	closed, _, err := gate.State()
 	if err != nil {
 		return err
 	}
 	if closed {
 		return fmt.Errorf("owner publication is not finalized")
-	}
-	return nil
-}
-
-// reattest holds Owner.mu and never changes policy/epochs. Unrelated global
-// membership motion may invalidate the coarse receipt; renew it only with a
-// closed/drained physical inventory. Failed validation retains old enforcement.
-func (o *Owner) reattest(ctx context.Context) (err error) {
-	lease, err := o.gate.BeginUpdate(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, lease.Reopen()) }()
-	if err = o.verify(ctx); err != nil {
-		return err
-	}
-	generation := o.slot.Generation()
-	h, err := o.control.Call(ctx, ControlCommand{Operation: OwnerRootCheck})
-	if err != nil {
-		return err
-	}
-	if h.RootMatch != 1 {
-		return fmt.Errorf("root continuity lost")
-	}
-	if _, err = o.control.Call(ctx, ControlCommand{Operation: OwnerReattest, Generation: generation}); err != nil {
-		return err
-	}
-	if err = o.verify(ctx); err != nil {
-		return err
-	}
-	phase, err := o.control.Phase()
-	if err != nil {
-		return err
-	}
-	h, err = o.control.Health()
-	if err != nil {
-		return err
-	}
-	if phase.State != OwnerIdle || phase.CommittedGeneration != generation || phase.ValidatedMovementSequence != h.MovementSequence || h.ReadyGeneration != generation || h.Faults != 0 || h.PendingBirths != 0 || h.MovementFault != 0 || h.MovementSequence&1 != 0 {
-		return fmt.Errorf("owner re-attestation receipt invalidated")
 	}
 	return nil
 }

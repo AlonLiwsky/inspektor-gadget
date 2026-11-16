@@ -326,6 +326,121 @@ func TestOwnerCheckDoesNotCleanPendingPublication(t *testing.T) {
 	}
 }
 
+// protectionFixture publishes generation 1 through the fake control, then
+// records the gate state at every later control command.
+func protectionFixture(t *testing.T) (*Gate, *fakePublicationControl, *[]bool) {
+	t.Helper()
+	publisher, control, _, _ := publicationFixture(t)
+	if _, err := publisher.Publish(t.Context(), slotProgram(t, publisher.slot, 1, "uid")); err != nil {
+		t.Fatal(err)
+	}
+	gate := publisher.slot.gate
+	requireState(t, gate, false, 0)
+	control.calls = nil
+	closedAtCall := new([]bool)
+	control.hook = func(ControlCommand) {
+		closed, _, err := gate.State()
+		if err != nil {
+			t.Error(err)
+		}
+		*closedAtCall = append(*closedAtCall, closed)
+	}
+	return gate, control, closedAtCall
+}
+
+// A same-plan heartbeat after unrelated node-wide cgroup motion must stay
+// read-only: no re-attestation and no closed admission gate, so Audit execs
+// and forks in the bound cgroup are never refused by a refresh.
+func TestOwnerHeartbeatIsReadOnlyAfterNodeMovement(t *testing.T) {
+	gate, control, closedAtCall := protectionFixture(t)
+	validated := control.phase.ValidatedMovementSequence
+	for i := uint64(1); i <= 5; i++ {
+		// Each completed migration anywhere on the node adds two.
+		control.health.MovementSequence = validated + 2*i
+		if err := checkProtection(t.Context(), control, gate, 1); err != nil {
+			t.Fatalf("heartbeat %d refused a stale movement receipt: %v", i, err)
+		}
+		requireState(t, gate, false, 0)
+	}
+	for _, op := range control.calls {
+		if op != OwnerRootCheck {
+			t.Fatalf("heartbeat sent control command %d, want only root checks: %v", op, control.calls)
+		}
+	}
+	if len(control.calls) != 5 {
+		t.Fatalf("calls=%v", control.calls)
+	}
+	for i, closed := range *closedAtCall {
+		if closed {
+			t.Fatalf("heartbeat closed the admission gate at call %d", i)
+		}
+	}
+	if control.health.ReadyGeneration != 1 || control.phase.ValidatedMovementSequence != validated {
+		t.Fatal("heartbeat changed the readiness receipt")
+	}
+}
+
+// rootLostControl reports a root check that no longer matches the trusted init.
+type rootLostControl struct{ *fakePublicationControl }
+
+func (c rootLostControl) Call(ctx context.Context, cmd ControlCommand) (ControlHealth, error) {
+	h, err := c.fakePublicationControl.Call(ctx, cmd)
+	h.RootMatch = 0
+	return h, err
+}
+
+// Read-only does not mean fail open: every drift the kernel exposes is NotReady,
+// and reporting it never closes the gate either.
+func TestOwnerHeartbeatReportsDrift(t *testing.T) {
+	for name, drift := range map[string]func(*fakePublicationControl){
+		"owner fault":        func(c *fakePublicationControl) { c.health.Faults = 1 },
+		"movement fault":     func(c *fakePublicationControl) { c.health.MovementFault = 1 },
+		"movement disarmed":  func(c *fakePublicationControl) { c.health.MovementArmed = 0 },
+		"migration underway": func(c *fakePublicationControl) { c.health.MovementSequence = 3 },
+		"retired":            func(c *fakePublicationControl) { c.health.Retired = 1 },
+		"readiness lost":     func(c *fakePublicationControl) { c.health.ReadyGeneration = 0 },
+		"other generation":   func(c *fakePublicationControl) { c.health.ActiveGeneration = 2 },
+		"generation fault":   func(c *fakePublicationControl) { c.fault = 1 },
+		"phase not idle":     func(c *fakePublicationControl) { c.phase.State = OwnerCommitted },
+		"root check failed":  func(c *fakePublicationControl) { c.fail = OwnerRootCheck },
+		"root lost":          func(*fakePublicationControl) {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gate, control, _ := protectionFixture(t)
+			drift(control)
+			var checked publicationControl = control
+			if name == "root lost" {
+				checked = rootLostControl{control}
+			}
+			if err := checkProtection(t.Context(), checked, gate, 1); err == nil {
+				t.Fatal("drift reported Ready")
+			}
+			requireState(t, gate, false, 0)
+			for _, op := range control.calls {
+				if op != OwnerRootCheck {
+					t.Fatalf("drift check sent control command %d", op)
+				}
+			}
+		})
+	}
+	t.Run("gate closed", func(t *testing.T) {
+		gate, control, _ := protectionFixture(t)
+		lease, err := gate.BeginUpdate(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = checkProtection(t.Context(), control, gate, 1); err == nil {
+			t.Fatal("closed gate reported Ready")
+		}
+		if err = lease.Reopen(); err != nil {
+			t.Fatal(err)
+		}
+		if err = checkProtection(t.Context(), control, gate, 1); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 type testKernelCounters struct {
 	values        [3][]uint64
 	fail          bool

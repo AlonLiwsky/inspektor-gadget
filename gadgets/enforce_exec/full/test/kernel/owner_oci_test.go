@@ -67,7 +67,8 @@ func (l *ociOwnerLease) Close() error {
 
 // Exact native path: in-memory trusted OCI -> actual eBPF operator -> qualified
 // command handle/attachment receipts -> closed preparation -> explicit activation
-// -> same-map role reload -> physical re-attestation -> drain/confirmed teardown.
+// -> same-map role reload -> read-only heartbeat and publication re-attestation
+// -> drain/confirmed teardown.
 func TestFullOwnerOCIRuntime(t *testing.T) {
 	if os.Getenv("IG_FULL_OWNER_OCI_TEST") != "1" {
 		t.Skip("explicit disposable kernel opt-in required")
@@ -257,8 +258,10 @@ func TestFullOwnerOCIRuntime(t *testing.T) {
 	require.Equal(t, uint64(1), owner.Epochs()["uid"])
 	run("s", 0)
 	require.NoError(t, owner.Check(ctx))
-	// Existing foreign ingress has no observed creator lineage. Detect it without
-	// executing it, refuse physical re-attestation, then recover after it leaves.
+	// Existing foreign ingress has no observed creator lineage. The heartbeat is
+	// read-only (it never closes admission), so it does not inventory a dormant
+	// task; the next publication re-attests under a drained gate and refuses it
+	// without executing it. Recovery needs no publication after it leaves.
 	sidecar := exec.CommandContext(ctx, "sleep", "60")
 	require.NoError(t, sidecar.Start())
 	defer func() { sidecar.Process.Kill(); sidecar.Wait() }()
@@ -275,11 +278,24 @@ func TestFullOwnerOCIRuntime(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(path, "cgroup.procs"), []byte(strconv.Itoa(sidecar.Process.Pid)), 0o600))
 	}
 	move(cgpath)
-	require.Error(t, owner.Check(ctx))
+	require.NoError(t, owner.Check(ctx), "dormant foreign ingress stays Ready: the heartbeat is read-only and does not inventory cgroup membership")
+	result, e = owner.Update(ctx, compile(3, "edited-root", owner.Epochs()))
+	require.Error(t, e, "publication must refuse foreign ingress")
+	// EO_LINEAGE (7) is surfaced by fullruntime/control.go as "status 7" or "result 7".
+	require.Regexp(t, `(status|result) 7\b`, e.Error(), "refusal must be the lineage refusal")
+	require.False(t, result.Committed)
+	require.True(t, result.Admitting)
 	require.Equal(t, uint64(2), owner.Generation())
 	move(filepath.Join("/sys/fs/cgroup", strings.TrimPrefix(original, "/")))
 	require.NoError(t, owner.Check(ctx))
 	require.Equal(t, uint64(2), owner.Generation())
+	// Accepted state re-attests once the foreign ingress has left.
+	result, e = owner.Update(ctx, compile(4, "edited-root", owner.Epochs()))
+	require.NoError(t, e)
+	require.True(t, result.Committed)
+	require.True(t, result.Admitting)
+	require.Equal(t, uint64(4), owner.Generation())
+	require.NoError(t, owner.Check(ctx))
 	run("s", 0)
 	seen := map[uint64]bool{}
 	require.Eventually(t, func() bool {
@@ -306,5 +322,5 @@ func TestFullOwnerOCIRuntime(t *testing.T) {
 	_, e = io.WriteString(input, "q")
 	require.NoError(t, e)
 	require.NoError(t, process.Wait())
-	t.Log("native OCI lifecycle/command/attachment/event/reload/closed activation/read-only re-attestation/late failure/confirmed teardown proof; synthetic lease, NOT containerd/CRI validation")
+	t.Log("native OCI lifecycle/command/attachment/event/reload/closed activation/read-only heartbeat/publication re-attestation/late failure/confirmed teardown proof; synthetic lease, NOT containerd/CRI validation")
 }

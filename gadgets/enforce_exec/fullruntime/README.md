@@ -480,13 +480,28 @@ next depends on the fault:
 
 **Admission failures before the generation is known still deny.** Examples are
 tracking, gate or storage faults, an owner-wide fault, and closed admission
-during reload or re-attestation. An owner-wide fault set by an earlier
+during a publication (`Activate`, `Update`, `Resume`) or retirement. An
+owner-wide fault set by an earlier
 proposal quarantine or by a failure to store a generation fault (above) is one
 such cause of later denials. With no generation there is no class, so these
 stay fail-closed, even for an Audit-only binding. The shared node uses the same
 rule. Strict, mixed and unclassifiable (invalid header or policy) generations
 remain fail-closed on every fault. Do not fall open to hide an operational
 fault.
+
+**The heartbeat never closes admission.** `Owner.Check` is read-only: it never
+closes the gate and never re-attests. A closed gate denies a not-yet-owned exec
+and fails a fork in the bound cgroup with `EAGAIN` in every mode, Audit
+included, so a same-plan refresh must not close it. `Check` re-verifies the
+lease, pins, hooks and root, and reads the kernel state. It reports NotReady
+on an owner-wide or generation fault, a movement-observer fault, a lost
+readiness generation, a non-idle publication phase or a closed gate. The
+movement receipt goes stale on any cgroup migration on the node; that is not
+drift and `Check` does not renew it. No admission hook reads the receipt: exec
+and fork in the bound cgroup validate the task's roles on every operation, and
+an invalid task is denied and quarantined, which sets the owner-wide fault.
+Physical re-attestation, under a drained gate, runs only inside a publication:
+before the commit and again after the swap.
 
 Follow-ups:
 
@@ -521,12 +536,15 @@ into a child cgroup does not extend policy coverage. A trusted embedding must
 exclude unsupported cgroup delegation and authenticate its runtime lease; the
 node-agent strict admission contract includes cgroup-mount, capability,
 namespace and seccomp restrictions. Movement observation detects changes and
-invalidates readiness; it is not a general mechanism that prevents migration.
+invalidates the publication receipt; it is not a general mechanism that
+prevents migration.
 
 This profile has no `BindRestricted` host-namespace exception and no inferred
 runtime-helper exemption. A `kubectl exec`/`docker exec` helper entering from an
-unobserved creator can fail lineage checks and leave the owner NotReady. A
-closed gate can also reject exec or fork during lifecycle operations. Allowing a
+unobserved creator can fail lineage checks and leave the owner NotReady once it
+execs or forks, or refuse the next publication. A dormant one is not reported
+by the read-only heartbeat. A closed gate can also reject exec or fork during
+publication and retirement, never during a heartbeat. Allowing a
 `/runc` path does not establish creator lineage or authenticate that binary.
 Treat helper disruption as an explicit cost of opting into strict enforcement,
 not as a reason to infer an exemption or reset trusted state.
@@ -1634,12 +1652,18 @@ Lifecycle ordering is deliberate:
 
 Internal owner ABI **2** adds active-only, same-generation physical re-attestation.
 ABI1 development artifacts are rejected; the chart version is unchanged.
-Movement invalidates the inventory receipt. Owner.Check renews it only behind a
-closed/drained gate, with no new roots or epoch writes. Unknown ingress refuses
-readiness; after it leaves, accepted state can be re-attested without rerooting.
-These pauses can disrupt exec/runtime helpers; there are no inferred exemptions.
-The native OCI fixture and ABI2 re-attestation have passed isolated runs with
-controlled synthetic leases, real datasource bitmaps and confirmed teardown.
+Movement invalidates the inventory receipt. Only a publication renews it, behind
+a closed/drained gate, with no new roots or epoch writes; unknown ingress refuses
+that publication. `Owner.Check` is read-only and does not renew or require it
+(see "The heartbeat never closes admission"). Publication pauses can disrupt
+exec/runtime helpers; there are no inferred exemptions. The native Owner no
+longer issues `EO_REATTEST`; the command stays in the ABI.
+The native OCI fixture and ABI2 re-attestation passed isolated runs (before the
+read-only heartbeat change) with controlled synthetic leases, real datasource
+bitmaps and confirmed teardown. After the change, the OCI fixture's new
+expectations and the heartbeat churn test passed on the k8s proof kernel
+(2026-11-16); the other owner kernel suites passed on the same change before the
+heartbeat test's fork count was reduced.
 This is not proof of containerd/CRI authenticity, all persistent-profile predicate
 combinations, real runtime-helper churn, or the connected node-agent backend.
 Those integration prerequisites remain before default activation.

@@ -138,9 +138,9 @@ locally built owner object in `IG_FULL_OWNER_OCI_OBJECT` and matching metadata i
 `IG_FULL_OWNER_OCI_METADATA`. It runs the real OCI/eBPF/instance-manager path,
 qualified syscall handle and live attachment receipts. It checks closed startup
 versus explicit activation, late startup failure, shared budget/scope exclusion,
-role-preserving reload, real full bitmap datasource events, unknown ingress
-refusal/recovery via read-only physical re-attestation, and release only after
-confirmed teardown. Its helper has a separate mount namespace. Its lease is a
+role-preserving reload, real full bitmap datasource events, a read-only
+heartbeat next to dormant unknown ingress, publication refusal of that ingress,
+and release only after confirmed teardown. Its helper has a separate mount namespace. Its lease is a
 controlled **synthetic runtime owner**, not containerd/CRI evidence. Run only on
 the explicitly selected pinned disposable kernel; compilation is not proof.
 
@@ -148,3 +148,18 @@ The ABI2 OCI fixture passed four isolated runs on the pinned artifact. Separate
 assembled-owner, control-only (including EO_REATTEST) and all29 immutable-reader
 cases were rerun successfully with the same source. This does not establish
 containerd/CRI or the node-agent controller's persistent backend integration.
+Those runs predate the read-only heartbeat. The ingress step now expects
+`Check` to pass and `Update` to refuse with the lineage status; that version
+passed on the k8s proof kernel (7.3.0-sandbox-exec-k8s+) on 2026-11-16.
+
+`TestFullOwnerHeartbeatAuditChurnKernel` requires
+`IG_FULL_OWNER_HEARTBEAT_TEST=1` and the same `IG_FULL_OWNER_OCI_OBJECT` and
+`IG_FULL_OWNER_OCI_METADATA`. It binds an Audit-only generation, moves an
+unrelated process between two unrelated cgroups in a loop and calls
+`Owner.Check` in a loop. Meanwhile the bound helper runs 5 x 700 fork+exec
+rounds of an Audit would-deny target, kept under the owner's 4096 lifetime task
+credits (credits never recycle, so more forks end in a capacity fault). It requires zero fork `EAGAIN`, zero exec
+`EPERM`, unchanged `GateDenials`, no owner fault and an advanced movement
+sequence. On the k8s proof kernel on 2026-11-16 it passed with the read-only
+heartbeat and failed on the previous code in round 0 (`RESULT 692 1 0`: fork
+`EAGAIN` from the closed gate).

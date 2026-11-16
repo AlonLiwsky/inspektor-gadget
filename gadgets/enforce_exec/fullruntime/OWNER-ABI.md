@@ -17,7 +17,8 @@ applies: once the generation is classified, Audit never blocks the faulting exec
 Data faults are recorded against the generation and admission stays open; a
 proposal quarantine or a failure to store the generation fault sets the
 owner-wide fault, which closes admission until recovery. Admission failures
-before the generation is known, including reload and re-attestation, still deny.
+before the generation is known, including a publication's drained gate, still
+deny. The `Owner.Check` heartbeat is read-only and never closes the gate.
 No uncertain role grants and preservation of earlier LSM denials remain required.
 These requirements are not evidence of shared kernel behavior. Enforcement
 remains fail-closed, with last-good state and truthful failure/NotReady on
@@ -150,7 +151,9 @@ with closed/drained admission, zero new-UID mask and healthy structural state.
 It validates physical membership/accepted rows without lineage adoption, root
 initialization or successful-history mutation. Failed inventory clears readiness
 but retains the active immutable map. Global movement receipts can be renewed
-without allocating a replacement gadget or inventing new UID epochs.
+without allocating a replacement gadget or inventing new UID epochs. The native
+Owner no longer sends EO_REATTEST from its `Check` heartbeat, because the drained
+gate refused Audit execs and forks; publications renew the receipt instead.
 
 The native Owner reserves aggregate capacity and exclusive scope before load,
 verifies actual attachment receipts and candidate marker activity, and separates
