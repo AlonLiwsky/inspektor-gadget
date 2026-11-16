@@ -1579,13 +1579,14 @@ jobs:
     # pinned toolchain (Debian clang-21 1:21.1.8-3~bpo13+2 and libbpf-dev
     # 1:1.5.0-3, every package from one snapshot.debian.org timestamp) and
     # compares each sha256 with sharedProductPins. Build only: loading the
-    # objects on the AL2023 kernels stays a manual EC2 gate (G011).
+    # objects on the AL2023 kernels stays a manual EC2 gate.
     runs-on: ubuntu-22.04
     container: debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 # trixie
     permissions:
       contents: read
     env:
       DEBIAN_FRONTEND: noninteractive
+      ENFORCE_EXEC_PRODUCT_CONTAINER: "1"
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:

@@ -13,6 +13,13 @@
 # Usage: install-product-toolchain.sh DEBDIR
 set -euo pipefail
 
+# Refuse to run on a host: this script rewrites the apt sources. Run it only
+# in the pinned container (make enforce-exec-product-objects) or the CI job.
+if [[ ! -e /.dockerenv && -z ${CI:-} && ${ENFORCE_EXEC_PRODUCT_CONTAINER:-} != 1 ]]; then
+	echo "$0: run this in the pinned container or CI (or set ENFORCE_EXEC_PRODUCT_CONTAINER=1)" >&2
+	exit 1
+fi
+
 # The snapshot must match the pinned image: its trixie main has the image's
 # libc6 (2.41-12+deb13u4) and its trixie-backports still carries
 # clang-21 1:21.1.8-3~bpo13+2.

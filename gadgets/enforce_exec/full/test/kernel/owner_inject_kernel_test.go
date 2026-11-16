@@ -32,7 +32,15 @@ const (
 	injectEvaluatorError = 1 // enforce_exec_test_inject_error bits (program.bpf.c)
 	injectProposeError   = 2
 	feInvalid            = 1 // FE_INVALID
-	ownerEventSize       = 324
+)
+
+// Byte offsets in struct event (program.bpf.c): generation, cgroup, deny,
+// mode, path_result, host_pid, path[256], matched_rules[4], error.
+const (
+	eventDenyOffset  = 16
+	eventModeOffset  = 20
+	eventErrorOffset = 320
+	ownerEventSize   = 324
 )
 
 // TestFullOwnerInjectedErrorKernel loads the legacy (non-ABI3) persistent owner
@@ -190,7 +198,7 @@ func TestFullOwnerInjectedErrorKernel(t *testing.T) {
 			require.True(t, result.Admitting)
 			generation := slot.Generation()
 
-			exec := func() {
+			runOnce := func() {
 				_, e := io.WriteString(input, "t")
 				require.NoError(t, e)
 				require.True(t, scanner.Scan())
@@ -205,7 +213,7 @@ func TestFullOwnerInjectedErrorKernel(t *testing.T) {
 				}
 				return observed
 			}
-			exec()
+			runOnce()
 
 			reader.SetDeadline(time.Now().Add(5 * time.Second))
 			var event []byte
@@ -216,7 +224,7 @@ func TestFullOwnerInjectedErrorKernel(t *testing.T) {
 					event = record.RawSample
 				}
 			}
-			deny, mode, fault := binary.LittleEndian.Uint32(event[16:]), binary.LittleEndian.Uint32(event[20:]), binary.LittleEndian.Uint32(event[320:])
+			deny, mode, fault := binary.LittleEndian.Uint32(event[eventDenyOffset:]), binary.LittleEndian.Uint32(event[eventModeOffset:]), binary.LittleEndian.Uint32(event[eventErrorOffset:])
 			faults, e := control.GenerationFault(generation)
 			require.NoError(t, e)
 			observed := observedCount()
@@ -239,7 +247,7 @@ func TestFullOwnerInjectedErrorKernel(t *testing.T) {
 			}
 			// Admission stays open in the same generation: a second exec reaches
 			// the evaluation again (an admission denial returns before count(2)).
-			exec()
+			runOnce()
 			h, e = control.Health()
 			require.NoError(t, e)
 			t.Logf("after second exec: count(2)=%d health faults=%#x", observedCount(), h.Faults)

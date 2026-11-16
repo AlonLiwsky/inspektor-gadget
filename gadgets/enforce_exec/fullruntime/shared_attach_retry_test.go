@@ -18,7 +18,7 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf/nativeattach"
 )
 
-// Review A2: the shared node never inherits the unbounded
+// The shared node never inherits the unbounded
 // nativeattach.DefaultRetry: WithNodeEnforcer sets a retry with a finite
 // attempt count and a total time budget, and admission refuses any other.
 func TestSharedNodeAttachRetryIsBounded(t *testing.T) {
@@ -63,7 +63,7 @@ func TestSharedNodeAttachRetryIsBounded(t *testing.T) {
 	}
 }
 
-// Review A2, through StartNode: while StartNode is blocked in the bounded
+// Through StartNode: while StartNode is blocked in the bounded
 // retry the host sees every capacity refusal (SharedNodeConfig.AttachState),
 // then nil once attached; an exhausted retry ends StartNode (it never
 // hangs), fails closed (no node, one teardown) and is NotReady.

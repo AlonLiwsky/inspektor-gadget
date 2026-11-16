@@ -665,11 +665,11 @@ func TestLSMResultPreservesSignedPriorDenials(t *testing.T) {
 }
 
 // TestLegacyOwnerLSMVerdictTable pins the fe_lsm_verdict rows the legacy
-// (non-ABI3) owner relies on since G015 A1: it passes class 1 only for an
-// Audit-only generation and 2 otherwise, and a decision whose deny/mode an
-// error never forces. The legacy call always passes prior 0, because a nonzero
-// ret returns before the call; the prior rows only pin fe_lsm_verdict itself.
-// Audit never blocks once classified.
+// (non-ABI3) owner relies on. The owner passes class 1 for an Audit-only
+// generation and 2 otherwise, and an error never forces the decision's deny
+// or mode. The legacy call always passes prior 0, because a nonzero ret
+// returns before the call; the prior rows only pin fe_lsm_verdict itself.
+// Audit never blocks once the generation is classified.
 func TestLegacyOwnerLSMVerdictTable(t *testing.T) {
 	runner := buildEvaluatorRunner(t)
 	for _, tc := range []struct {

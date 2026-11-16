@@ -365,7 +365,8 @@ ENFORCE_EXEC_PRODUCT_OUT ?= $(shell pwd)/enforce-exec-product-objects
 .PHONY: enforce-exec-product-objects
 enforce-exec-product-objects:
 	mkdir -p $(ENFORCE_EXEC_PRODUCT_OUT)
-	docker run --rm -v $(shell pwd):/checkout:ro -v $(ENFORCE_EXEC_PRODUCT_OUT):/out \
+	docker run --rm -e ENFORCE_EXEC_PRODUCT_CONTAINER=1 \
+		-v $(shell pwd):/checkout:ro -v $(ENFORCE_EXEC_PRODUCT_OUT):/out \
 		$(ENFORCE_EXEC_PRODUCT_IMAGE) bash -c ' \
 		/checkout/gadgets/enforce_exec/fullruntime/bpf/install-product-toolchain.sh /tmp/debs && \
 		/checkout/gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check /out'

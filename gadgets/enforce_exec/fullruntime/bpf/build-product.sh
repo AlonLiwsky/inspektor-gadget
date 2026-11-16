@@ -17,16 +17,24 @@
 # installs clang-21 and libbpf-dev 1:1.5.0-3 from one snapshot.debian.org
 # timestamp, checked against product-toolchain-debs.sha256.
 #
-# This is the product subset of the G019/G011 operator build
-# (build-g19pkg.sh calling compile-pkg.sh): the same flags, in the same
-# order. Product objects only; the diagnostic twins and the negative builds
-# of that script are not reproduced here.
+# This is the product subset of the qualification build (its scripts are
+# not in this repository): the same flags, in the same order. Product
+# objects only; the diagnostic twins and the negative builds of that build
+# are not reproduced here.
 #
 # The vmlinux.h files (testdata/al2023-vmlinux/<kernel>/vmlinux.h.xz) are
 # `bpftool btf dump file <BTF> format c` of the pinned kernel BTF
 # (btf-sha256 in the pins); the sha256 of the decompressed header is
 # checked below.
 set -euo pipefail
+
+# Refuse to run on a host: the build creates directories at the historical
+# paths below. Run it only in the pinned container (make
+# enforce-exec-product-objects) or the CI job.
+if [[ ! -e /.dockerenv && -z ${CI:-} && ${ENFORCE_EXEC_PRODUCT_CONTAINER:-} != 1 ]]; then
+	echo "$0: run this in the pinned container or CI (or set ENFORCE_EXEC_PRODUCT_CONTAINER=1)" >&2
+	exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Historical build paths. The CURRENT pins embed them: the pinned objects
@@ -45,6 +53,8 @@ set -euo pipefail
 # qualification) moves to neutral real paths created in the container:
 # /src/inspektor-gadget and /src/btf/<kernel>.
 CANON_REPO=/home/mbertschy/github.com/kubescape/inspektor-gadget
+# The directory name is historical and carries no meaning; only the exact
+# path matters, because the pinned objects embed it.
 CANON_BTF=/home/mbertschy/.local/state/sandbox-policy-recovery/g020-phase-live-20261109
 # ---------------------------------------------------------------------------
 CLANG_VERSION='Debian clang version 21.1.8 (3~bpo13+2)'

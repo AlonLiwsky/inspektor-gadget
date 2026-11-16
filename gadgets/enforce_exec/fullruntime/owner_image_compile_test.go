@@ -126,7 +126,7 @@ clang -target bpf -O2 -g -D__TARGET_ARCH_x86 -Wno-missing-declarations -I"$(dirn
 	}
 }
 
-// G015 A1 guard: a fault on the exec path must never force a Strict decision
+// Guard: a fault on the exec path must never force a Strict decision
 // (d->deny = 1; d->mode = 2), which blocked Audit bindings. The binding class
 // decides through fe_lsm_verdict, on both the legacy and the ABI3 owner.
 func TestOwnerExecFaultNeverForcesStrict(t *testing.T) {

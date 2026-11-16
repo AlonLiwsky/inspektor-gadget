@@ -52,7 +52,7 @@ type SharedNodeConfig struct {
 	ContainerdAddress            string
 	ImageProcRoot, ImageHostRoot string
 	// AttachState, if set, reports the native attach while StartNode is
-	// still blocked in the gadget's Start (review A2; NodeEnforcer.Ready is
+	// still blocked in the gadget's Start (NodeEnforcer.Ready is
 	// only reachable after StartNode returns): it is called with the
 	// *nativeattach.ErrAttachCapacity of every refused attempt (show the
 	// node NotReady with it), then once with nil when the refusal no longer
@@ -326,8 +326,8 @@ var ErrSharedRouteFree = errors.New("shared route slot free")
 // Bind nor Publish may reuse its retained physical account.
 var ErrSharedBindingWithdrawn = errors.New("shared binding withdrawn")
 
-// ErrSharedBindingCapacity reports that Bind found no free binding (review
-// A4): the profile's Bindings (2 in every product object) are bound, being
+// ErrSharedBindingCapacity reports that Bind found no free binding: the
+// profile's Bindings (2 in every product object) are bound, being
 // prepared, or retained until their removed route is recycled. A host shows
 // it as the container's NotReady reason; it clears once a binding is
 // removed and its slot recycled. Changing the limit needs a new product

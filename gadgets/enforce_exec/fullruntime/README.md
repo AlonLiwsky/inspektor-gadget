@@ -245,7 +245,7 @@ at agent start (`StartNode`, `SelectSharedProductImage`) with an error that
 wraps `ErrSharedNativeUnavailable` and names the reason. The pins live in
 `kernel_matrix.go` (`sharedProductPins`) and `testdata/shared_product_pins.tsv`.
 
-**Rebuilding the pinned objects (review A5).** `bpf/build-product.sh`
+**Rebuilding the pinned objects.** `bpf/build-product.sh`
 rebuilds the eight product objects (`g19pkg64/128/256/512` for each kernel)
 with the exact flag set of the qualification build, and `--check` compares
 each sha256 with `testdata/shared_product_pins.tsv`. Build it in the pinned
@@ -271,7 +271,7 @@ neutral paths created in the container: `/src/inspektor-gadget` and
 `/src/btf/<kernel>`.
 
 The job only builds: **loading the objects on the two AL2023 kernels stays
-a manual EC2 gate** (G011, product attached tests with
+a manual EC2 gate** (the product attached tests with
 `IG_SHARED_PRODUCT_OBJECT`), because there are no AL2023 CI runners.
 
 ### Why an allowlist
@@ -314,7 +314,7 @@ operator moves it to another AMI or kernel.
   The restart ordering of Ready versus re-protection is ordered by code but not
   decidable from the evidence at 1 s resolution. SELinux was Permissive. Selection of the per-kernel image map entry is evidenced only through the wrong-digest negative; the positive run shows the selected entry works, not which entry was chosen.
 
-### Geometry limits (review A4)
+### Geometry limits
 
 The geometry is fixed when the object is built; changing it needs a new
 product object, new pins and a new qualification.
@@ -325,8 +325,8 @@ product object, new pins and a new qualification.
   is recycled (its TASK credits returned), so a slot can be busy for a short
   time after `Remove`.
 - **TASK and WORK per binding**: `g19pkg64` 64 / 8, `g19pkg128` 128 / 32,
-  `g19pkg256` 256 / 32, `g19pkg512` 512 / 16. The G011 product runs used
-  `g19pkg128`. WORK bounds concurrent evaluations: 32 WORK give a burst of
+  `g19pkg256` 256 / 32, `g19pkg512` 512 / 16. The manual EC2 product runs
+  used `g19pkg128`. WORK bounds concurrent evaluations: 32 WORK give a burst of
   15 concurrent births without a fail-closed refusal
   (`ConcurrentBirthCapacity`).
 - **A TASK is one task, so threads count.** Adoption adopts every thread
@@ -348,7 +348,7 @@ How the host sees it:
   TASK-capacity reason would need a per-account witness; it is not
   implemented.
 
-### Host contract: binding, mode and withdrawal (review A6)
+### Host contract: binding, mode and withdrawal
 
 Every host must follow these rules; the node enforces them by refusal.
 
@@ -358,13 +358,14 @@ Every host must follow these rules; the node enforces them by refusal.
   not yet forked or exec'd its workload (for example from the runtime's
   create hook), not after the container started.
 - **A refused adoption.** Strict (`ErrSharedAdoptionRefused`, `Audit`
-  false): the host must fail the container start. Audit: the start must not
-  fail, but the route is withdrawn, so that container has no audit coverage
-  for its lifetime; there is no retry.
+  false): the host must fail the container start or report the binding
+  unprotected (NotReady). Audit: the start must not fail, but the route is
+  withdrawn, so that container has no audit coverage for its lifetime; there
+  is no retry.
 - **Withdrawal is terminal per cgroup.** `Remove` withdraws the route too.
   A withdrawn cgroup is never bound or published again on this node: `Bind`
-  and `Publish` return `ErrSharedBindingWithdrawn`. Report it as a terminal reason; coverage
-  needs a new container (a new cgroup).
+  and `Publish` return `ErrSharedBindingWithdrawn`. Report it as a terminal
+  reason; coverage needs a new container (a new cgroup).
 - **The mode is fixed per binding.** A revision that changes Audit to
   Strict or back is refused with `ErrSharedClassChange`. Changing the mode
   needs a new container; never switch a running container's mode.
@@ -409,7 +410,7 @@ custom **amd64** kernel artifacts in [KERNEL-MATRIX.md](KERNEL-MATRIX.md). Stock
 distribution kernels and arm64 are not supported by this profile. BPF LSM and
 ftrace availability alone do not satisfy its admission checks.
 
-**The legacy owner does not target AL2023 (review A7).** Its kernel matrix
+**The legacy owner does not target AL2023.** Its kernel matrix
 (`SupportedKernelBTF`, `SupportedKubernetesKernelBTF`) and the archive
 builder (`full/owner/build-archive.sh`) list only those two custom proof
 kernels. On AL2023, or any other kernel, `NewOwner` still returns a handle,
@@ -459,11 +460,11 @@ rule. Strict, mixed and unclassifiable (invalid header or policy) generations
 remain fail-closed on every fault. Do not fall open to hide an operational
 fault.
 
-Follow-ups (G015 A1 review):
+Follow-ups:
 
 - Tests that need a new test binary and a VM run: a mixed Audit/Strict
   proposal-error case, an `Owner.Check` NotReady assertion after a data fault,
-  and an injected observation-allocation fault (LOW-3).
+  and an injected observation-allocation fault.
 - Classification timing: the legacy owner classifies after `eo_exec_begin`, in a
   separate read of the generation's policies. Classify inside `eo_exec_begin`, as
   ABI3 does, so one read admits and classifies.
@@ -1177,7 +1178,8 @@ does not make the quarantine incomplete. Only an entry that is found but
 cannot be marked does.
 
 The refusal error (`ErrSharedAdoptionRefused`) carries `Audit`. A Strict
-refusal must fail the container start. An Audit refusal must not: Audit
+refusal must fail the container start or report the binding unprotected
+(NotReady). An Audit refusal must not fail the start: Audit
 never blocks a workload.
 
 Refused adoptions are reported in three places, until the slot is recycled:
@@ -1282,10 +1284,12 @@ Run only on the explicitly selected disposable x86_64 fixture. The kernel test
 loads a socket-filter program and uses `BPF_PROG_TEST_RUN`; it attaches nothing.
 It tests actual mmap/BPF atomic interoperability, not LSM facts or full exec roles.
 
-**Fork transaction next to another task_alloc program (review A3).**
+**Fork transaction next to another task_alloc program.**
 `TestSharedNodeTaskAllocCompositionAttached` (qualification build,
-`-tags enforce_exec_shared_qualification`, VM only, the M4/FC environment
-with the product object) attaches a second `lsm/task_alloc` program that
+`-tags enforce_exec_shared_qualification`, VM only, the environment of
+`TestSharedNodeFailClosedInjectAttached`: `IG_SHARED_M4_OBJECT` set to the
+product object, `IG_SHARED_M4_CGROUP_ROOT`, `IG_SHARED_M4_HANDLER_SYMBOL`
+and `IG_SHARED_FC_HELPER`) attaches a second `lsm/task_alloc` program that
 denies forks of the bound cgroup, in both attach orders, for a Strict and an
 Audit binding. It requires the denied fork to fail with `EPERM`, TASK/WORK
 credits back at the post-adoption baseline, no early claim on the route,
@@ -1295,8 +1299,9 @@ product source must run before the denier in exactly one of the two orders
 (read from `opaque_real_attempts[0]`, which counts every owned birth claim
 whatever the class), and in that order the target must have taken the
 parked claim, i.e. constructed the child TASK that the cleanup must
-release. It compiles (`go vet` with the
-tag; CI does not vet that tag); it has not run on a VM yet.
+release. It passed on EC2 on both pinned AL2023 kernels (6.12.113-138.209
+and 6.18.56-125.164), 4/4 leaves on each kernel (EC2 run `a3-20261115t215407-70bd`). It remains a manual EC2 gate because CI
+has no AL2023 runners.
 
 ## Historical identities
 
@@ -1523,7 +1528,7 @@ other BPF consumer on the node, as the preexisting `file_open` link shows.
   (`State` then receives every NotReady, Ready and a final non-capacity
   error), or `false` to opt out. `Retry.Budget` bounds the total time from
   the first attempt (0: no time bound).
-* **The shared node retries a bounded number of times (review A2).**
+* **The shared node retries a bounded number of times.**
   `WithNodeEnforcer` sets an explicit `nativeattach.Retry`
   (`sharedNodeAttachRetry`): at most 8 attempts, 500 ms doubling to a 5 s
   cap, and no wait that would end past 30 s from the first attempt, so
@@ -1633,7 +1638,7 @@ code running before Bind is the container runtime and the container's init,
 trusted at adoption (the same trust boundary as the D3/D4 residuals above);
 everything after adoption is held to the recorded anchor.
 
-**Mount over a path after adoption (accepted residual, review A8).** The
+**Mount over a path after adoption (accepted residual).** The
 anchor detects a root change; it does not prevent a mount. A mount over a
 path inside the same root after adoption (for example over `/usr/bin`)
 leaves the root's mount, inode, device and mount namespace unchanged, so
@@ -1644,7 +1649,8 @@ namespace does not help the workload: it differs from the anchor, so every
 path fact of its execs is UNKNOWN. Accepted for now: run enforced
 containers without `CAP_SYS_ADMIN`. The legacy owner delegates the same
 question to the pod's seccomp profile (its root contract). Follow-up:
-accept an attested shared root barrier (IG #26) as an input on both paths,
+accept an attested shared root barrier (kubescape/inspektor-gadget#26) as
+an input on both paths,
 so the host can drop the seccomp and capability preconditions.
 
 ## Shared-node live health: fail-closed rate witness and accepted G019 residuals

@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// Review A4: a Bind past the profile's binding count is refused with the
+// A Bind past the profile's binding count is refused with the
 // typed ErrSharedBindingCapacity (a NotReady reason for the host), whether
 // the bindings are being prepared or their physical scopes are retained.
 func TestSharedBindCapacityIsTyped(t *testing.T) {
@@ -46,7 +46,7 @@ func TestSharedBindCapacityIsTyped(t *testing.T) {
 	}
 }
 
-// Defence in depth (review A4): a full route slot table is the same typed
+// Defence in depth: a full route slot table is the same typed
 // capacity refusal.
 func TestSharedRouteSlotsExhaustedIsTyped(t *testing.T) {
 	n, err := NewNodeEnforcer(sharedQualifiedConfig())

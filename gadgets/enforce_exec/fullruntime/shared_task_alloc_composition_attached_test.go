@@ -16,9 +16,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Review A3 (VM only): the product fork transaction next to a second,
+// VM only: the product fork transaction next to a second,
 // independent lsm/task_alloc program that denies the fork, in both attach
-// orders (modelled on IG #26 TestTaskAllocComposition). BPF LSM programs on
+// orders (modelled on TestTaskAllocComposition from
+// kubescape/inspektor-gadget#26). BPF LSM programs on
 // one hook run as fmod_ret: the first nonzero return skips the rest. In one
 // order the denier runs first and the product source never runs; in the
 // other the product source parks its claim and the target constructs the
@@ -83,13 +84,13 @@ func TestSharedNodeTaskAllocCompositionAttached(t *testing.T) {
 // (value[0]; 0 disarms), and counts its denials (value[1]).
 func sharedTaskAllocDenier(t *testing.T) (*ebpf.Map, link.Link) {
 	t.Helper()
-	m, err := ebpf.NewMap(&ebpf.MapSpec{Name: "ig_a3_denier", Type: ebpf.Array, KeySize: 4, ValueSize: 16, MaxEntries: 1})
+	m, err := ebpf.NewMap(&ebpf.MapSpec{Name: "ig_ta_denier", Type: ebpf.Array, KeySize: 4, ValueSize: 16, MaxEntries: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
-		Name: "ig_a3_deny_fork", Type: ebpf.LSM, AttachType: ebpf.AttachLSMMac, AttachTo: "task_alloc", License: "GPL",
+		Name: "ig_ta_deny_fork", Type: ebpf.LSM, AttachType: ebpf.AttachLSMMac, AttachTo: "task_alloc", License: "GPL",
 		Instructions: asm.Instructions{
 			asm.FnGetCurrentCgroupId.Call(),
 			asm.Mov.Reg(asm.R6, asm.R0),
@@ -143,7 +144,7 @@ func sharedTaskAllocComposition(t *testing.T, cfg sharedFCConfig, class int, den
 	if denierFirst {
 		denier, _ = sharedTaskAllocDenier(t)
 	}
-	f := sharedFCStart(t, cfg, "a3", class, nil)
+	f := sharedFCStart(t, cfg, "taskalloc", class, nil)
 	if !denierFirst {
 		denier, _ = sharedTaskAllocDenier(t)
 	}

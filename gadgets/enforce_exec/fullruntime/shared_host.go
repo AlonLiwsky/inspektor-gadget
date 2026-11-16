@@ -28,7 +28,7 @@ import (
 const sharedNodeKey = "enforce-exec/native-shared-node"
 
 // sharedNodeAttachRetry is the shared node's explicit, bounded native attach
-// retry (review A2): a capacity refusal (*nativeattach.ErrAttachCapacity) is
+// retry: a capacity refusal (*nativeattach.ErrAttachCapacity) is
 // retried at most 8 times, and no wait starts that would end past 30 s from
 // the first attempt (so the bound is about 30 s plus the final attempt).
 // Then Start fails with the last refusal and StartNode returns it wrapped
@@ -45,10 +45,9 @@ func sharedNodeAttachRetry() nativeattach.Retry {
 	}
 }
 
-// sharedNodeAttachRetryBounded is the admission rule (review A2): the
-// effective NativeAttachRetryKey must be a nativeattach.Retry with an
-// attempt bound and a time budget, never the unbounded default or an
-// opt-out.
+// sharedNodeAttachRetryBounded is the admission rule: the effective
+// NativeAttachRetryKey must be a nativeattach.Retry with an attempt bound
+// and a time budget, never the unbounded default or an opt-out.
 func sharedNodeAttachRetryBounded(gc operators.GadgetContext) error {
 	value, ok := gc.GetVar(operators.NativeAttachRetryKey)
 	retry, isRetry := value.(nativeattach.Retry)
@@ -1664,7 +1663,7 @@ func startLiveSharedNode(ctx context.Context, config SharedNodeConfig, run func(
 	if err != nil {
 		// Typed refusals (nativeattach.ErrAttachCapacity, ErrNotReady) pass
 		// through; the transaction already rolled back, and teardown joins.
-		// An exhausted attach retry is a NotReady reason (review A2).
+		// An exhausted attach retry is a NotReady reason.
 		var capErr *nativeattach.ErrAttachCapacity
 		if errors.As(err, &capErr) && !errors.Is(err, ErrSharedNodeNotReady) {
 			err = fmt.Errorf("%w: native attach capacity: %w", ErrSharedNodeNotReady, err)
