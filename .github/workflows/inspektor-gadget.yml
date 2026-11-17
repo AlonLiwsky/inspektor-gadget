@@ -1567,6 +1567,7 @@ jobs:
           ./gadgets/enforce_exec/test/al2023-native-kfunc-primitive/runner
           ./gadgets/enforce_exec/test/al2023-route-pin-verifier/runner
           ./gadgets/enforce_exec/test/al2023-trampoline-cap/runner
+          ./gadgets/enforce_exec/test/al2023-product-load/judge
         )
         go test -race -count=1 "${packages[@]}"
         go vet "${packages[@]}"

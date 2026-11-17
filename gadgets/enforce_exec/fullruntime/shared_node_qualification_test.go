@@ -67,6 +67,29 @@ func sharedProductProfileFor(task, work uint64) SharedProfile {
 	return p
 }
 
+// sharedProductProfiles are the product objects' per-binding q(task, work)
+// by profile name, in pin order (build-product.sh PROFILES; the order of
+// product-elf-sha256 in testdata/shared_product_pins.tsv). The product
+// attached test and the product layout builder both read this table.
+var sharedProductProfiles = []struct {
+	Name       string
+	Task, Work uint64
+}{{"64", 64, 8}, {"128", 128, 32}, {"256", 256, 32}, {"512", 512, 16}}
+
+// sharedProductProfileNamed is the product profile of the object named
+// name (64, 128, 256 or 512) with the burst-sized tombstone table, and its
+// index in sharedProductProfiles.
+func sharedProductProfileNamed(name string) (SharedProfile, int, bool) {
+	for i, q := range sharedProductProfiles {
+		if q.Name == name {
+			p := sharedProductProfileFor(q.Task, q.Work)
+			p.ExitTombstones = sharedProductExitTombstones
+			return p, i, true
+		}
+	}
+	return SharedProfile{}, 0, false
+}
+
 // sharedProductExitTombstones is the burst-sized tombstone table of every
 // product object (-DSE_PROFILE_EXIT_TOMBSTONES=8192 in build-g19pkg.sh): the
 // measured live-tombstone peak in the G019 burst/steady/churn runs is 824

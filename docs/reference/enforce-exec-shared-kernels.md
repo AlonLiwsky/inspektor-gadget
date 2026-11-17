@@ -58,6 +58,14 @@ limits" and "Host contract"):
 - a mount over a path inside the container's root after adoption is not
   prevented (accepted residual; it needs `CAP_SYS_ADMIN` in the container).
 
+After `kernel.ftrace_enabled` was set to 0, even briefly, the node can stay
+Degraded (NotReady, "shared candidate credit at exit degraded", `stale=N`)
+until the agent restarts: the `lsm/task_free` trampolines missed frees while
+ftrace was off, and a later exit at a reused task address counts a stale
+tombstone (`REAL_OWNER_EXIT_STALE`; `exit_credit.go`, `sharedLiveExitCredit.check`
+in `shared_host.go`). This is expected and fail closed; recovery is to restart
+the node-agent. `StopNode` reports the same error after a complete teardown.
+
 The full statement, the reasons for the allowlist, the operational limits
 (including that an agent crash leaves enforcement off until the agent
 restarts, and the unproven configurations) and the future approaches are in
