@@ -602,7 +602,10 @@ reserved or latched route, saturated claim or serial counters, or an identity
 mismatch for a frozen class) returns `SE_ROUTE_AUDIT_FAULT` or
 `SE_ROUTE_STRICT_FAULT`, and a later fault (no TASK, exhausted storage) takes
 `fe_lsm_verdict(class, 0, 1, ...)`. In both cases Strict denies and Audit
-allows. A later fault also emits a fault event (`error` 1, `deny` 1, `mode` 1);
+allows. A later fault also emits a fault event (`error` 1, `deny` 1, `mode`
+the class: 2 for a Strict fault, which is a real denial, and 1 for an Audit
+fault, which allowed the exec; `full/shared_verdict_event.h`
+`se_verdict_event_fill`);
 a route admission fault is counted in the admission fail-closed rate and emits
 no verdict event. Do not fall open to hide an operational
 fault.
