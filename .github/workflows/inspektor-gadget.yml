@@ -1603,6 +1603,13 @@ jobs:
       run: gadgets/enforce_exec/fullruntime/bpf/install-product-toolchain.sh /tmp/product-debs
     - name: Rebuild and compare with the pins
       run: gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check /tmp/product-objects
+    # The bare Debian container has no CA bundle, so Go cannot fetch modules
+    # over TLS. Installed after the object check, so it cannot affect the
+    # pinned toolchain or the object bytes.
+    - name: Install CA certificates for Go module downloads
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends ca-certificates
     - name: Setup go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
