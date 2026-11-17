@@ -51,3 +51,6 @@ pkg/btfgen/btfs/arm64/*
 
 # make enforce-exec-product-objects output
 /enforce-exec-product-objects/
+
+# AL2023 product object-load run directories (make enforce-exec-al2023-product-load)
+/enforce-exec-al2023-product-load/

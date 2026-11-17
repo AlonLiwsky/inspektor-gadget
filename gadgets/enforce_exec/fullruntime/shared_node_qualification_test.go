@@ -67,6 +67,40 @@ func sharedProductProfileFor(task, work uint64) SharedProfile {
 	return p
 }
 
+// sharedProductProfileNamed is the product profile of the object of
+// profile name (64, 128, 256 or 512: the g19pkg<name> row of
+// sharedProductProfiles, in pin order) with the burst-sized tombstone
+// table, and its index in sharedProductProfiles.
+func sharedProductProfileNamed(name string) (SharedProfile, int, bool) {
+	for i, q := range sharedProductProfiles {
+		if q.Name == "g19pkg"+name {
+			p := sharedProductProfileFor(q.Task, q.Work)
+			p.ExitTombstones = sharedProductExitTombstones
+			return p, i, true
+		}
+	}
+	return SharedProfile{}, 0, false
+}
+
+// TestSharedProductProfileNamedMatchesImageProfile: the profile the product
+// attached tests and the layout builder use has the same geometry
+// annotations as the published product image's (sharedProductImageProfile).
+func TestSharedProductProfileNamedMatchesImageProfile(t *testing.T) {
+	for _, q := range sharedProductProfiles {
+		name := strings.TrimPrefix(q.Name, "g19pkg")
+		got, _, ok := sharedProductProfileNamed(name)
+		if !ok {
+			t.Fatalf("profile %s not found", name)
+		}
+		if g, w := sharedGeometryAnnotations(got), sharedGeometryAnnotations(sharedProductImageProfile(q.Task, q.Work)); !maps.Equal(g, w) {
+			t.Errorf("profile %s geometry %v, the product image's %v", name, g, w)
+		}
+	}
+	if _, _, ok := sharedProductProfileNamed("g19pkg64"); ok {
+		t.Error("a full object name was accepted as a profile name")
+	}
+}
+
 // sharedProductExitTombstones is the burst-sized tombstone table of every
 // product object (-DSE_PROFILE_EXIT_TOMBSTONES=8192 in build-g19pkg.sh): the
 // measured live-tombstone peak in the G019 burst/steady/churn runs is 824

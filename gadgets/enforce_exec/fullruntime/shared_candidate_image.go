@@ -94,8 +94,19 @@ func sharedCandidateMetadata(elf []byte, kernel KernelMatrixEntry) ([]byte, erro
 // gadgetcontext.WithOrasReadonlyTarget(store)) and SharedNodeConfig.Image
 // pins. Blobs already in store are reused.
 func BuildSharedCandidateImage(ctx context.Context, store oras.Target, elf []byte, kernel KernelMatrixEntry) (string, error) {
+	return BuildSharedCandidateImageRef(ctx, store, elf, kernel, SharedCandidateImage)
+}
+
+// BuildSharedCandidateImageRef is BuildSharedCandidateImage tagged with ref
+// (a short reference, as SharedCandidateImage) instead of
+// SharedCandidateImage, so one store can hold several images (the product
+// layout of every kernel and profile). It returns ref.
+func BuildSharedCandidateImageRef(ctx context.Context, store oras.Target, elf []byte, kernel KernelMatrixEntry, ref string) (string, error) {
 	if store == nil {
 		return "", fmt.Errorf("missing image store")
+	}
+	if ref == "" {
+		return "", fmt.Errorf("missing image reference")
 	}
 	metadata, err := sharedCandidateMetadata(elf, kernel)
 	if err != nil {
@@ -107,9 +118,9 @@ func BuildSharedCandidateImage(ctx context.Context, store oras.Target, elf []byt
 	}
 	// The oci handler resolves the normalized reference (default domain
 	// ghcr.io); gadgetcontext keeps the short name that StartNode pins.
-	domain, remainder := oci.SplitIGDomain(SharedCandidateImage)
+	domain, remainder := oci.SplitIGDomain(ref)
 	if err := store.Tag(ctx, top, domain+"/"+remainder); err != nil {
-		return "", fmt.Errorf("tag %s: %w", SharedCandidateImage, err)
+		return "", fmt.Errorf("tag %s: %w", ref, err)
 	}
-	return SharedCandidateImage, nil
+	return ref, nil
 }

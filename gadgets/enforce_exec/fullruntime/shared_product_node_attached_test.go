@@ -45,9 +45,9 @@ import (
 //   IG_SHARED_PRODUCT_PROFILE  64, 128 (default), 256 or 512
 //   IG_SHARED_PRODUCT_CGROUP_A, IG_SHARED_PRODUCT_CGROUP_B
 //                              two dedicated ig15-g011-prod-* cgroups
-//   IG_SHARED_PRODUCT_FTRACE_NEG=1  run the ftrace negative: A is revised to a
-//                              deny policy (revision 3), then
-//                              kernel.ftrace_enabled is flipped to 0 and back
+//   IG_SHARED_PRODUCT_FTRACE_NEG=1  required by TestSharedProductNodeFtraceNegativeAttached
+//                              (it flips kernel.ftrace_enabled to 0 and back on
+//                              its own node; the Ready test never touches ftrace)
 //
 // The unshare -m run (plan step 9) is driven by the harness through the
 // child mode: IG_SHARED_PRODUCT_CHILD=1 starts the node, prints
@@ -60,20 +60,14 @@ import (
 // table of every product object.
 func sharedProductAttachedProfile(t *testing.T) SharedProfile {
 	t.Helper()
-	var profile SharedProfile
-	switch v := os.Getenv("IG_SHARED_PRODUCT_PROFILE"); v {
-	case "", "128":
-		profile = sharedProductProfileFor(128, 32)
-	case "64":
-		profile = sharedProductProfileFor(64, 8)
-	case "256":
-		profile = sharedProductProfileFor(256, 32)
-	case "512":
-		profile = sharedProductProfileFor(512, 16)
-	default:
+	v := os.Getenv("IG_SHARED_PRODUCT_PROFILE")
+	if v == "" {
+		v = "128"
+	}
+	profile, _, ok := sharedProductProfileNamed(v)
+	if !ok {
 		t.Fatalf("IG_SHARED_PRODUCT_PROFILE %q: want 64, 128, 256 or 512", v)
 	}
-	profile.ExitTombstones = sharedProductExitTombstones
 	return profile
 }
 
@@ -279,11 +273,10 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 		t.Fatalf("B contract after A's revision: %v", err)
 	}
 
-	// Step 6 (opt-in): the ftrace negative, measured on a deny revision
-	// (revision 3) of A.
-	if os.Getenv("IG_SHARED_PRODUCT_FTRACE_NEG") == "1" {
-		sharedProductFtraceNegative(t, ctx, node, gc, a, ia)
-	}
+	// Step 6, the ftrace negative, is its own test with its own node
+	// (TestSharedProductNodeFtraceNegativeAttached): after an ftrace-off
+	// window the node may stay Degraded until restart, so this node, which
+	// must stop clean, never toggles ftrace.
 
 	// Step 7: remove, stop, no leftovers.
 	if err := a.Remove(ctx, a.Inspect().Generation); err != nil {
@@ -339,29 +332,28 @@ func sharedProductRequireGone(t *testing.T, expected []nativeattach.Expected) {
 	}
 }
 
-// sharedProductFtraceNegative is step 6 (opt-in). It first publishes
-// revision 3 of A with fallback Deny (as step 3's policy) and requires
-// r1000=126 with ftrace on, so the window measures a DENY policy (step 5
-// left A on an allow fallback). It then sets kernel.ftrace_enabled=0, waits
-// for Ready to go NotReady naming ftrace, runs the same uid-0 and uid-1000
-// execs and prints
+// sharedProductFtraceNegative is the ftrace window on a node whose binding
+// A is on a deny policy: Ready nil and r1000=126 before; then
+// kernel.ftrace_enabled=0, Ready must go NotReady naming ftrace, the same
+// uid-0 and uid-1000 execs run, and it prints
 //
 //	product-ftrace-window: deny-policy r0=<rc> r1000=<rc> ready=<NotReady reason>
 //
+// An exec burst in A runs right before the toggle (its tasks' RCU-deferred
+// frees can fall in the window) and another after Ready is back (exits that
+// can reuse those addresses), so both outcomes below are reachable.
 // The window verdict is evidence only (either outcome is recorded, never
 // failed). ftrace is restored (also by a deferred restore on any failure),
-// Ready must return to nil, r1000 must be 126 again, and it prints
+// Ready must return to nil OR to a NotReady whose only fault is stale exit
+// credit (sharedProductStaleOnlyCredit: frees missed while ftrace was off),
+// r1000 must be 126 again, and it prints
 //
-//	product-ftrace-restore: r1000=<rc>
-func sharedProductFtraceNegative(t *testing.T, ctx context.Context, node *NodeEnforcer, gc *gadgetcontext.GadgetContext, a *BindingSession, ia *sharedPipeInit) {
+//	product-ftrace-restore: r1000=<rc> ready=<nil|stale-credit>
+//
+// It returns whether Ready came back with stale exit credit.
+func sharedProductFtraceNegative(t *testing.T, ctx context.Context, node *NodeEnforcer, gc *gadgetcontext.GadgetContext, ia *sharedPipeInit) bool {
 	t.Helper()
 	const path = "/proc/sys/kernel/ftrace_enabled"
-	if _, err := a.Publish(ctx, SharedBindingPolicy{Source: sharedM4Policy("prod-a", "3", fullpolicy.Enforce, fullpolicy.Deny), Container: "a"}); err != nil {
-		t.Fatalf("product-ftrace-neg: revise A to deny: %v", err)
-	}
-	if err := a.Inspect().Protected(3); err != nil {
-		t.Fatalf("product-ftrace-neg: A contract after the deny revision: %v", err)
-	}
 	if err := node.Ready(gc); err != nil {
 		t.Fatalf("product-ftrace-neg: Ready before the toggle: %v", err)
 	}
@@ -384,6 +376,10 @@ func sharedProductFtraceNegative(t *testing.T, ctx context.Context, node *NodeEn
 			t.Errorf("product-ftrace-neg: %v", err)
 		}
 	}()
+	const burst = `i=0; while [ $i -lt 500 ]; do /bin/true; i=$((i+1)); done`
+	if _, code, err := ia.run(ctx, burst); err != nil || code != 0 {
+		t.Fatalf("product-ftrace-neg: exec burst before the toggle: code %d: %v", code, err)
+	}
 	if err := os.WriteFile(path, []byte("0"), 0); err != nil {
 		t.Fatalf("ftrace_enabled=0: %v", err)
 	}
@@ -396,20 +392,202 @@ func sharedProductFtraceNegative(t *testing.T, ctx context.Context, node *NodeEn
 	window, windowErr := ia.smokeE(ctx)
 	r0, r1000 := sharedProductSmokeCodes(window)
 	fmt.Printf("product-ftrace-window: deny-policy r0=%s r1000=%s ready=%s\n", r0, r1000, strings.ReplaceAll(notReady.Error(), "\n", "; "))
-	// The harness keys on "product-ftrace-neg: Ready" (40-pass2.sh).
+	// The harness keys on "product-ftrace-neg: Ready" (guest.sh).
 	t.Logf("product-ftrace-neg: Ready %v; window verdicts %q (%v), evidence only", notReady, window, windowErr)
 	if err := restore(); err != nil {
 		t.Fatalf("product-ftrace-neg: %v", err)
 	}
-	if err, ok := sharedProductWaitReady(ctx, node, gc, func(err error) bool { return err == nil }); !ok {
-		t.Fatalf("product-ftrace-neg: Ready did not recover after restore: %v", err)
+	stale := false
+	back, ok := sharedProductWaitReady(ctx, node, gc, func(err error) bool {
+		if err == nil {
+			return true
+		}
+		msg, found := strings.CutPrefix(err.Error(), ErrSharedNodeNotReady.Error()+": ")
+		_, only := sharedProductStaleOnlyCredit(msg)
+		stale = found && only
+		return stale
+	})
+	if !ok {
+		t.Fatalf("product-ftrace-neg: Ready did not recover after restore (nil or stale exit credit only): %v", back)
+	}
+	if _, code, err := ia.run(ctx, burst); err != nil || code != 0 {
+		t.Fatalf("product-ftrace-neg: exec burst after restore: code %d: %v", code, err)
 	}
 	after := ia.smoke(t, ctx)
 	_, r1000 = sharedProductSmokeCodes(after)
-	fmt.Printf("product-ftrace-restore: r1000=%s\n", r1000)
+	ready := "nil"
+	if stale {
+		ready = "stale-credit"
+	}
+	fmt.Printf("product-ftrace-restore: r1000=%s ready=%s\n", r1000, ready)
 	if after != "r0=0 r1000=126" {
 		t.Fatalf("product-ftrace-neg: deny policy after restore: %q, want r0=0 r1000=126", after)
 	}
+	return stale
+}
+
+// sharedProductStaleOnlyCredit reports whether msg is exactly one
+// credit-at-exit Degraded fault (sharedLiveExitCredit.check, the
+// ExitCreditVerdict format) whose only fault is stale tombstones: stale > 0,
+// every other fault and refused-insert counter 0, below the high-water mark.
+// It returns the stale count.
+func sharedProductStaleOnlyCredit(msg string) (uint64, bool) {
+	rest, ok := strings.CutPrefix(msg, "shared candidate credit at exit degraded, node degraded: ")
+	if !ok || strings.Contains(rest, "\n") {
+		return 0, false
+	}
+	values := map[string]string{}
+	for _, field := range strings.Fields(rest) {
+		k, v, ok := strings.Cut(field, "=")
+		if _, dup := values[k]; !ok || dup {
+			return 0, false
+		}
+		values[k] = v
+	}
+	if len(values) != len(exitCreditNames)+5 || values["high"] != "false" || values["degraded"] != "true" {
+		return 0, false
+	}
+	n := map[string]uint64{}
+	for _, k := range append(exitCreditNames[:], "capacity", "slow", "faults") {
+		v, err := strconv.ParseUint(values[k], 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		n[k] = v
+	}
+	for _, k := range []string{"dir-faulted", "tomb-fault", "lease-fault", "held-stuck", "unsettled-fault", "overflow", "account-overflow", "busy", "blocked", "dir-pending", "high-crossed"} {
+		if n[k] != 0 {
+			return 0, false
+		}
+	}
+	if n["stale"] == 0 || n["faults"] != n["stale"] || n["slow"] != n["unsettled"] {
+		return 0, false
+	}
+	return n["stale"], true
+}
+
+// sharedProductFreshExitCredit reads the credit-at-exit witness of e now
+// against its baseline (the node's whole lifetime) and classifies it,
+// ignoring the sticky fault e.check stored: a fault counted after the first
+// stale reading (a lease fault, a stuck held lease, an overflow, a tombstone
+// fault) is seen here even though check would keep returning the stale-only
+// message. It returns "clean" (Healthy) or "stale" (Degraded with stale
+// exit credit as the only fault), and an error otherwise.
+func sharedProductFreshExitCredit(e *sharedLiveExitCredit) (string, error) {
+	if e == nil {
+		return "", errors.New("no credit-at-exit witness")
+	}
+	e.mu.Lock()
+	read, baseline, capacity, closed := e.read, e.baseline, e.capacity, e.closed
+	e.mu.Unlock()
+	if closed {
+		return "", errors.New("credit-at-exit witness closed")
+	}
+	now, readErr := read()
+	v, health, err := ExitCreditCheck(baseline, now, readErr, capacity)
+	switch health {
+	case ExitCreditHealthy:
+		return "clean", nil
+	case ExitCreditDegraded:
+		msg := fmt.Sprintf("shared candidate credit at exit degraded, node degraded: %s", v)
+		if _, ok := sharedProductStaleOnlyCredit(msg); ok {
+			return "stale", nil
+		}
+		return "", fmt.Errorf("fresh credit-at-exit reading has a fault other than stale: %s", v)
+	}
+	return "", fmt.Errorf("fresh credit-at-exit reading unknown: %w", err)
+}
+
+// TestSharedProductNodeFtraceNegativeAttached (plan section 5, step 6) runs
+// the ftrace negative on its own product node: binding A (cgroup A) on a
+// Strict deny policy, the ftrace window (sharedProductFtraceNegative), then
+// Remove and StopNode. While ftrace was off the lsm/task_free trampolines
+// missed frees, so a later exit may find a tombstone of an earlier lifetime
+// at a reused task address (REAL_OWNER_EXIT_STALE): credit at exit is then
+// Degraded until the node restarts (accepted product behaviour, fail
+// closed). StopNode must therefore be clean, or fail with stale exit credit
+// as its only fault; anything else fails. It prints
+//
+//	product-ftrace-outcome: clean|stale-degraded (...)
+//
+// Requires IG_SHARED_PRODUCT_FTRACE_NEG=1 (it toggles kernel.ftrace_enabled).
+func TestSharedProductNodeFtraceNegativeAttached(t *testing.T) {
+	if os.Getenv("IG_SHARED_PRODUCT_FTRACE_NEG") != "1" {
+		t.Skip("set IG_SHARED_PRODUCT_FTRACE_NEG=1 with the product env: this test toggles kernel.ftrace_enabled")
+	}
+	layout, image, profile := sharedProductAttachedEnv(t)
+	cgroupA := os.Getenv("IG_SHARED_PRODUCT_CGROUP_A")
+	if !strings.HasPrefix(filepath.Base(cgroupA), "ig15-g011-prod-") {
+		t.Fatal("a dedicated ig15-g011-prod-* cgroup A required")
+	}
+	if err := checkSharedInitNamespaces(); err != nil {
+		t.Fatalf("design 13.8: %v", err)
+	}
+	if _, _, err := verifySharedProductKernel(); err != nil {
+		t.Fatalf("kernel gate: %v", err)
+	}
+	host, gcOf := sharedProductHost(t, layout, image)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	defer cancel()
+	node, err := StartNode(WithSharedNodeHost(ctx, host), SharedNodeConfig{Profile: profile, ABI3Development: true, Image: image})
+	if err != nil {
+		t.Fatalf("StartNode: %v", err)
+	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = node.StopNode(context.WithoutCancel(ctx))
+		}
+	}()
+	gc := gcOf()
+	if err := node.Ready(gc); err != nil {
+		t.Fatalf("Ready with zero bindings: %v", err)
+	}
+	expected := sharedProductExpectedLinks(node)
+	ia := startSharedPipeInit(t, cgroupA, "ig15-g011-prod-init-f")
+	a, err := node.Bind(ctx, SharedBindingConfig{CgroupID: ia.ino, InitHostPID: uint32(ia.cmd.Process.Pid), Acquire: ia.acquire})
+	if err != nil {
+		t.Fatalf("Bind A: %v", err)
+	}
+	if _, err := a.Publish(ctx, SharedBindingPolicy{Source: sharedM4Policy("prod-f", "1", fullpolicy.Enforce, fullpolicy.Deny), Container: "a"}); err != nil {
+		t.Fatalf("publish A: %v", err)
+	}
+	if err := a.Inspect().Protected(1); err != nil {
+		t.Fatalf("A contract: %v", err)
+	}
+	readyStale := sharedProductFtraceNegative(t, ctx, node, gc, ia)
+	if err := a.Remove(ctx, a.Inspect().Generation); err != nil {
+		t.Fatalf("Remove A: %v", err)
+	}
+	// The sticky fault never re-reads the witness once it holds the stale
+	// reading, so StopNode alone could hide a later fault: classify a fresh
+	// whole-lifetime reading taken after every exec, smoke and Remove.
+	// Remaining limit: a fault counted inside StopNode itself, while a stale
+	// fault is already stored, is covered only by StopNode's own final check
+	// (the witness is closed after it); teardown runs no bound workload.
+	node.mu.Lock()
+	exit := node.host.live.exit
+	node.mu.Unlock()
+	fresh, err := sharedProductFreshExitCredit(exit)
+	if err != nil {
+		t.Fatalf("product-ftrace-outcome: before StopNode: %v", err)
+	}
+	stopErr := node.StopNode(context.WithoutCancel(ctx))
+	stopped = true
+	ia.stop()
+	outcome := "clean"
+	if stopErr != nil {
+		count, only := sharedProductStaleOnlyCredit(stopErr.Error())
+		if !only {
+			t.Fatalf("product-ftrace-outcome: StopNode failed with more than stale exit credit: %v", stopErr)
+		}
+		outcome = fmt.Sprintf("stale-degraded (stale=%d; fresh reading before StopNode: %s; StopNode: %v)", count, fresh, stopErr)
+	} else if readyStale || fresh != "clean" {
+		t.Fatalf("product-ftrace-outcome: StopNode was clean but Ready stale=%v, fresh reading %s", readyStale, fresh)
+	}
+	sharedProductRequireGone(t, expected)
+	fmt.Printf("product-ftrace-outcome: %s\n", outcome)
+	t.Logf("product-ftrace-outcome: %s; every product link and program gone after StopNode", outcome)
 }
 
 // sharedProductWaitReady polls Ready (100 ms, at most 10 s) until done
@@ -591,5 +769,97 @@ func TestSharedProductNodeNegativesAttached(t *testing.T) {
 			t.Fatalf("product-neg %s: untyped refusal %v", ref, err)
 		}
 		t.Logf("product-neg %s: %v", ref, err)
+	}
+}
+
+// TestSharedProductStaleOnlyCredit: the ftrace outcome classifier accepts
+// exactly one credit-at-exit fault whose only fault is stale tombstones.
+func TestSharedProductStaleOnlyCredit(t *testing.T) {
+	msg := func(after [ExitCreditCounters]uint64) string {
+		v, err := ExitCredit([ExitCreditCounters]uint64{}, after, sharedProductExitTombstones)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("shared candidate credit at exit degraded, node degraded: %s", v)
+	}
+	var stale [ExitCreditCounters]uint64
+	stale[ExitCreditInserted], stale[ExitCreditSettled], stale[ExitCreditStale], stale[ExitCreditUnsettled] = 100, 100, 2, 3
+	if n, ok := sharedProductStaleOnlyCredit(msg(stale)); !ok || n != 2 {
+		t.Fatalf("stale only: %d %v", n, ok)
+	}
+	for name, counter := range map[string]int{"tomb fault": ExitCreditTombFault, "lease fault": ExitCreditLeaseFault, "held stuck": ExitCreditHeldStuck, "overflow": ExitCreditOverflow, "busy": ExitCreditBusy, "dir pending": ExitCreditDirPending, "high crossed": ExitCreditHighCrossed} {
+		bad := stale
+		bad[counter]++
+		if _, ok := sharedProductStaleOnlyCredit(msg(bad)); ok {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	noStale := stale
+	noStale[ExitCreditStale] = 0
+	noStale[ExitCreditTombFault] = 1
+	if _, ok := sharedProductStaleOnlyCredit(msg(noStale)); ok {
+		t.Error("a fault without stale accepted")
+	}
+	for name, counter := range map[string]int{"unsettled fault": ExitCreditUnsettledFault, "dir faulted": ExitCreditDirFaulted, "account overflow": ExitCreditAccountOverflow, "blocked": ExitCreditBlocked} {
+		bad := stale
+		bad[counter]++
+		if _, ok := sharedProductStaleOnlyCredit(msg(bad)); ok {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	high := stale
+	high[ExitCreditLive] = sharedProductExitTombstones // at the high-water mark: high=true
+	if _, ok := sharedProductStaleOnlyCredit(msg(high)); ok {
+		t.Error("high=true accepted")
+	}
+	good := msg(stale)
+	for name, m := range map[string]string{
+		"joined":        good + "\nshared candidate reaper fault",
+		"unknown":       "shared candidate credit at exit unknown, node degraded: unreadable",
+		"other":         "shared candidate capsule degraded",
+		"wrapped":       "shared node NotReady: " + good,
+		"prefixed":      "x" + good,
+		"duplicate key": good + " stale=2",
+		"extra key":     good + " bonus=0",
+		"bare token":    good + " junk",
+	} {
+		if _, ok := sharedProductStaleOnlyCredit(m); ok {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+// TestSharedProductFreshExitCreditSeesLaterFaults: once check stored a
+// stale-only fault it never re-reads the witness; the fresh reading the
+// ftrace test classifies before StopNode does, so a lease fault counted
+// after the stale reading is not hidden behind the stored message.
+func TestSharedProductFreshExitCreditSeesLaterFaults(t *testing.T) {
+	var now [ExitCreditCounters]uint64
+	e := &sharedLiveExitCredit{capacity: sharedProductExitTombstones, read: func() ([ExitCreditCounters]uint64, error) { return now, nil }}
+	if got, err := sharedProductFreshExitCredit(e); err != nil || got != "clean" {
+		t.Fatalf("baseline: %q %v", got, err)
+	}
+	now[ExitCreditInserted], now[ExitCreditSettled], now[ExitCreditStale] = 10, 10, 1
+	stored := e.check()
+	if _, ok := sharedProductStaleOnlyCredit(fmt.Sprint(stored)); !ok {
+		t.Fatalf("stored fault is not stale-only: %v", stored)
+	}
+	if got, err := sharedProductFreshExitCredit(e); err != nil || got != "stale" {
+		t.Fatalf("stale reading: %q %v", got, err)
+	}
+	for name, counter := range map[string]int{"lease fault": ExitCreditLeaseFault, "held stuck": ExitCreditHeldStuck, "overflow": ExitCreditOverflow, "tomb fault": ExitCreditTombFault} {
+		later := now
+		now[counter]++
+		if again := e.check(); !errors.Is(again, stored) {
+			t.Fatalf("%s: check re-read the witness (%v); the seam this test guards changed", name, again)
+		}
+		if got, err := sharedProductFreshExitCredit(e); err == nil {
+			t.Errorf("%s after the stale reading: fresh reading %q accepted", name, got)
+		}
+		now = later
+	}
+	e.close()
+	if _, err := sharedProductFreshExitCredit(e); err == nil {
+		t.Error("a closed witness was read")
 	}
 }

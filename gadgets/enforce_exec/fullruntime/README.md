@@ -266,6 +266,20 @@ at agent start (`StartNode`, `SelectSharedProductImage`) with an error that
 wraps `ErrSharedNativeUnavailable` and names the reason. The pins live in
 `kernel_matrix.go` (`sharedProductPins`) and `testdata/shared_product_pins.tsv`.
 
+After ftrace has been disabled, even briefly, the node can stay Degraded until
+the agent restarts. While ftrace was off the `lsm/task_free` trampolines did
+not run, so frees were missed; a later exit at a reused task address then finds
+an earlier lifetime's tombstone and credit at exit counts it stale
+(`REAL_OWNER_EXIT_STALE` in `bpf/opaque_real_owner_child_candidate.bpf.c`).
+`ExitCredit` (`exit_credit.go`) treats any stale tombstone as a fault, and
+`sharedLiveExitCredit.check` (`shared_host.go`) keeps that fault until the
+node stops: `Ready` stays NotReady ("shared candidate credit at exit
+degraded", `stale=N`) and `StopNode` reports the same error after a complete
+teardown. This is expected and fail closed (task tracking is incomplete after
+an ftrace-off window); recovery is to restart the node-agent. It does not
+always happen: it needs an address freed in the window to be reused before
+the node stops (in about a quarter of the G035 QEMU runs).
+
 **Rebuilding the pinned objects.** `bpf/build-product.sh`
 rebuilds the eight product objects (`g19pkg64/128/256/512` for each kernel)
 with the exact flag set of the qualification build (at neutral paths, see

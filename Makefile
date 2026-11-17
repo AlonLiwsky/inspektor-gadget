@@ -381,6 +381,15 @@ enforce-exec-product-images: enforce-exec-product-objects
 		-objects $(ENFORCE_EXEC_PRODUCT_OUT) -layout $(ENFORCE_EXEC_PRODUCT_OUT)/layout \
 		-json $(ENFORCE_EXEC_PRODUCT_OUT)/product-images.json
 
+# The AL2023 product object-load run (G035; gadgets/enforce_exec/test/al2023-product-load/README.md):
+# build the bundle, run every kernel on a lane (qemu: local KVM; ec2: needs the
+# AWS setup) and judge. AL2023_PROFILES and AL2023_NEG_SET must be set.
+ENFORCE_EXEC_AL2023_RUN ?= $(shell pwd)/enforce-exec-al2023-product-load/run-$(shell date -u +%Y%m%dt%H%M%Sz)
+ENFORCE_EXEC_AL2023_LANE ?= qemu
+.PHONY: enforce-exec-al2023-product-load
+enforce-exec-al2023-product-load:
+	gadgets/enforce_exec/test/al2023-product-load/host.sh all $(ENFORCE_EXEC_AL2023_RUN) $(ENFORCE_EXEC_AL2023_LANE)
+
 .PHONY: clang-format-outside-docker
 clang-format-outside-docker:
 	find ./ -type f \( \( -iname '*.h' ! -iname "vmlinux.h" \) -o -iname '*.c' \) -execdir $(CLANG_FORMAT) -i {} \;

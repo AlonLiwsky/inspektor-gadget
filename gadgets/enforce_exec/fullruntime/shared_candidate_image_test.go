@@ -156,4 +156,10 @@ func TestBuildSharedCandidateImage(t *testing.T) {
 	if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), []byte("not an ELF"), kernel); err == nil || !strings.Contains(err.Error(), "candidate object") {
 		t.Fatalf("not an object: %v", err)
 	}
+	if _, err := BuildSharedCandidateImageRef(t.Context(), memory.New(), elf, kernel, ""); err == nil || !strings.Contains(err.Error(), "missing image reference") {
+		t.Fatalf("empty reference: %v", err)
+	}
+	if ref, err := BuildSharedCandidateImageRef(t.Context(), memory.New(), elf, kernel, "local/other:tag"); err != nil || ref != "local/other:tag" {
+		t.Fatalf("explicit reference: %q %v", ref, err)
+	}
 }
