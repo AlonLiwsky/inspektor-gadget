@@ -6,8 +6,10 @@ predicates and role history, with different admission, reload and failure
 behavior. The simple engine's kernel baseline and `BindRestricted` support do
 **not** establish full-engine support: the legacy owner currently admits only two
 exact custom amd64 kernel artifacts, not stock kernels or arm64. Its isolated
-proofs do not qualify the unfinished [shared-node replacement](fullruntime/README.md#shared-node-implementation-status-and-api-contracts),
-whose `NodeEnforcer.Ready` never reports Ready.
+proofs do not qualify the [shared-node replacement](fullruntime/README.md#shared-node-implementation-status-and-api-contracts).
+The shared node's product node (`WithSharedNodeHost`) reports `NodeEnforcer.Ready` on the
+pinned kernels when healthy (`sharedProductReady`, `fullruntime/shared_host.go`);
+the qualification node never reports Ready.
 
 The shared-node Go compiler/worker accounting and source-checking tools are
 implemented only within the [conditional worker qualification scope](fullruntime/README.md#conditional-shared-worker-qualification).

@@ -35,12 +35,28 @@ The pinned product objects can be rebuilt from the repository:
 `make enforce-exec-product-objects` rebuilds them in a pinned Debian trixie
 container with the pinned toolchain (Debian `clang-21` `1:21.1.8-3~bpo13+2`,
 `libbpf-dev` `1:1.5.0-3`, from one snapshot.debian.org timestamp) and
-compares their sha256 with the pins; a CI job runs the same scripts.
+compares their sha256 with the pins; a CI job runs the same scripts. The
+build compiles at fixed neutral paths (`/src/...`), so the objects are
+byte-identical from any checkout and carry no build-host path.
+`make enforce-exec-product-images` also packages each object into its
+product gadget image and compares the manifest and index digests with
+`fullruntime.SharedProductImagePins()`. The images are not published to a
+registry: the node-agent image build rebuilds them into its `tracers.tar`
+and checks the manifest digest; the builder fails on any digest that
+differs from the pins.
 Loading them on the two AL2023 kernels stays a manual EC2 gate.
+
+**The current object pins are not yet requalified.** They are the
+neutral-path rebuild that replaced the G011-qualified objects; the kernel
+builds are unchanged, and requalification on both AMIs is pending (G035).
 
 Limits every host must plan for (details in the README sections "Geometry
 limits" and "Host contract"):
 
+- at most 64 possible CPUs per host (hard limit): on a host with more (for
+  example a 96- or 192-vCPU instance) the shared node is not started and the
+  refusal is reported as `ErrSharedNativeUnavailable` (fail closed), so
+  there is no shared enforcement on it;
 - at most 2 enforced containers per node, and a fixed TASK quota per
   container (128 in the `g19pkg128` object used by the EC2 runs). Threads count
   against it. A third binding is refused with `ErrSharedBindingCapacity`;
