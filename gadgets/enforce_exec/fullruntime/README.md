@@ -62,9 +62,16 @@ replacement.
 
 The two start paths are mutually exclusive: a qualification build refuses
 `WithSharedNodeHost`, and a product build ignores the qualification seam.
-`se_publication_arm` is the only shared commit/withdrawal producer, and only from
-an authenticated `cgroup_kn_lock_live` barrier. A syscall receipt is not that
-producer. `se_arm_frame` is per-CPU scratch, not epoch authority. Shared exec
+In the product, commit and withdrawal are `SEC("syscall")` commands run by the
+agent's admin thread and authenticated by profile, admin nonce, node cookie and
+sequence: `opaque_real_route_publish` commits and `opaque_real_route_withdraw`
+withdraws (`fullruntime/bpf/opaque_real_owner_product_publisher.h`).
+`se_publication_arm` (the `cgroup_kn_lock_live` fexit) is
+`gadget_program_disabled` there
+(`fullruntime/bpf/opaque_real_owner_child_candidate.programs.yaml`); it is the
+commit/withdrawal producer only on the protocol (qualification) path, where a
+syscall receipt is not a producer. `se_arm_frame` is per-CPU scratch, not
+epoch authority. Shared exec
 reads `se_epoch_bank` through the kernel-owned `se_epoch_index`. `SE_ARM_BIND`
 reserves that index on an earlier barrier; commit only accepts an index that
 already names the cell. The unread `se_accepted_epochs` hash is not that
@@ -108,8 +115,22 @@ this table.
 | `Actor.Ancestor` (`actor.ancestor`) | up to 16 ancestor paths, complete at the binding's init or the workload's edge | supported |
 | `Target.FSType` (`target.fsType`) | filesystem class | supported |
 | `Target.Argv.StdinIsPipe` (`target.stdinIsPipe`) | stdin is a pipe | supported |
-| `Actor.FromImage` / `Target.FromImage` (`actor.fromImage` / `target.fromImage`) | image origin (`actor_image`/`target_image`) from the binding's sealed image index: 1 the file is backed by an indexed read-only lower layer of the container's own overlay; 0 not from the image (an upper or copied-up file, another filesystem, a foreign overlay); -1 UNKNOWN (no index, unauthenticated backing file, writable layer, memfd, overlay layout unavailable, any read fault). A FromImage policy is refused at publish without a sealed index | supported |
+| `Actor.FromImage` / `Target.FromImage` (`actor.fromImage` / `target.fromImage`) | image origin (`actor_image`/`target_image`) from the binding's sealed image index: 1 the file is backed by an indexed read-only lower layer of the container's own overlay; 0 not from the image (an upper or copied-up file, another filesystem, a foreign overlay); -1 UNKNOWN (no index, backing file failing the pointer-chain check, writable layer, memfd, overlay layout unavailable, any read fault). A FromImage policy is refused at publish without a sealed index | supported |
 | `Target.Argv.Contains` / `Prefix` (`target.argv`) | argv | **refused for the PoC**: the stock-kernel product evaluator has no authoritative argv fact (documented limitation, follow-up issue) |
+
+`FromImage` is layer classification, not content authentication. The
+classifier (`full/shared_image_classify.h`) validates the overlay pointer chain
+from the exec file to its backing real file; no digest, fs-verity or IMA check
+runs, so someone who can modify a lower layer on the host defeats it:
+
+| Level | Name | What it proves | Product |
+|---|---|---|---|
+| L1 | Pathname match | the resolved path matches a pattern | `Actor.Path`, `Target.Path` |
+| L2 | Layer classification | the file is backed by an indexed read-only lower layer of the container's own overlay, not the writable layer | `FromImage` |
+| L3 | Authenticated image provenance | the file's content matches a digest tied to the image (fs-verity, IMA or a verified layer) | not offered |
+
+The header comment's "authenticated backing real file" means this pointer-chain
+check (L2), not L3.
 
 `Target.SetRole` is an effect, not a predicate, and is admitted. The table is
 the only switch: the work that adds a fact producer changes its entry to
@@ -570,13 +591,24 @@ during a publication (`Activate`, `Update`, `Resume`) or retirement. An
 owner-wide fault set by an earlier
 proposal quarantine or by a failure to store a generation fault (above) is one
 such cause of later denials. With no generation there is no class, so these
-stay fail-closed, even for an Audit-only binding. The shared node uses the same
-rule. Strict, mixed and unclassifiable (invalid header or policy) generations
-remain fail-closed on every fault. Do not fall open to hide an operational
+stay fail-closed, even for an Audit-only binding. Strict, mixed and
+unclassifiable (invalid header or policy) generations remain fail-closed on
+every fault. The shared product node applies two rules instead. A
+route-invariant fault (`SE_ROUTE_INVARIANT_FAULT`,
+`full/shared_route.h`: a route class other than 1 or 2, or a violated index or
+ARRAY invariant) denies before classification in every mode. Every other fault
+follows the route's class: any other route admission fault (an adopting,
+reserved or latched route, saturated claim or serial counters, or an identity
+mismatch for a frozen class) returns `SE_ROUTE_AUDIT_FAULT` or
+`SE_ROUTE_STRICT_FAULT`, and a later fault (no TASK, exhausted storage) takes
+`fe_lsm_verdict(class, 0, 1, ...)`. In both cases Strict denies and Audit
+allows. A later fault also emits a fault event (`error` 1, `deny` 1, `mode` 1);
+a route admission fault is counted in the admission fail-closed rate and emits
+no verdict event. Do not fall open to hide an operational
 fault.
 
-**The heartbeat never closes admission.** `Owner.Check` is read-only: it never
-closes the gate and never re-attests. A closed gate denies a not-yet-owned exec
+**The heartbeat never closes admission.** In the legacy owner, `Owner.Check` is
+read-only: it never closes the gate and never re-attests. A closed gate denies a not-yet-owned exec
 and fails a fork in the bound cgroup with `EAGAIN` in every mode, Audit
 included, so a same-plan refresh must not close it. `Check` re-verifies the
 lease, pins, hooks and root, and reads the kernel state. It reports NotReady
@@ -826,14 +858,11 @@ The G019 M0 classes count the outcomes G025 excluded:
   binfmt_misc `F` (fix-binary) interpreter, opened at registration and
   possibly outside the container's mount namespace, is evaluated like any
   file, and a path that does not resolve for the policy denies under Strict.
-  Every pass is evaluated, but the candidate evaluator has no per-file
-  (path or image) facts yet: its target image is always unknown and a pass
-  differs from the previous one only through the roles proposed so far and
-  the credentials. A policy of "allowed script, denied interpreter" is
-  therefore not expressible yet; it becomes so when target facts are
-  collected per pass, with no change to the continuation itself. Until then
-  product admission refuses path, image and other predicates that need those
-  facts (see Product predicate admission).
+  Every pass is evaluated with its own target facts: path, filesystem
+  class, stdin and image origin are collected per pass
+  (`full/shared_pass_facts.h`; image origin `full/shared_image_classify.h`), so "allowed script, denied interpreter" is
+  expressible. Which predicates the product admits is listed in
+  [Product predicate admission](#product-predicate-admission-g020).
 
 The live verdict test checks each class against an exact test-only witness
 (`opaque_real_exec_exclusions` for the G019 M0 classes). Remaining exclusion:
