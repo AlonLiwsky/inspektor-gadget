@@ -166,6 +166,10 @@ for kernel in 6.12 6.18; do
 		# No build-host path may reach a published object.
 		for path in /home/ /root/ "$repo/"; do
 			[[ $path == "$CANON_REPO/" ]] && continue
+			# A checkout whose path is a prefix of a canonical root (for
+			# example one mounted at /src) matches the neutral paths
+			# themselves; those are the intended paths, not a leak.
+			[[ $path == "$repo/" && ("$CANON_REPO/" == "$repo/"* || "$CANON_BTF/" == "$repo/"*) ]] && continue
 			if grep -qaF -- "$path" "$obj"; then
 				echo "$name-$kernel embeds the path $path; build at $CANON_REPO" >&2
 				exit 1
