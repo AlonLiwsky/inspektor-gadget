@@ -630,7 +630,17 @@ func admitSharedProductImage(gc operators.GadgetContext, metadata *viper.Viper, 
 		return refuse(fmt.Errorf("eBPF object digest unavailable"))
 	}
 	if _, ok := pin.ProductELF[digest]; !ok {
-		return refuse(fmt.Errorf("eBPF object sha256 %s is not a qualified product object", digest))
+		return refuse(fmt.Errorf("eBPF object sha256 %s is not a pinned product object", digest))
+	}
+	return nil
+}
+
+// checkSharedPossibleCPUs refuses a host whose possible CPU count is
+// outside 1..64 (the shared maps' hard limit) or above the profile's
+// PossibleCPUs: the node does not start (fail closed).
+func checkSharedPossibleCPUs(cpus int, profile SharedProfile) error {
+	if cpus < 1 || cpus > 64 || uint32(cpus) > profile.PossibleCPUs {
+		return fmt.Errorf("actual possible CPUs %d exceed shared profile (limit %d, hard limit 64): %w", cpus, profile.PossibleCPUs, ErrSharedNativeUnavailable)
 	}
 	return nil
 }
@@ -666,8 +676,8 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 	if err != nil {
 		return nil, err
 	}
-	if cpus < 1 || cpus > 64 || uint32(cpus) > node.config.Profile.PossibleCPUs {
-		return nil, fmt.Errorf("actual possible CPUs exceed shared profile")
+	if err := checkSharedPossibleCPUs(cpus, node.config.Profile); err != nil {
+		return nil, err
 	}
 	value, _ := gc.GetVar(operators.NativeResourcesKey)
 	resources, _ := value.(*operators.NativeResources)

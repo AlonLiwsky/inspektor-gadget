@@ -6,34 +6,19 @@
 package fullruntime
 
 import (
-	"bytes"
 	"context"
 	_ "embed"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"runtime"
 
-	"github.com/cilium/ebpf"
-	specs "github.com/opencontainers/image-spec/specs-go"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/spf13/viper"
-	"gopkg.in/yaml.v3"
 	"oras.land/oras-go/v2"
-	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/errdef"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/oci"
 )
 
-// The candidate image metadata (qualification builds only): the product
-// gadget.yaml, the packaged attach declaration and, for a diagnostic twin,
-// both diagnostic overlays, merged in this order.
+// The diagnostic overlays of the candidate image metadata (qualification
+// builds only), merged after the product metadata of sharedImageMetadata.
 var (
-	//go:embed candidate/gadget.yaml
-	sharedCandidateGadgetYAMLData []byte
-	//go:embed bpf/opaque_real_owner_child_candidate.programs.yaml
-	sharedCandidatePackagingData []byte
 	//go:embed candidate/gadget.diagnostic.yaml
 	sharedCandidateDiagnosticGadgetYAMLData []byte
 	//go:embed bpf/opaque_real_owner_child_candidate.programs.diagnostic.yaml
@@ -87,49 +72,17 @@ func (k KernelMatrixEntry) validate() error {
 }
 
 // sharedCandidateMetadata is the candidate image's gadget.yaml for elf on
-// kernel: the merged metadata, its packaging for the object
-// (sharedPackagingForObject), the geometry annotations and the failure-frame
-// kprobe targets (and, once the verdict emitter landed, the event ABI).
+// kernel: sharedImageMetadata with, for a diagnostic twin, both diagnostic
+// overlays.
 func sharedCandidateMetadata(elf []byte, kernel KernelMatrixEntry) ([]byte, error) {
 	if err := kernel.validate(); err != nil {
 		return nil, err
 	}
-	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(elf))
-	if err != nil {
-		return nil, fmt.Errorf("candidate object: %w", err)
-	}
-	files := [][]byte{sharedCandidateGadgetYAMLData, sharedCandidatePackagingData}
+	var overlays [][]byte
 	if kernel.Diagnostic {
-		files = append(files, sharedCandidateDiagnosticGadgetYAMLData, sharedCandidateDiagnosticPackagingData)
+		overlays = [][]byte{sharedCandidateDiagnosticGadgetYAMLData, sharedCandidateDiagnosticPackagingData}
 	}
-	merged := viper.New()
-	merged.SetConfigType("yaml")
-	for k, data := range files {
-		read := merged.MergeConfig
-		if k == 0 {
-			read = merged.ReadConfig
-		}
-		if err := read(bytes.NewReader(data)); err != nil {
-			return nil, fmt.Errorf("candidate metadata %d: %w", k, err)
-		}
-	}
-	merged, err = sharedPackagingForObject(merged, sharedObjectShapeOf(spec))
-	if err != nil {
-		return nil, err
-	}
-	for key, value := range sharedGeometryAnnotations(kernel.Profile) {
-		merged.Set(key, value)
-	}
-	if sharedVerdictEmitterLanded {
-		merged.Set("annotations."+SharedEventABIAnnotation, SharedEventABIVersion)
-	}
-	for name, symbol := range map[string]string{
-		"opaque_real_owner_failure_outer_enter": kernel.OuterSymbol, "opaque_real_owner_failure_outer_exit": kernel.OuterSymbol,
-		"opaque_real_owner_failure_handler_enter": kernel.HandlerSymbol, "opaque_real_owner_failure_handler_exit": kernel.HandlerSymbol,
-	} {
-		merged.Set("programs."+name+".attach_to", symbol)
-	}
-	return yaml.Marshal(merged.AllSettings())
+	return sharedImageMetadata(elf, kernel.OuterSymbol, kernel.HandlerSymbol, kernel.Profile, overlays...)
 }
 
 // BuildSharedCandidateImage pushes the shared candidate gadget image of elf
@@ -148,35 +101,7 @@ func BuildSharedCandidateImage(ctx context.Context, store oras.Target, elf []byt
 	if err != nil {
 		return "", err
 	}
-	push := func(media string, data []byte) (ocispec.Descriptor, error) {
-		desc := content.NewDescriptorFromBytes(media, data)
-		if err := store.Push(ctx, desc, bytes.NewReader(data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
-			return desc, fmt.Errorf("push %s: %w", media, err)
-		}
-		return desc, nil
-	}
-	config, err := push("application/vnd.gadget.config.v1+yaml", metadata)
-	if err != nil {
-		return "", err
-	}
-	layer, err := push("application/vnd.gadget.ebpf.program.v1+binary", elf)
-	if err != nil {
-		return "", err
-	}
-	manifest, err := json.Marshal(ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: config, Layers: []ocispec.Descriptor{layer}})
-	if err != nil {
-		return "", err
-	}
-	desc, err := push(ocispec.MediaTypeImageManifest, manifest)
-	if err != nil {
-		return "", err
-	}
-	desc.Platform = &ocispec.Platform{Architecture: runtime.GOARCH, OS: "linux"}
-	index, err := json.Marshal(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []ocispec.Descriptor{desc}})
-	if err != nil {
-		return "", err
-	}
-	top, err := push(ocispec.MediaTypeImageIndex, index)
+	_, top, err := pushSharedImage(ctx, store, elf, metadata, runtime.GOARCH)
 	if err != nil {
 		return "", err
 	}

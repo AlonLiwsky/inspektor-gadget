@@ -341,3 +341,30 @@ Public key written to cosign.pub
 
 You will then need to store the content of `cosign.key` in the `COSIGN_PRIVATE_KEY` and the password you used to create the key in `COSIGN_PASSWORD`.
 Without these secrets, the release job will not be run.
+
+## Exec enforcement product objects and images
+
+The job `test-enforce-exec-product-objects` needs no secrets and pushes
+nothing. In the pinned Debian trixie container, with the pinned toolchain,
+it rebuilds the eight shared product objects
+(`gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check`) at the
+neutral paths `/src/inspektor-gadget` and `/src/btf`, and compares each
+sha256 with `fullruntime/testdata/shared_product_pins.tsv`. It then packages
+each object into its product gadget image
+(`go run ./gadgets/enforce_exec/fullruntime/cmd/productimages`) and
+compares the manifest and index digests with
+`fullruntime/testdata/shared_product_images.tsv`
+(`fullruntime.SharedProductImagePins()`). The OCI layout and
+`product-images.json` and the check output (`check.log`, one OK/FAIL line
+per image with the built and pinned digests) are uploaded as the artifact
+`enforce-exec-product-images`.
+
+A change to the BPF sources, the image metadata (`candidate/gadget.yaml`,
+the packaged attach declaration, the verdict emitter switch, the geometry
+annotations) or the packager fails this job until both pin tables are
+updated. New pins need a new AL2023 qualification on EC2 (the job only
+builds). Run the same steps locally with `make enforce-exec-product-images`
+(needs docker and Go).
+
+The images are not published to a registry: node-agent rebuilds them from
+the pinned IG commit into its `tracers.tar` and checks the same digests.
