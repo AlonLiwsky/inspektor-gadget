@@ -28,34 +28,30 @@
 # checked below.
 set -euo pipefail
 
-# Refuse to run on a host: the build creates directories at the historical
-# paths below. Run it only in the pinned container (make
-# enforce-exec-product-objects) or the CI job.
+# Refuse to run on a host: the build creates the neutral directories below.
+# Run it only in the pinned container (make enforce-exec-product-objects)
+# or the CI job.
 if [[ ! -e /.dockerenv && -z ${CI:-} && ${ENFORCE_EXEC_PRODUCT_CONTAINER:-} != 1 ]]; then
 	echo "$0: run this in the pinned container or CI (or set ENFORCE_EXEC_PRODUCT_CONTAINER=1)" >&2
 	exit 1
 fi
 
 # ---------------------------------------------------------------------------
-# Historical build paths. The CURRENT pins embed them: the pinned objects
-# carry, in DWARF and BTF, the absolute paths of the build that produced
-# them (the repository, also the working directory, and the directory of
-# each kernel's vmlinux.h). The BPF backend also copies each source line's
-# text into .BTF, reading the file at that path, and the order of the BTF
-# FWD types follows the real paths the compiler opens. So the compile runs
-# at exactly these paths, as real directories. A missing one is created
-# (needs write access, as in the container) with a copy of the BPF sources
-# or the header; an existing one must be this checkout, or a tree whose
-# source directories are identical both ways (diff -r). Measured on Debian
-# trixie: a symlink to another directory, or -fdebug-prefix-map from
-# another checkout path, changed the FWD order in the 6.12 objects.
-# The next pin rotation (a new product build, new pins and a new
-# qualification) moves to neutral real paths created in the container:
-# /src/inspektor-gadget and /src/btf/<kernel>.
-CANON_REPO=/home/mbertschy/github.com/kubescape/inspektor-gadget
-# The directory name is historical and carries no meaning; only the exact
-# path matters, because the pinned objects embed it.
-CANON_BTF=/home/mbertschy/.local/state/sandbox-policy-recovery/g020-phase-live-20261109
+# Neutral build paths (pinset p1). The objects carry, in DWARF and BTF, the
+# absolute paths of the build: the repository (also the working directory)
+# and the directory of each kernel's vmlinux.h. The BPF backend also copies
+# each source line's text into .BTF, reading the file at that path, and the
+# order of the BTF FWD types follows the real paths the compiler opens. So
+# the compile always runs at these fixed real directories, never at the
+# checkout path, and the objects are byte-identical wherever the checkout
+# is. A missing directory is created (needs write access, as in the
+# container) with a copy of the BPF sources or the header; an existing one
+# must be this checkout, or a tree whose source directories are identical
+# both ways (diff -r). Measured on Debian trixie: a symlink to another
+# directory, or -fdebug-prefix-map from another checkout path, changed the
+# FWD order in the 6.12 objects, so prefix maps are not used.
+CANON_REPO=/src/inspektor-gadget
+CANON_BTF=/src/btf
 # ---------------------------------------------------------------------------
 CLANG_VERSION='Debian clang version 21.1.8 (3~bpo13+2)'
 LIBBPF_VERSION='1:1.5.0-3'
@@ -132,7 +128,7 @@ if [[ ! -e $CANON_REPO ]]; then
 	(cd -- "$repo" && tar -cf - "${SOURCES[@]}") | tar -xf - -C "$CANON_REPO"
 fi
 if [[ $(realpath -- "$CANON_REPO") != "$(realpath -- "$repo")" ]]; then
-	# Another tree at the historical path: its source directories must be
+	# Another tree at the canonical path: its source directories must be
 	# identical to ours, both ways.
 	for dir in "${SOURCES[@]}"; do
 		diff -rq -- "$repo/$dir" "$CANON_REPO/$dir" >&2 ||
@@ -140,8 +136,8 @@ if [[ $(realpath -- "$CANON_REPO") != "$(realpath -- "$repo")" ]]; then
 	done
 fi
 
-# The pinned build ran in the repository root (BTF FWD order follows it):
-# a logical cd, so PWD (which clang uses) is the canonical path.
+# The build runs in the canonical repository root (BTF FWD order follows
+# it): a logical cd, so PWD (which clang uses) is the canonical path.
 cd -- "$CANON_REPO"
 fail=0
 for kernel in 6.12 6.18; do
@@ -167,6 +163,14 @@ for kernel in 6.12 6.18; do
 			-I "$CANON_REPO/gadgets/enforce_exec/fullpolicy/bpf" \
 			-c "$CANON_REPO/gadgets/enforce_exec/fullruntime/bpf/opaque_real_owner_child_candidate.bpf.c" -o "$obj" 2>"$obj.log" ||
 			{ cat "$obj.log" >&2; echo "BUILD FAIL $name-$kernel" >&2; exit 1; }
+		# No build-host path may reach a published object.
+		for path in /home/ /root/ "$repo/"; do
+			[[ $path == "$CANON_REPO/" ]] && continue
+			if grep -qaF -- "$path" "$obj"; then
+				echo "$name-$kernel embeds the path $path; build at $CANON_REPO" >&2
+				exit 1
+			fi
+		done
 		sum=$(sha256sum "$obj" | cut -d' ' -f1)
 		if [[ $check == 0 ]]; then
 			echo "$sum  $obj"

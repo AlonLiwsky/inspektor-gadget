@@ -359,7 +359,10 @@ clang-format:
 
 # Rebuild the pinned enforce_exec product objects in the CI job's pinned
 # Debian trixie image and compare them with their pins (objects in
-# $(ENFORCE_EXEC_PRODUCT_OUT)).
+# $(ENFORCE_EXEC_PRODUCT_OUT)); enforce-exec-product-images then packages
+# them into the product gadget images (OCI layout in
+# $(ENFORCE_EXEC_PRODUCT_OUT)/layout) and compares their digests with
+# fullruntime.SharedProductImagePins.
 ENFORCE_EXEC_PRODUCT_IMAGE ?= debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
 ENFORCE_EXEC_PRODUCT_OUT ?= $(shell pwd)/enforce-exec-product-objects
 .PHONY: enforce-exec-product-objects
@@ -370,6 +373,13 @@ enforce-exec-product-objects:
 		$(ENFORCE_EXEC_PRODUCT_IMAGE) bash -c ' \
 		/checkout/gadgets/enforce_exec/fullruntime/bpf/install-product-toolchain.sh /tmp/debs && \
 		/checkout/gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check /out'
+
+.PHONY: enforce-exec-product-images
+enforce-exec-product-images: enforce-exec-product-objects
+	rm -rf $(ENFORCE_EXEC_PRODUCT_OUT)/layout
+	CGO_ENABLED=0 go run ./gadgets/enforce_exec/fullruntime/cmd/productimages \
+		-objects $(ENFORCE_EXEC_PRODUCT_OUT) -layout $(ENFORCE_EXEC_PRODUCT_OUT)/layout \
+		-json $(ENFORCE_EXEC_PRODUCT_OUT)/product-images.json
 
 # The AL2023 product object-load run (G035; gadgets/enforce_exec/test/al2023-product-load/README.md):
 # build the bundle, run every kernel on a lane (qemu: local KVM; ec2: needs the

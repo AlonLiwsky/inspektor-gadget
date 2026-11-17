@@ -9,9 +9,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -25,34 +22,6 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/oci"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
-
-// sharedMinimalObject compiles a one-program, one-map BPF object (no
-// interpreter continuation, not a product object).
-func sharedMinimalObject(t *testing.T) []byte {
-	t.Helper()
-	clang, err := exec.LookPath("clang")
-	if err != nil {
-		t.Skip("clang required")
-	}
-	dir := t.TempDir()
-	source, object := filepath.Join(dir, "minimal.bpf.c"), filepath.Join(dir, "minimal.bpf.o")
-	const program = `#define SEC(n) __attribute__((section(n), used))
-struct { int (*type)[2]; int (*max_entries)[1]; unsigned int *key; unsigned int *value; } minimal_map SEC(".maps");
-SEC("socket") int minimal_prog(void *ctx) { return 0; }
-char LICENSE[] SEC("license") = "GPL";
-`
-	if err := os.WriteFile(source, []byte(program), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := exec.Command(clang, "-target", "bpf", "-O2", "-g", "-c", source, "-o", object).CombinedOutput(); err != nil {
-		t.Fatalf("clang: %v\n%s", err, out)
-	}
-	elf, err := os.ReadFile(object)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return elf
-}
 
 // TestBuildSharedCandidateImage: the image resolves under the normalized
 // reference to an index of one manifest for this GOARCH whose layers are the

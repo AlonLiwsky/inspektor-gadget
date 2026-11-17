@@ -1,4 +1,12 @@
-# Conditional role bootstrap protocol — not implemented or proven
+# Conditional role bootstrap protocol (historical)
+
+> **Historical design note.** It records the proposal as written before the
+> legacy owner implemented it. The legacy per-binding owner now attaches
+> `lsm.s/task_alloc`, `tp_btf/task_newtask` and `fexit/copy_process`
+> (`full/owner_roles.h`) and runs the gated A/B bootstrap (`EO_BOOTSTRAP_A`,
+> `EO_BOOTSTRAP_B`, the A-complete barrier in `full/owner_control.h`). The
+> shared product node does not use this protocol. Statements below such as
+> "proposed" or "not implemented" describe the state when the note was written.
 
 This note is a proposed next isolated proof slice, not a production readiness
 claim. No freezer, repeated-scan convergence assumption, or root-on-missing-role

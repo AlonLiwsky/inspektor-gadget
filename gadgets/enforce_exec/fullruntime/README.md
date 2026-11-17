@@ -62,9 +62,16 @@ replacement.
 
 The two start paths are mutually exclusive: a qualification build refuses
 `WithSharedNodeHost`, and a product build ignores the qualification seam.
-`se_publication_arm` is the only shared commit/withdrawal producer, and only from
-an authenticated `cgroup_kn_lock_live` barrier. A syscall receipt is not that
-producer. `se_arm_frame` is per-CPU scratch, not epoch authority. Shared exec
+In the product, commit and withdrawal are `SEC("syscall")` commands run by the
+agent's admin thread and authenticated by profile, admin nonce, node cookie and
+sequence: `opaque_real_route_publish` commits and `opaque_real_route_withdraw`
+withdraws (`fullruntime/bpf/opaque_real_owner_product_publisher.h`).
+`se_publication_arm` (the `cgroup_kn_lock_live` fexit) is
+`gadget_program_disabled` there
+(`fullruntime/bpf/opaque_real_owner_child_candidate.programs.yaml`); it is the
+commit/withdrawal producer only on the protocol (qualification) path, where a
+syscall receipt is not a producer. `se_arm_frame` is per-CPU scratch, not
+epoch authority. Shared exec
 reads `se_epoch_bank` through the kernel-owned `se_epoch_index`. `SE_ARM_BIND`
 reserves that index on an earlier barrier; commit only accepts an index that
 already names the cell. The unread `se_accepted_epochs` hash is not that
@@ -108,8 +115,22 @@ this table.
 | `Actor.Ancestor` (`actor.ancestor`) | up to 16 ancestor paths, complete at the binding's init or the workload's edge | supported |
 | `Target.FSType` (`target.fsType`) | filesystem class | supported |
 | `Target.Argv.StdinIsPipe` (`target.stdinIsPipe`) | stdin is a pipe | supported |
-| `Actor.FromImage` / `Target.FromImage` (`actor.fromImage` / `target.fromImage`) | image origin (`actor_image`/`target_image`) from the binding's sealed image index: 1 the file is backed by an indexed read-only lower layer of the container's own overlay; 0 not from the image (an upper or copied-up file, another filesystem, a foreign overlay); -1 UNKNOWN (no index, unauthenticated backing file, writable layer, memfd, overlay layout unavailable, any read fault). A FromImage policy is refused at publish without a sealed index | supported |
+| `Actor.FromImage` / `Target.FromImage` (`actor.fromImage` / `target.fromImage`) | image origin (`actor_image`/`target_image`) from the binding's sealed image index: 1 the file is backed by an indexed read-only lower layer of the container's own overlay; 0 not from the image (an upper or copied-up file, another filesystem, a foreign overlay); -1 UNKNOWN (no index, backing file failing the pointer-chain check, writable layer, memfd, overlay layout unavailable, any read fault). A FromImage policy is refused at publish without a sealed index | supported |
 | `Target.Argv.Contains` / `Prefix` (`target.argv`) | argv | **refused for the PoC**: the stock-kernel product evaluator has no authoritative argv fact (documented limitation, follow-up issue) |
+
+`FromImage` is layer classification, not content authentication. The
+classifier (`full/shared_image_classify.h`) validates the overlay pointer chain
+from the exec file to its backing real file; no digest, fs-verity or IMA check
+runs, so someone who can modify a lower layer on the host defeats it:
+
+| Level | Name | What it proves | Product |
+|---|---|---|---|
+| L1 | Pathname match | the resolved path matches a pattern | `Actor.Path`, `Target.Path` |
+| L2 | Layer classification | the file is backed by an indexed read-only lower layer of the container's own overlay, not the writable layer | `FromImage` |
+| L3 | Authenticated image provenance | the file's content matches a digest tied to the image (fs-verity, IMA or a verified layer) | not offered |
+
+The header comment's "authenticated backing real file" means this pointer-chain
+check (L2), not L3.
 
 `Target.SetRole` is an effect, not a predicate, and is admitted. The table is
 the only switch: the work that adds a fact producer changes its entry to
@@ -261,7 +282,8 @@ the node stops (in about a quarter of the G035 QEMU runs).
 
 **Rebuilding the pinned objects.** `bpf/build-product.sh`
 rebuilds the eight product objects (`g19pkg64/128/256/512` for each kernel)
-with the exact flag set of the qualification build, and `--check` compares
+with the exact flag set of the qualification build (at neutral paths, see
+below), and `--check` compares
 each sha256 with `testdata/shared_product_pins.tsv`. Build it in the pinned
 Debian trixie container: the CI job `test-enforce-exec-product-objects`
 does, and `make enforce-exec-product-objects` runs the same image and
@@ -274,15 +296,90 @@ its libraries, and `libbpf-dev`/`libbpf1` `1:1.5.0-3` (the headers).
 `vmlinux.h` of each kernel is committed xz-compressed in
 `testdata/al2023-vmlinux/`; the decompressed sha256 is checked.
 
-The current pins embed the absolute paths of the build that produced them
-(a historical developer path for the repository and one for the headers),
-in DWARF and BTF; the BTF line text and FWD type order depend on them. The
-script therefore compiles at those exact paths, as real directories, which
-it creates in the container (an existing tree there must have identical
-source directories). Both paths are in one commented block of the script.
-The next pin rotation (new objects, new pins, new qualification) moves to
-neutral paths created in the container: `/src/inspektor-gadget` and
-`/src/btf/<kernel>`.
+**Neutral build paths (pinset p1).** The objects carry, in DWARF and BTF,
+the absolute paths of the build (the BTF line text and FWD type order depend
+on them). The script therefore always compiles at fixed real directories it
+creates in the container, `/src/inspektor-gadget` (a copy of the BPF sources)
+and `/src/btf/<kernel>`, never at the checkout path, and refuses an object
+that embeds `/home/`, `/root/` or the checkout path. The objects are
+byte-identical from any checkout path (measured: two checkouts at different
+paths built the same eight sha256). Prefix maps are not used: a measured
+`-fdebug-prefix-map` build changed the FWD order of the 6.12 objects.
+
+> **Not yet requalified.** The pins in `kernel_matrix.go` and
+> `testdata/shared_product_pins.tsv` are the neutral-path rebuild. They
+> replace the G011-qualified objects (whose debug info embedded a build-host
+> home path); the kernels, BTF, build-ids and failure-frame symbols are
+> unchanged. The G011 evidence below was produced with the previous objects;
+> requalification of the new objects on both AL2023 AMIs is pending (G035).
+
+### Product images
+
+Each pinned object is packaged into one product gadget image, built in the
+default build by `BuildSharedProductImage` (`shared_product_oci.go`): an
+index holding exactly one `linux/amd64` manifest, whose config is the merged
+product metadata (`candidate/gadget.yaml`, the packaged attach declaration,
+the geometry annotations, the pinned failure-frame symbols and the event
+ABI) and whose one layer is the object. Nothing time- or host-dependent is
+written (no annotations, no timestamps, the platform is fixed), so the
+digests are a function of the object and this source. The images are
+**never pushed to a registry**: the node-agent image build rebuilds them from
+source into its `tracers.tar` and must reproduce the pinned digests.
+
+| Kernel | Profile | Image (local reference) | Manifest digest | Index digest |
+|---|---|---|---|---|
+| `6.12.113-138.209` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.12.113-138.209` | `sha256:382485d6e53d414cd00e7ebf94d92c8556c7c18cb320cabc8e8d1fc66e829e3a` | `sha256:2421e2a74346c11d33b2c94624d6e9d9addcc08f4fd60a5d028763148817500d` |
+| `6.12.113-138.209` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.12.113-138.209` | `sha256:aeb6eaaa67ecb4b9e463c757dd9b6d4025d394b941852ffdba2ab4bd2f5112af` | `sha256:cf1eb6ebf6ddd700fae2ff11e894e2480e5705dd394be72448d0ed644d954230` |
+| `6.12.113-138.209` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.12.113-138.209` | `sha256:0f44808a63b3119e12c2a40b4c462bb96284bd3663e071d4f16a0fc0caedca18` | `sha256:cc6674c4968a10f54daa72763b72112b1acf6db6efbf6b0277f1e51e7543c495` |
+| `6.12.113-138.209` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.12.113-138.209` | `sha256:dee10b290dc2b2346837001da9ad0063635b4a23a66e3bc46f4ecaf531fd2158` | `sha256:24125ffa6ca766bb5cb2e09633c247406977597bf48b4eca48e18e069d3090f4` |
+| `6.18.56-125.164` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.18.56-125.164` | `sha256:f2c10f364a62874289c354885ad0e4f27631cdfd668261eed96fef502ff95245` | `sha256:3f19b0342a6a522ce25485465981ad7b8d9537ee4c98bf54608be680550a32b7` |
+| `6.18.56-125.164` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.18.56-125.164` | `sha256:516b5669e73790bc1e59ec56f381a0b29ec06d164874aa66384a161c685b6e53` | `sha256:b4f0fa89a64caa1636382941378be664682a2500f51621f207d48e1ed5aab6d0` |
+| `6.18.56-125.164` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.18.56-125.164` | `sha256:1f17c47573eeb9dc1391a9cb5017fefa30d99da2f3ad736c8f79990554c1cdf7` | `sha256:992e3d09a9d3be5ca26900db07e5ccfceca422498d058c05f977621ce1f94846` |
+| `6.18.56-125.164` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.18.56-125.164` | `sha256:df89f93074d8ebfac1b18536319ebaca5da07f0010a8e5fd711ccc1e0ca8586a` | `sha256:2fe300f78856753d198f9f87e97bd6189db83f0a5e0ecd74c3b0e709e24375ef` |
+
+- **Pins.** `testdata/shared_product_images.tsv` (release, profile, image,
+  object sha256, manifest and index digest) mirrors `sharedProductImagePins`
+  (`TestSharedProductImagePinsMatchTestdata`). `SharedProductImagePins()`
+  exports them with each kernel's BTF and release and the object's
+  `SharedProfile`. Its geometry is compiled into the object and annotated on
+  the image (the geometry the qualification ran with,
+  `TestSharedProductImageProfileMatchesQualification`). Its budget fields
+  are host-side runtime limits, not in the object or the digests; the values
+  are the qualification sizes: CompileBytes 8 MiB, TelemetryBytes 4096,
+  CandidateBytes 1 MiB, RolloutBytes 4096, PossibleCPUs 64 (see "Geometry
+  limits" for the 64-CPU host limit). node-agent compiles in `g19pkg128` for
+  both kernels.
+- **Names.** `enforce-exec-shared:<profile>-al2023-<kernel version>`, tagged
+  in a layout under its normalized name
+  (`ghcr.io/inspektor-gadget/gadget/enforce-exec-shared:...`, like any short
+  gadget name). The manifest-digest check is node-agent's, not IG's: the
+  agent resolves the name in `tracers.tar` and pins the manifest digest, so
+  a re-wrapped index (`ig image export`) is harmless. IG has no manifest or
+  index check at run time; its runtime binding of an image is the loaded
+  object's sha256 (one of the pinned product objects), the failure-frame
+  `attach_to` targets and the geometry annotations.
+- **Build.** `make enforce-exec-product-images` rebuilds the objects in the
+  pinned container, then runs `cmd/productimages` on the host: it writes the
+  OCI layout `enforce-exec-product-objects/layout` and
+  `product-images.json`, prints one OK/FAIL line per image with the built
+  (and, on FAIL, the pinned) digests, and fails unless every digest equals
+  the pins. The CI job `test-enforce-exec-product-objects` runs the same
+  steps and uploads the layout, the JSON and the check output
+  (`check.log`) as the artifact `enforce-exec-product-images`.
+- **The digest check is not optional.** `BuildSharedProductImage` itself
+  compares the built manifest and index digests with the pin and returns an
+  error wrapping `ErrSharedProductImageMismatch` (with both digests) on any
+  difference. So the drift check applies to whoever builds the images: IG CI
+  and node-agent's image build alike. The digests depend on this source (the
+  metadata, the packaging, the emitter switch, the profile) and on the
+  modules that encode the metadata (viper, yaml.v3, oras, image-spec) **as
+  resolved by the building module**: node-agent's go.mod may select other
+  versions than IG's, and IG's `replace` directives (for example
+  `github.com/cilium/ebpf => github.com/matthyx/ebpf`) are not inherited by
+  a module that imports IG. A build that resolves differently fails instead
+  of shipping other digests. A change that is intended needs new pins (read
+  the built digests from the FAIL lines or `product-images.json`) and a
+  requalification.
 
 The job only builds: **loading the objects on the two AL2023 kernels stays
 a manual EC2 gate** (the product attached tests with
@@ -360,6 +457,16 @@ operator moves it to another AMI or kernel.
 
 The geometry is fixed when the object is built; changing it needs a new
 product object, new pins and a new qualification.
+
+- **At most 64 possible CPUs per host** (hard limit). `SharedProfile.Validate`
+  refuses `PossibleCPUs` above 64, and the shared node refuses a host whose
+  possible CPU count (`ebpf.PossibleCPU`) is above 64 or above the profile's
+  `PossibleCPUs` when the image is instantiated
+  (`checkSharedPossibleCPUs`). The refusal is reported as
+  `ErrSharedNativeUnavailable` ("actual possible CPUs N exceed shared
+  profile (limit L, hard limit 64)"): the node is not started (fail closed),
+  so there is **no shared enforcement** on such hosts (for example 96- or
+  192-vCPU instances). The product profiles set `PossibleCPUs` to 64.
 
 - **2 bindings per node** in every product object (`SE_PROFILE_BINDINGS=2`):
   at most two enforced containers per node. A third `Bind` is refused with
@@ -498,13 +605,24 @@ during a publication (`Activate`, `Update`, `Resume`) or retirement. An
 owner-wide fault set by an earlier
 proposal quarantine or by a failure to store a generation fault (above) is one
 such cause of later denials. With no generation there is no class, so these
-stay fail-closed, even for an Audit-only binding. The shared node uses the same
-rule. Strict, mixed and unclassifiable (invalid header or policy) generations
-remain fail-closed on every fault. Do not fall open to hide an operational
+stay fail-closed, even for an Audit-only binding. Strict, mixed and
+unclassifiable (invalid header or policy) generations remain fail-closed on
+every fault. The shared product node applies two rules instead. A
+route-invariant fault (`SE_ROUTE_INVARIANT_FAULT`,
+`full/shared_route.h`: a route class other than 1 or 2, or a violated index or
+ARRAY invariant) denies before classification in every mode. Every other fault
+follows the route's class: any other route admission fault (an adopting,
+reserved or latched route, saturated claim or serial counters, or an identity
+mismatch for a frozen class) returns `SE_ROUTE_AUDIT_FAULT` or
+`SE_ROUTE_STRICT_FAULT`, and a later fault (no TASK, exhausted storage) takes
+`fe_lsm_verdict(class, 0, 1, ...)`. In both cases Strict denies and Audit
+allows. A later fault also emits a fault event (`error` 1, `deny` 1, `mode` 1);
+a route admission fault is counted in the admission fail-closed rate and emits
+no verdict event. Do not fall open to hide an operational
 fault.
 
-**The heartbeat never closes admission.** `Owner.Check` is read-only: it never
-closes the gate and never re-attests. A closed gate denies a not-yet-owned exec
+**The heartbeat never closes admission.** In the legacy owner, `Owner.Check` is
+read-only: it never closes the gate and never re-attests. A closed gate denies a not-yet-owned exec
 and fails a fork in the bound cgroup with `EAGAIN` in every mode, Audit
 included, so a same-plan refresh must not close it. `Check` re-verifies the
 lease, pins, hooks and root, and reads the kernel state. It reports NotReady
@@ -754,14 +872,11 @@ The G019 M0 classes count the outcomes G025 excluded:
   binfmt_misc `F` (fix-binary) interpreter, opened at registration and
   possibly outside the container's mount namespace, is evaluated like any
   file, and a path that does not resolve for the policy denies under Strict.
-  Every pass is evaluated, but the candidate evaluator has no per-file
-  (path or image) facts yet: its target image is always unknown and a pass
-  differs from the previous one only through the roles proposed so far and
-  the credentials. A policy of "allowed script, denied interpreter" is
-  therefore not expressible yet; it becomes so when target facts are
-  collected per pass, with no change to the continuation itself. Until then
-  product admission refuses path, image and other predicates that need those
-  facts (see Product predicate admission).
+  Every pass is evaluated with its own target facts: path, filesystem
+  class, stdin and image origin are collected per pass
+  (`full/shared_pass_facts.h`; image origin `full/shared_image_classify.h`), so "allowed script, denied interpreter" is
+  expressible. Which predicates the product admits is listed in
+  [Product predicate admission](#product-predicate-admission-g020).
 
 The live verdict test checks each class against an exact test-only witness
 (`opaque_real_exec_exclusions` for the G019 M0 classes). Remaining exclusion:

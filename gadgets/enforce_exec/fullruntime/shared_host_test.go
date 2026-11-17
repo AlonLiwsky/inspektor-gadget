@@ -4,6 +4,7 @@ package fullruntime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -564,4 +565,27 @@ func TestOpaqueRealVerdictCandidateCompileGuards(t *testing.T) {
 // guard, call or condition is removed or changed.
 func squashSpace(s string) string {
 	return strings.Join(strings.Fields(s), "")
+}
+
+// TestCheckSharedPossibleCPUs: a host with more possible CPUs than the
+// profile allows, or than the hard limit of 64, is refused as
+// ErrSharedNativeUnavailable with both counts in the message.
+func TestCheckSharedPossibleCPUs(t *testing.T) {
+	profile := sharedProductImageProfile(128, 32)
+	for _, cpus := range []int{1, 2, 64} {
+		if err := checkSharedPossibleCPUs(cpus, profile); err != nil {
+			t.Fatalf("%d CPUs: %v", cpus, err)
+		}
+	}
+	small := profile
+	small.PossibleCPUs = 8
+	for _, c := range []struct {
+		cpus    int
+		profile SharedProfile
+	}{{0, profile}, {65, profile}, {96, profile}, {192, profile}, {9, small}} {
+		err := checkSharedPossibleCPUs(c.cpus, c.profile)
+		if !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), fmt.Sprintf("CPUs %d exceed", c.cpus)) || !strings.Contains(err.Error(), fmt.Sprintf("limit %d,", c.profile.PossibleCPUs)) {
+			t.Fatalf("%d CPUs (limit %d): %v", c.cpus, c.profile.PossibleCPUs, err)
+		}
+	}
 }

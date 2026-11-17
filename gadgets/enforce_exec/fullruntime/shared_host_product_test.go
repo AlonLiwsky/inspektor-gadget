@@ -199,9 +199,9 @@ func TestSharedProductFailureTargets(t *testing.T) {
 		"no object digest":             {sharedProductImageContext(nil), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "digest unavailable"},
 		"multi-layer digest":           {sharedProductImageContext(""), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "digest unavailable"},
 		"non-string digest":            {sharedProductImageContext([]byte(elf618)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "digest unavailable"},
-		"6.12 object on 6.18":          {sharedProductImageContext(anyProductELF(p612)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "not a qualified product object"},
-		"unknown object":               {sharedProductImageContext(strings.Repeat("ab", 32)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "not a qualified product object"},
-		"uppercase digest":             {sharedProductImageContext(strings.ToUpper(elf618)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "not a qualified product object"},
+		"6.12 object on 6.18":          {sharedProductImageContext(anyProductELF(p612)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "not a pinned product object"},
+		"unknown object":               {sharedProductImageContext(strings.Repeat("ab", 32)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "not a pinned product object"},
+		"uppercase digest":             {sharedProductImageContext(strings.ToUpper(elf618)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "not a pinned product object"},
 	}
 	moved := map[string]*operators.NativeResources{
 		"free_task birth hook moved":          withProbeTarget(good(), "opaque_real_owner_birth_free_task_candidate", "do_exit"),

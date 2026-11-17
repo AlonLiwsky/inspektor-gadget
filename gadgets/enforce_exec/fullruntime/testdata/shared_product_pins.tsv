@@ -19,10 +19,14 @@
 #   k/61{2,8}/d/run-g19pkg.sh:175 (exec_binprm on 6.18 only; 6.12 uses the
 #   resolver default search_binary_handler), cross-checked against the
 #   2026-11-09 preflight logs "diagnostic handler source".
-# - product-elf-sha256: pass-1 evidence/build/artifacts-sha256.txt,
-#   g19pkg64/128/256/512-<kernel>.bpf.o (REPORT section 2: BYTE identical to
-#   the VM chain), in that order.
+# - product-elf-sha256 (pinset p1, 2026-11-17): bpf/build-product.sh at the
+#   neutral paths /src/inspektor-gadget and /src/btf,
+#   g19pkg64/128/256/512-<kernel>.bpf.o, in that order; byte-identical from
+#   two checkout paths. NOT YET REQUALIFIED on AL2023: these replace the G011
+#   pass-1 objects (whose debug info embedded a build-host home path);
+#   requalification on both AMIs is pending (G035). The images built from
+#   them are pinned in shared_product_images.tsv.
 #
 # release	btf-sha256	gnu-build-id	outer-symbol	handler-symbol	product-elf-sha256
-6.12.113-138.209.amzn2023.x86_64	0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82	1d135d67e6d0ea8f77d60a2984915eadd28a5fcf	do_execveat_common.isra.0	search_binary_handler	2e2b033bde0ece73ac9f95fd7455fcf36be7aa32250f52e527aff4bd86546be9,b7245ddfbb7bac323921d0583b67295789e9f3f22cd7460e36f9f37b65b10c31,86f04ecc2f919c91992487c85b7be038feee39cec9dfd99187dcd64bc863e5b3,16dfb0eaa510d3d5ae9c744d3c8f9023047724f6a2ad253da33629d6a74c3404
-6.18.56-125.164.amzn2023.x86_64	d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee	884ed4548406a1461ac5fb658c0dffdd87f1b3b2	do_execveat_common.isra.0	exec_binprm	1ab606ec132732984cd682438dd2ca6be0e98f6bfa567c263d1263326ee351ce,142ae885221167eaf258678f508999eb0528447b53355eb5d776ae009b6115ae,074ce03442631ab34462de5802addb67c3e783109c6de8b9ec55f05091b2d38a,370f971574941b15fcee31dbeb6d6d2467db189a1618a877d8c4636d5afc940c
+6.12.113-138.209.amzn2023.x86_64	0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82	1d135d67e6d0ea8f77d60a2984915eadd28a5fcf	do_execveat_common.isra.0	search_binary_handler	0d5e4d9732689312a272d2dccc79618f0d0e7b7c3ac011c5d0bccc550e31aab4,507382feed5fd8d534b21d00be11f041b2f9f9068ead6e47666273a50dd6ad1c,528b686977d1920642a225680cafcf2ff0573c2b4bdf0565747fd1e672728f2c,1b504b838a6086e20a9968b848b09173e7c4273df040d53da2bd21323fb2dfa1
+6.18.56-125.164.amzn2023.x86_64	d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee	884ed4548406a1461ac5fb658c0dffdd87f1b3b2	do_execveat_common.isra.0	exec_binprm	a3a2f56fa0345904a3b8005001bb4e03929f3e94275382d56622330b0f4c9757,3fa3da0e7a7f8cb90317e2a648dfe48753df3ba954b2fb6b20575a3c43bc8fc8,ca63241d3457d1037204c97971e46a1ee63b28f7e6439b19fe66658c16a42be7,91b21068719070461138cdce68afa6494d10cc324ea1b75c362c862438ed2de1

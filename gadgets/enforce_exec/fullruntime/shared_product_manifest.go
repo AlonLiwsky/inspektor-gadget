@@ -12,14 +12,14 @@ package fullruntime
 // sharedProductManifestMaps and sharedProductManifestPrograms are the exact
 // map and program name sets of the shared product object, generated from
 // the product objects with sha256:
-//   - 074ce03442631ab34462de5802addb67c3e783109c6de8b9ec55f05091b2d38a
-//   - 142ae885221167eaf258678f508999eb0528447b53355eb5d776ae009b6115ae
-//   - 16dfb0eaa510d3d5ae9c744d3c8f9023047724f6a2ad253da33629d6a74c3404
-//   - 1ab606ec132732984cd682438dd2ca6be0e98f6bfa567c263d1263326ee351ce
-//   - 2e2b033bde0ece73ac9f95fd7455fcf36be7aa32250f52e527aff4bd86546be9
-//   - 370f971574941b15fcee31dbeb6d6d2467db189a1618a877d8c4636d5afc940c
-//   - 86f04ecc2f919c91992487c85b7be038feee39cec9dfd99187dcd64bc863e5b3
-//   - b7245ddfbb7bac323921d0583b67295789e9f3f22cd7460e36f9f37b65b10c31
+//   - 0d5e4d9732689312a272d2dccc79618f0d0e7b7c3ac011c5d0bccc550e31aab4
+//   - 1b504b838a6086e20a9968b848b09173e7c4273df040d53da2bd21323fb2dfa1
+//   - 3fa3da0e7a7f8cb90317e2a648dfe48753df3ba954b2fb6b20575a3c43bc8fc8
+//   - 507382feed5fd8d534b21d00be11f041b2f9f9068ead6e47666273a50dd6ad1c
+//   - 528b686977d1920642a225680cafcf2ff0573c2b4bdf0565747fd1e672728f2c
+//   - 91b21068719070461138cdce68afa6494d10cc324ea1b75c362c862438ed2de1
+//   - a3a2f56fa0345904a3b8005001bb4e03929f3e94275382d56622330b0f4c9757
+//   - ca63241d3457d1037204c97971e46a1ee63b28f7e6439b19fe66658c16a42be7
 //
 // Product admission refuses any other name set (validateSharedProductManifest).
 var sharedProductManifestMaps = []string{

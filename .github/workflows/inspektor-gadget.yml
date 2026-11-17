@@ -1579,8 +1579,11 @@ jobs:
     # Rebuilds g19pkg{64,128,256,512} for both pinned AL2023 kernels with the
     # pinned toolchain (Debian clang-21 1:21.1.8-3~bpo13+2 and libbpf-dev
     # 1:1.5.0-3, every package from one snapshot.debian.org timestamp) and
-    # compares each sha256 with sharedProductPins. Build only: loading the
-    # objects on the AL2023 kernels stays a manual EC2 gate.
+    # compares each sha256 with sharedProductPins, then packages each object
+    # into its product gadget image (cmd/productimages) and compares the
+    # manifest and index digests with SharedProductImagePins. Build only:
+    # loading the objects on the AL2023 kernels stays a manual EC2 gate, and
+    # the images are never pushed (node-agent rebuilds them into tracers.tar).
     runs-on: ubuntu-22.04
     container: debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 # trixie
     permissions:
@@ -1600,7 +1603,37 @@ jobs:
     - name: Install the pinned toolchain
       run: gadgets/enforce_exec/fullruntime/bpf/install-product-toolchain.sh /tmp/product-debs
     - name: Rebuild and compare with the pins
-      run: gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check
+      run: gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check /tmp/product-objects
+    # The bare Debian container has no CA bundle, so Go cannot fetch modules
+    # over TLS. Installed after the object check, so it cannot affect the
+    # pinned toolchain or the object bytes.
+    - name: Install CA certificates for Go module downloads
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends ca-certificates
+    - name: Setup go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: false
+    - name: Package the product images and compare with the pins
+      env:
+        CGO_ENABLED: "0"
+      # The OK/FAIL lines (built and pinned digests per image) also go into
+      # the artifact, so a failed run shows which digests differ.
+      run: |
+        set -o pipefail
+        mkdir -p /tmp/product-images
+        go run ./gadgets/enforce_exec/fullruntime/cmd/productimages \
+          -objects /tmp/product-objects -layout /tmp/product-images/layout \
+          -json /tmp/product-images/product-images.json 2>&1 | tee /tmp/product-images/check.log
+    - name: Upload the product image layout and the check output
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: enforce-exec-product-images
+        path: /tmp/product-images
+        if-no-files-found: ignore
 
   check-gadget-docs:
     name: Check gadget docs structure
