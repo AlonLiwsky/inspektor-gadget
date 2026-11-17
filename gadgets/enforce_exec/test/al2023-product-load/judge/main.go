@@ -202,7 +202,7 @@ func readStreamRows(r io.Reader) (map[string]*outcome, error) {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: judge check|row|end ...")
+		return errors.New("usage: judge check|row|end [args]")
 	}
 	switch args[0] {
 	case "check":

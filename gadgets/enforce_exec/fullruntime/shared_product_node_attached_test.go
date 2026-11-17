@@ -850,7 +850,7 @@ func TestSharedProductFreshExitCreditSeesLaterFaults(t *testing.T) {
 	for name, counter := range map[string]int{"lease fault": ExitCreditLeaseFault, "held stuck": ExitCreditHeldStuck, "overflow": ExitCreditOverflow, "tomb fault": ExitCreditTombFault} {
 		later := now
 		now[counter]++
-		if again := e.check(); again != stored {
+		if again := e.check(); !errors.Is(again, stored) {
 			t.Fatalf("%s: check re-read the witness (%v); the seam this test guards changed", name, again)
 		}
 		if got, err := sharedProductFreshExitCredit(e); err == nil {
