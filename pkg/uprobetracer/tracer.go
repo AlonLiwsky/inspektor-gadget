@@ -676,9 +676,11 @@ func (t *Tracer[Event]) executableFromOCIConfig(containerPid uint32, ociConfig s
 
 // attachUprobe attaches the uprobe program to the inode of the file passed in.
 //
-// Custom offsets are resolved during the lock-free open phase. Ordinary names
-// use the bounded shared symbol cache; a cache miss reads ELF under t.mu, as
-// cilium's ordinary-name attachment previously did.
+// Custom offsets and, on the open-phase paths, the attach symbol's offset are
+// resolved during the lock-free open phase. Otherwise ordinary names use the
+// bounded shared symbol cache; a cache miss reads ELF under t.mu, as cilium's
+// ordinary-name attachment previously did, and the stripped-Go fallback never
+// waits for a parse slot there (lockedLookup).
 func (t *Tracer[Event]) attachUprobe(file *os.File, offsets []uint64) ([]link.Link, error) {
 	attachPath := path.Join(host.HostProcFs, "self/fd/", fmt.Sprint(file.Fd()))
 	ex, err := link.OpenExecutable(attachPath)
@@ -886,9 +888,11 @@ func (t *Tracer[Event]) attachOneFile(ctx context.Context, containerPid uint32, 
 type openedTarget struct {
 	file  *os.File
 	label string
-	// offsets are the file offsets resolved by the AttachOffsetsResolver during
-	// the open phase, or empty to attach by symbol name. Carried to the commit
-	// phase so no ELF/pread work is needed under t.mu.
+	// offsets are the file offsets resolved during the open phase: by the
+	// AttachOffsetsResolver, else the attach symbol's offset
+	// (prepareSymbolOffsets). Empty means the commit resolves the symbol under
+	// t.mu, from the cache in the normal case. Carried to the commit phase so
+	// no ELF/pread work is needed under t.mu.
 	offsets []uint64
 }
 
@@ -911,7 +915,8 @@ func (t *Tracer[Event]) openTargets(ctx context.Context, containerPid uint32, pa
 			openFailed = true
 			continue
 		}
-		opened = append(opened, openedTarget{file: file, label: filePath, offsets: t.resolveAttachOffsets(file, containerPid)})
+		offsets := t.prepareSymbolOffsets(ctx, file, t.resolveAttachOffsets(file, containerPid))
+		opened = append(opened, openedTarget{file: file, label: filePath, offsets: offsets})
 	}
 	return opened, openFailed
 }
@@ -1467,6 +1472,9 @@ func (t *Tracer[Event]) discoverAndOpenMappedLibrariesInNamespace(containerPid, 
 	}
 	t.logger.Debugf("uprobetracer: discoverAndOpenMappedLibraries: matched=%d containerPid=%d execPid=%d paths=%v", len(libs), containerPid, execPid, paths)
 
+	// Bounds the symbol preparation below; see attachIOTimeout.
+	ctx, cancel := context.WithTimeout(context.Background(), attachIOTimeout)
+	defer cancel()
 	var opened []mappedOpen
 	for _, lib := range libs {
 		file, err := t.openMapFileFunc(execPid, lib.rangeKey, expectedMntns)
@@ -1493,7 +1501,8 @@ func (t *Tracer[Event]) discoverAndOpenMappedLibrariesInNamespace(containerPid, 
 		// attachOffsetsResolver (resolver.go:161-164). Passing execPid here would
 		// change only log/error text, and would make those diagnostics disagree with
 		// every other pid field on this attach.
-		opened = append(opened, mappedOpen{file: file, path: lib.path, rangeKey: lib.rangeKey, offsets: t.resolveAttachOffsets(file, containerPid)})
+		offsets := t.prepareSymbolOffsets(ctx, file, t.resolveAttachOffsets(file, containerPid))
+		opened = append(opened, mappedOpen{file: file, path: lib.path, rangeKey: lib.rangeKey, offsets: offsets})
 	}
 	return opened, nil
 }

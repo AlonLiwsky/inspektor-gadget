@@ -62,7 +62,7 @@ func TestCachedSymbolMatchesCilium(t *testing.T) {
 							if kind == "return" {
 								attach = executable.Uretprobe
 							}
-							cache := newSymbolCache(16, parseOrdinarySymbol)
+							cache := newSymbolCache(16, parseOrdinaryContext)
 							for _, temperature := range []string{"cold", "warm"} {
 								t.Run(temperature, func(t *testing.T) {
 									offset, cachedErr := cache.resolve(file, symbol)

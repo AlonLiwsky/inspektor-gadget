@@ -15,6 +15,7 @@
 package uprobetracer
 
 import (
+	"context"
 	"debug/elf"
 	"debug/gosym"
 	"encoding/binary"
@@ -228,6 +229,24 @@ var errGoSymbolUnsupported = errors.New("unsupported Go binary")
 // before them do not, so non-Go executables never wait.
 var goParseSlots = make(chan struct{}, 2)
 
+// acquireGoParseSlot takes a parse slot. It takes a free slot even when ctx is
+// already done, so a caller under the tracer lock passes a done context: it
+// parses when a slot is free and fails at once when none is, and never waits
+// there. Other callers wait until ctx ends. The error is not cached.
+func acquireGoParseSlot(ctx context.Context) error {
+	select {
+	case goParseSlots <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case goParseSlots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for a .gopclntab parse slot: %w", ctx.Err())
+	}
+}
+
 // resolveGoSymbol is the Go symbol resolver. It looks up a function address in
 // a Go binary's .gopclntab section. It works when the standard ELF symbol
 // table (.symtab) is removed, as long as .gopclntab and a usable Go text base
@@ -258,7 +277,13 @@ var goParseSlots = make(chan struct{}, 2)
 // secureopen.OpenInContainer) to avoid re-opening untrusted paths.
 //
 // Returns a file offset suitable for use with UprobeOptions.Address.
-func resolveGoSymbol(file *os.File, symbol string) (addr uint64, err error) {
+func resolveGoSymbol(file *os.File, symbol string) (uint64, error) {
+	return resolveGoSymbolContext(context.Background(), file, symbol)
+}
+
+// resolveGoSymbolContext is resolveGoSymbol with a context that bounds the wait
+// for a parse slot.
+func resolveGoSymbolContext(ctx context.Context, file *os.File, symbol string) (addr uint64, err error) {
 	// debug/elf and debug/gosym are not hardened against adversarial inputs
 	// and may panic on malformed data. Since we're parsing files from
 	// untrusted containers, recover from panics.
@@ -285,15 +310,9 @@ func resolveGoSymbol(file *os.File, symbol string) (addr uint64, err error) {
 
 	// .gosymtab may be absent in stripped binaries. Go 1.16+ embeds all
 	// needed information in .gopclntab, so gosym.NewTable works with nil symtab.
-	var symtabData []byte
-	if symtab := f.Section(".gosymtab"); symtab != nil {
-		if symtab.Size > maxGoSectionSize {
-			return 0, fmt.Errorf("%w: .gosymtab too large (%d bytes, max %d)", errGoSymbolUnsupported, symtab.Size, maxGoSectionSize)
-		}
-		symtabData, err = symtab.Data()
-		if err != nil {
-			return 0, fmt.Errorf("reading .gosymtab: %w", err)
-		}
+	symtab := f.Section(".gosymtab")
+	if symtab != nil && symtab.Size > maxGoSectionSize {
+		return 0, fmt.Errorf("%w: .gosymtab too large (%d bytes, max %d)", errGoSymbolUnsupported, symtab.Size, maxGoSectionSize)
 	}
 
 	textSection := f.Section(".text")
@@ -301,8 +320,19 @@ func resolveGoSymbol(file *os.File, symbol string) (addr uint64, err error) {
 		return 0, fmt.Errorf("no .text section found")
 	}
 
-	goParseSlots <- struct{}{}
+	// Every section read runs inside the slot, so lookups queued for a slot
+	// hold no section data.
+	if err := acquireGoParseSlot(ctx); err != nil {
+		return 0, err
+	}
 	defer func() { <-goParseSlots }()
+	var symtabData []byte
+	if symtab != nil {
+		symtabData, err = symtab.Data()
+		if err != nil {
+			return 0, fmt.Errorf("reading .gosymtab: %w", err)
+		}
+	}
 	pclntabData, err := pclntab.Data()
 	if err != nil {
 		return 0, fmt.Errorf("reading .gopclntab: %w", err)
