@@ -112,9 +112,9 @@ func TestS1OverheadBench(t *testing.T) {
 		// getppid in a loop: ns per 1000 syscalls (the helper's best of 5).
 		{"syscall_ns_per_1000", helper + " bench 200000", "NS_PER_1000_SYSCALLS"},
 		// fork+exec+exit+wait of the static helper, ns each.
-		{"forkexec_ns", fmt.Sprintf(`s=$(date +%%s%%N); for i in $(seq %d); do %s noop; done; e=$(date +%%s%%N); echo FE=$(( (e-s)/%d ))`, forks, helper, forks), "FE"},
+		{"forkexec_ns", fmt.Sprintf(`s=$(date +%%s%%N); for i in $(seq %d); do %s noop || exit $?; done; e=$(date +%%s%%N); echo FE=$(( (e-s)/%d ))`, forks, helper, forks), "FE"},
 		// build-like: many short processes reading and hashing files.
-		{"buildish_ms", `s=$(date +%s%N); find /usr/lib /usr/share -type f 2>/dev/null | head -6000 | xargs -n 20 -P 4 sha256sum >/dev/null 2>&1; e=$(date +%s%N); echo B=$(( (e-s)/1000000 ))`, "B"},
+		{"buildish_ms", `s=$(date +%s%N); find /usr/lib /usr/share -type f 2>/dev/null | head -6000 | xargs -n 20 -P 4 sha256sum >/dev/null 2>&1 || exit $?; e=$(date +%s%N); echo B=$(( (e-s)/1000000 ))`, "B"},
 	}
 	// Warm the page cache once.
 	_ = run(workloads[2].line)
