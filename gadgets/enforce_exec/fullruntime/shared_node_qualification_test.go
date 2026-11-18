@@ -180,14 +180,12 @@ func packagingForObject(t *testing.T, merged *viper.Viper, spec *ebpf.Collection
 // sched_process_exit tp_btf) and attachChildSource (raw_tp
 // sched_process_fork, kprobe free_task). They take no trampoline slot.
 var candidateProbeLinks = map[string]string{
+	// D1 (LSM-only prototype): tracepoints only, no kprobe.
 	"opaque_real_owner_child_exit_candidate":       "tp_btf/sched_process_exit",
-	"opaque_real_owner_failure_outer_enter":        "kprobe/do_execveat_common.isra.38",
-	"opaque_real_owner_failure_outer_exit":         "kretprobe/do_execveat_common.isra.38",
-	"opaque_real_owner_failure_handler_enter":      "kprobe/search_binary_handler",
-	"opaque_real_owner_failure_handler_exit":       "kretprobe/search_binary_handler",
-	"opaque_real_owner_birth_free_task_candidate":  "kprobe/free_task",
+	"real_owner_capsule_terminal":                  "tp_btf/sys_exit",
 	"opaque_real_owner_successful_birth_candidate": "raw_tp/sched_process_fork",
-	"opaque_real_owner_reader_success_probe":       "tp_btf/sched_process_exec",
+	"d1_witness_exec":                              "tp_btf/sched_process_exec",
+	"d1_witness_fork":                              "tp_btf/sched_process_fork",
 }
 
 // sharedMergedTailCalls reads the merged metadata's tail_calls the way the
@@ -218,7 +216,7 @@ func TestSharedCandidateMergedMetadataDeclaration(t *testing.T) {
 	for _, target := range sharedCandidateAttachSet {
 		perHook[target]++
 	}
-	if fmt.Sprint(perHook) != fmt.Sprint(candidateAttachPerHook) || len(sharedCandidateAttachSet) != 8 {
+	if fmt.Sprint(perHook) != fmt.Sprint(candidateAttachPerHook) || len(sharedCandidateAttachSet) != 6 {
 		t.Fatalf("product attach set per hook %v, pinned %v", perHook, candidateAttachPerHook)
 	}
 	disabled := candidateDisabled(merged)
@@ -272,6 +270,8 @@ func TestSharedCandidateMergedMetadataDeclaration(t *testing.T) {
 // metadata attach target, gadget_program_disabled for disabled programs.
 func sharedCandidateManifest(spec *ebpf.CollectionSpec, disabled map[string]bool) *operators.NativeResources {
 	r := &operators.NativeResources{Maps: map[string]operators.NativeMapResource{}, Programs: map[string]operators.NativeProgramResource{}}
+	// D1: the kernel witness map is required at startup.
+	r.Maps[sharedKernelWitnessMap] = operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: sharedKernelWitnessCellSize, MaxEntries: sharedKernelWitnessCells}
 	for name, m := range spec.Maps {
 		r.Maps[name] = operators.NativeMapResource{Type: uint32(m.Type), KeySize: m.KeySize, ValueSize: m.ValueSize, MaxEntries: m.MaxEntries, Flags: m.Flags}
 	}
@@ -439,6 +439,8 @@ func sharedCandidateFakeManifest() *operators.NativeResources {
 
 func sharedCandidateFakeManifestWithoutCommands() *operators.NativeResources {
 	r := &operators.NativeResources{Maps: map[string]operators.NativeMapResource{}, Programs: map[string]operators.NativeProgramResource{}}
+	// D1: the kernel witness map is required at startup.
+	r.Maps[sharedKernelWitnessMap] = operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: sharedKernelWitnessCellSize, MaxEntries: sharedKernelWitnessCells}
 	for name, target := range sharedCandidateAttachSet {
 		r.Programs[name] = operators.NativeProgramResource{Type: uint32(ebpf.LSM), Target: target}
 	}
@@ -733,7 +735,7 @@ func TestSharedStartNodeQualifiedLoadsOneCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if host.runs != 1 || len(host.attached) != 16 || len(n.host.live.receipts) != 16 {
+	if host.runs != 1 || len(host.attached) != 11 || len(n.host.live.receipts) != 11 { // S1: + the tp_btf/sched_process_fork witness, - the merged failure terminal
 		t.Fatalf("runs=%d attached=%d receipts=%d", host.runs, len(host.attached), len(n.host.live.receipts))
 	}
 	if n.host.live.reaper == nil || n.host.live.reaper.reaper != host.reaper {

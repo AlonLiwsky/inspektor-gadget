@@ -23,14 +23,6 @@ declare -A AL2023_BUILD_ID=(
 	[6.12]=1d135d67e6d0ea8f77d60a2984915eadd28a5fcf
 	[6.18]=884ed4548406a1461ac5fb658c0dffdd87f1b3b2
 )
-declare -A AL2023_OUTER_SYMBOL=(
-	[6.12]=do_execveat_common.isra.0
-	[6.18]=do_execveat_common.isra.0
-)
-declare -A AL2023_HANDLER_SYMBOL=(
-	[6.12]=search_binary_handler
-	[6.18]=exec_binprm
-)
 # vmlinuz sha256 of the pinned kernel RPM (= the G011 pass-1 ident): the
 # QEMU lane's platform identity.
 declare -A AL2023_VMLINUZ_SHA256=(
@@ -73,9 +65,8 @@ AL2023_ALL_PROFILES="64 128 256 512"
 # The profile that also runs the ftrace negative (plan 1b step 2).
 AL2023_FTRACE_PROFILE=128
 al2023_ktag() { echo "${1//./}"; }                                    # 6.12 -> 612
-al2023_object() { echo "g19pkg$2-$1.bpf.o"; }                          # kernel profile
+al2023_object() { echo "g19pkg$2.bpf.o"; }                             # kernel profile (stage 1: one CO-RE object per profile)
 al2023_image() { echo "local/shared-product-$(al2023_ktag "$1"):pkg$2"; } # kernel profile
-al2023_other() { [[ $1 == 6.12 ]] && echo 6.18 || echo 6.12; }
 
 # ---- open decisions (configuration, never a silent default).
 # PENDING D4: the profiles per run: "64 128 256 512" (all) or "128".
@@ -88,14 +79,19 @@ al2023_require_profiles() {
 	done
 	[[ " $AL2023_PROFILES " == *" $AL2023_FTRACE_PROFILE "* ]] || { echo "AL2023_PROFILES must include $AL2023_FTRACE_PROFILE (the ftrace negative)" >&2; return 1; }
 }
-# PENDING D5: the negative image set. Only "other-kernel" (the other
-# kernel's product image of the same profile) is buildable from the repo;
-# "twins" needs build-product.sh to build the diagnostic twins.
+# PENDING D5: the negative image set. Stage 1 builds one CO-RE object per
+# profile for every kernel, qualified on both pins, so the other kernel's
+# image of a profile carries the same qualified object and is NOT a negative
+# any more. "seam" runs the negatives test with no negative image: the
+# product StartNode must refuse the qualification seam (the per-object
+# refusals are unit tests, shared_host_product_test.go). "twins" needs
+# build-product.sh to build the diagnostic twins.
 al2023_require_neg_set() {
 	case ${AL2023_NEG_SET:-} in
-	other-kernel) ;;
+	seam) ;;
+	other-kernel) echo "AL2023_NEG_SET=other-kernel: stage 1 images of both kernels carry the same qualified object (not a negative); use 'seam'" >&2; return 1 ;;
 	twins) echo "AL2023_NEG_SET=twins: the diagnostic twins are not buildable from the repo (build-product.sh); PENDING D5" >&2; return 1 ;;
-	*) echo "AL2023_NEG_SET is unset or unknown (PENDING D5: 'other-kernel')" >&2; return 1 ;;
+	*) echo "AL2023_NEG_SET is unset or unknown (PENDING D5: 'seam')" >&2; return 1 ;;
 	esac
 }
 # PENDING D8 (EC2 lane only): VM access, "ssh" (SG /32 + per-run key) or

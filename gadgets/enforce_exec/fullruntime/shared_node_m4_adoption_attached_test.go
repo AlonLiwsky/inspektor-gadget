@@ -716,8 +716,16 @@ func TestSharedNodeM4AdoptionGoInitStorm(t *testing.T) {
 	}
 	switch refused.Reason {
 	case AdoptionCloneRefused:
-		if state.Faults == 0 || e.counts()[AdoptionCloneRefused] != 1 {
-			t.Fatalf("CloneRefused with state %+v counters %v", state, e.counts())
+		// The engine reports CloneRefused on max(state.Faults,
+		// route.AdoptingFault) (sharedFinishDetailOf): finish snapshots
+		// the route's count into the state, and the route (still adopting,
+		// so still refusing clones) can count a refusal after that
+		// snapshot. Check the same pair, not the snapshot alone (measured:
+		// rocky10, finish refused on an exiting thread with the snapshot 0,
+		// then a clone was refused before the detail was read).
+		route := e.anchor(slot)
+		if max(state.Faults, route.AdoptingFault) == 0 || e.counts()[AdoptionCloneRefused] != 1 {
+			t.Fatalf("CloneRefused with state %+v route faults %d counters %v", state, route.AdoptingFault, e.counts())
 		}
 		select {
 		case <-exited:

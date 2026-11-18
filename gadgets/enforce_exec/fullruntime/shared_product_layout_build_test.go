@@ -1,7 +1,7 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build enforce_exec_shared_qualification
+//go:build enforce_exec_shared_qualification && enforce_exec_product_layout
 
 package fullruntime
 
@@ -29,24 +29,33 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/oci"
 )
 
-// The product OCI layout builder (G035 step 1; tag-only, never in a product
-// binary). It writes the layout TestSharedProductNodeReadyAttached and
-// TestSharedProductNodeNegativesAttached read from IG_SHARED_PRODUCT_LAYOUT:
-// one image per product object (4 profiles x 2 kernels), tagged
-// local/shared-product-<ktag>:pkg<N> (ktag 612 or 618).
+// The product OCI layout builder (G035 step 1; a build tool behind its own
+// tag enforce_exec_product_layout, so it is in no test suite and never in a
+// product binary). It writes the layout TestSharedProductNodeReadyAttached
+// and TestSharedProductNodeNegativesAttached read from
+// IG_SHARED_PRODUCT_LAYOUT: one image per pinned kernel and product profile
+// (4 profiles x 2 kernels), tagged local/shared-product-<ktag>:pkg<N> (ktag
+// 612 or 618). Stage 1: one CO-RE object per profile for every kernel, so
+// both kernels' images of a profile carry the same object.
 //
-//   IG_ENFORCE_EXEC_PRODUCT_OBJECTS  the 8 objects build-product.sh writes,
-//                                    g19pkg<N>-<6.12|6.18>.bpf.o, comma or
-//                                    white-space separated
+//   IG_ENFORCE_EXEC_PRODUCT_OBJECTS  the 4 objects build-product.sh writes,
+//                                    g19pkg<N>.bpf.o, comma or white-space
+//                                    separated
+//   IG_SHARED_PRODUCT_NEG_OBJECTS    optional: objects that are NOT qualified
+//                                    on any pin (a twin, another build of a
+//                                    product object), each imaged as
+//                                    local/shared-product-neg:<basename> for
+//                                    the negatives test; the builder refuses a
+//                                    qualified one
 //   IG_SHARED_PRODUCT_LAYOUT_OUT     a new (or empty) directory; it receives
 //                                    layout/ (the OCI layout), images.tsv
 //                                    and layout.sha256sums
 //
 // The layout is built twice and must be byte-identical (reproducible), and
-// every image's program layer must equal a pinned product ELF of its kernel.
+// every image's program layer must equal a qualified product ELF of its kernel.
 // Without the env vars the test fails: it is only run on purpose.
 
-var sharedProductObjectName = regexp.MustCompile(`^g19pkg(64|128|256|512)-(6\.12|6\.18)\.bpf\.o$`)
+var sharedProductObjectName = regexp.MustCompile(`^g19pkg(64|128|256|512)\.bpf\.o$`)
 
 // sharedProductLayoutImage is one row of images.tsv.
 type sharedProductLayoutImage struct {
@@ -61,7 +70,8 @@ func sharedProductLayoutRef(kernel, profile string) string {
 
 // sharedProductPinnedELF reads testdata/shared_product_pins.tsv (the
 // record TestSharedProductPinsMatchTestdata ties to sharedProductPins): the
-// product ELF sha256 of each release, in sharedProductProfiles order.
+// qualified product ELF sha256 of each release, in sharedProductProfiles
+// order.
 func sharedProductPinnedELF(t *testing.T) map[string][]string {
 	t.Helper()
 	data, err := os.ReadFile("testdata/shared_product_pins.tsv")
@@ -74,10 +84,10 @@ func sharedProductPinnedELF(t *testing.T) map[string][]string {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) != 6 {
-			t.Fatalf("pins line %q: %d fields, want 6", line, len(fields))
+		if len(fields) != 4 {
+			t.Fatalf("pins line %q: %d fields, want 4", line, len(fields))
 		}
-		elf := strings.Split(fields[5], ",")
+		elf := strings.Split(fields[3], ",")
 		if len(elf) != len(sharedProductProfiles) {
 			t.Fatalf("pins %s: %d product ELFs, want %d", fields[0], len(elf), len(sharedProductProfiles))
 		}
@@ -88,7 +98,7 @@ func sharedProductPinnedELF(t *testing.T) map[string][]string {
 
 // buildSharedProductLayout writes the layout of objects (path by kernel and
 // profile) into dir and returns its images, sorted by kernel and profile.
-func buildSharedProductLayout(t *testing.T, dir string, objects map[[2]string]string) []sharedProductLayoutImage {
+func buildSharedProductLayout(t *testing.T, dir string, objects map[[2]string]string, negatives []string) []sharedProductLayoutImage {
 	t.Helper()
 	store, err := orasoci.New(dir)
 	if err != nil {
@@ -122,16 +132,44 @@ func buildSharedProductLayout(t *testing.T, dir string, objects map[[2]string]st
 		if want := pinned[pin.Release]; len(want) <= i || digest != want[i] {
 			t.Fatalf("%s: sha256 %s is not the pinned product ELF of %s profile %s (%v)", path, digest, pin.Release, profile, want)
 		}
-		if _, ok := pin.ProductELF[digest]; !ok {
-			t.Fatalf("%s: sha256 %s is not a pinned product ELF of %s", path, digest, pin.Release)
+		if !pin.qualifiesProductObject(digest) {
+			t.Fatalf("%s: sha256 %s is not a qualified product ELF of %s", path, digest, pin.Release)
 		}
 		ref, err := BuildSharedCandidateImageRef(t.Context(), store, elf, KernelMatrixEntry{
-			Release: pin.Release, OuterSymbol: pin.OuterSymbol, HandlerSymbol: pin.HandlerSymbol, Profile: p,
+			Release: pin.Release, Profile: p,
 		}, sharedProductLayoutRef(kernel, profile))
 		if err != nil {
 			t.Fatalf("%s: %v", path, err)
 		}
 		images = append(images, sharedProductLayoutImage{Kernel: kernel, Profile: profile, Ref: ref, Object: filepath.Base(path), ObjectSHA256: digest})
+	}
+	// Negative images: objects qualified on no pin, packaged like a product
+	// image (profile 128 geometry) so the product StartNode must refuse
+	// them on their digest.
+	for _, path := range negatives {
+		elf, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(elf)
+		digest := hex.EncodeToString(sum[:])
+		for _, pin := range sharedProductPins {
+			if pin.qualifiesProductObject(digest) {
+				t.Fatalf("negative %s: sha256 %s is qualified on %s", path, digest, pin.Release)
+			}
+		}
+		p, _, _ := sharedProductProfileNamed("128")
+		var release string
+		for _, d := range slices.Sorted(maps.Keys(sharedProductPins)) {
+			release = sharedProductPins[d].Release
+			break
+		}
+		name := strings.TrimSuffix(filepath.Base(path), ".bpf.o")
+		ref, err := BuildSharedCandidateImageRef(t.Context(), store, elf, KernelMatrixEntry{Release: release, Profile: p}, "local/shared-product-neg:"+name)
+		if err != nil {
+			t.Fatalf("negative %s: %v", path, err)
+		}
+		images = append(images, sharedProductLayoutImage{Kernel: "neg", Profile: "128", Ref: ref, Object: filepath.Base(path), ObjectSHA256: digest})
 	}
 	// oras writes index.json from a map (random manifest order); rewrite it
 	// in a canonical order so the layout bytes are reproducible.
@@ -241,22 +279,26 @@ func TestBuildSharedProductLayout(t *testing.T) {
 	out := os.Getenv("IG_SHARED_PRODUCT_LAYOUT_OUT")
 	list := strings.FieldsFunc(os.Getenv("IG_ENFORCE_EXEC_PRODUCT_OBJECTS"), func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
 	if out == "" || len(list) == 0 {
-		t.Fatal("set IG_SHARED_PRODUCT_LAYOUT_OUT and IG_ENFORCE_EXEC_PRODUCT_OBJECTS (the 8 build-product.sh objects); this builder never skips")
+		t.Fatal("set IG_SHARED_PRODUCT_LAYOUT_OUT and IG_ENFORCE_EXEC_PRODUCT_OBJECTS (the 4 build-product.sh objects); this builder never skips")
 	}
+	// Stage 1: one object per profile, imaged for every pinned kernel.
 	objects := map[[2]string]string{}
 	for _, path := range list {
 		m := sharedProductObjectName.FindStringSubmatch(filepath.Base(path))
 		if m == nil {
-			t.Fatalf("%s: want g19pkg<64|128|256|512>-<6.12|6.18>.bpf.o", path)
+			t.Fatalf("%s: want g19pkg<64|128|256|512>.bpf.o", path)
 		}
-		key := [2]string{m[2], m[1]}
-		if _, dup := objects[key]; dup {
-			t.Fatalf("%s: a second object for kernel %s profile %s", path, m[2], m[1])
+		for _, pin := range sharedProductPins {
+			kernel := strings.Join(strings.SplitN(pin.Release, ".", 3)[:2], ".")
+			key := [2]string{kernel, m[1]}
+			if _, dup := objects[key]; dup {
+				t.Fatalf("%s: a second object for profile %s", path, m[1])
+			}
+			objects[key] = path
 		}
-		objects[key] = path
 	}
-	if len(objects) != 2*len(sharedProductProfiles) {
-		t.Fatalf("%d objects, want every profile on both kernels (%d)", len(objects), 2*len(sharedProductProfiles))
+	if len(objects) != len(sharedProductPins)*len(sharedProductProfiles) {
+		t.Fatalf("%d images, want every profile on every pinned kernel (%d)", len(objects), len(sharedProductPins)*len(sharedProductProfiles))
 	}
 	// Never overwrite evidence: the output directory must be new or empty.
 	if entries, err := os.ReadDir(out); err == nil && len(entries) != 0 {
@@ -265,9 +307,10 @@ func TestBuildSharedProductLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	layout := filepath.Join(out, "layout")
-	images := buildSharedProductLayout(t, layout, objects)
+	negatives := strings.FieldsFunc(os.Getenv("IG_SHARED_PRODUCT_NEG_OBJECTS"), func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	images := buildSharedProductLayout(t, layout, objects, negatives)
 	again := filepath.Join(t.TempDir(), "layout")
-	buildSharedProductLayout(t, again, objects)
+	buildSharedProductLayout(t, again, objects, negatives)
 	files := sharedProductLayoutFiles(t, layout)
 	if second := sharedProductLayoutFiles(t, again); !maps.Equal(files, second) {
 		t.Fatalf("the layout is not reproducible: first build %v, second build %v", files, second)

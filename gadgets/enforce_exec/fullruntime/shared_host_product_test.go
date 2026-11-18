@@ -104,36 +104,24 @@ func sharedProductImageContext(digest any) *gadgetcontext.GadgetContext {
 	return gc
 }
 
-// sharedProductImageMetadata is image metadata with the failure-frame
-// attach_to targets of outer and handler ("" leaves a target unset).
-func sharedProductImageMetadata(outer, handler string) *viper.Viper {
+// sharedProductImageMetadata is image metadata with an attach_to override
+// for each named program ("" overrides nothing). D1: a product image
+// carries no attach_to override for any probe.
+func sharedProductImageMetadata(overrides ...string) *viper.Viper {
 	v := viper.New()
-	for name, isOuter := range sharedProductFailureTargets {
-		symbol := handler
-		if isOuter {
-			symbol = outer
-		}
-		if symbol != "" {
-			v.Set("programs."+name+".attach_to", symbol)
-		}
+	for _, name := range overrides {
+		v.Set("programs."+name+".attach_to", "do_execveat_common.isra.0")
 	}
 	return v
 }
 
 // sharedProductPinnedResources is the exact product manifest with every
-// probe target as the eBPF operator reports it for an image built for pin
-// (failure frames on the pin's symbols, the other probes on their section
-// targets).
-func sharedProductPinnedResources(pin sharedProductPin) *operators.NativeResources {
+// probe target as the eBPF operator reports it: each probe on its section
+// target (D1: tracepoints only, the same on every kernel).
+func sharedProductPinnedResources(sharedProductPin) *operators.NativeResources {
 	r := sharedProductExactManifest()
 	for name, section := range sharedCandidateProbeSet {
 		_, target, _ := strings.Cut(section, "/")
-		if outer, failure := sharedProductFailureTargets[name]; failure {
-			target = pin.HandlerSymbol
-			if outer {
-				target = pin.OuterSymbol
-			}
-		}
 		p := r.Programs[name]
 		p.Target = target
 		r.Programs[name] = p
@@ -154,73 +142,164 @@ func withProbeTarget(r *operators.NativeResources, name, target string) *operato
 	return r
 }
 
-func anyProductELF(pin sharedProductPin) string {
-	for sum := range pin.ProductELF {
-		return sum
+// qualifyAllProductObjectsForTest makes every product object of this release
+// qualified on every pin for the rest of the test (the real pins qualify
+// none), so the other refusal paths can be reached.
+func qualifyAllProductObjectsForTest(t *testing.T) {
+	t.Helper()
+	saved := sharedProductPins
+	t.Cleanup(func() { sharedProductPins = saved })
+	pins := make(map[string]sharedProductPin, len(saved))
+	for digest, pin := range saved {
+		pin.ProductObjects = map[string]struct{}{}
+		for _, obj := range sharedProductObjects {
+			pin.ProductObjects[obj] = struct{}{}
+		}
+		pins[digest] = pin
 	}
-	return ""
+	sharedProductPins = pins
 }
 
-// TestSharedProductFailureTargets (plan 3.4) and the O1 byte binding: the
-// image's failure-frame targets must be the running pin's symbols and the
-// loaded object's sha256 one of its product objects.
-func TestSharedProductFailureTargets(t *testing.T) {
+// TestSharedProductObjectPinBinding (S1 review F1): the product admits a
+// (pinned kernel, object) pair only when that pair is qualified. The real
+// pins list exactly the four qualified objects; with a reduced set, a product
+// object of this release is refused on a pinned AL2023 kernel that does not
+// list it, an unknown digest is refused even where every product object is
+// qualified, and an unpinned kernel is refused by the product gate in every
+// build (the probed-kernel override never reaches it).
+func TestSharedProductObjectPinBinding(t *testing.T) {
+	// The real pins: exactly the four stage-1 product objects, qualified
+	// on both AL2023 pins by the S1 oracle; nothing else.
+	for _, d := range sharedProductPinDigests() {
+		pin := sharedProductPins[d]
+		if len(pin.ProductObjects) != len(sharedProductObjects) {
+			t.Fatalf("%s: qualified set %v", pin.Release, pin.ProductObjects)
+		}
+		for profile, obj := range sharedProductObjects {
+			if !pin.qualifiesProductObject(obj) {
+				t.Fatalf("%s: %s not qualified", pin.Release, profile)
+			}
+		}
+		if pin.qualifiesProductObject(strings.Repeat("ab", 32)) {
+			t.Fatalf("%s: an unknown digest qualifies", pin.Release)
+		}
+	}
+	// One pair qualified: only that pair passes.
 	digests := sharedProductPinDigests()
-	var d612, d618 string
+	saved := sharedProductPins
+	t.Cleanup(func() { sharedProductPins = saved })
+	pins := map[string]sharedProductPin{}
+	for d, pin := range saved {
+		pin.ProductObjects = map[string]struct{}{}
+		pins[d] = pin
+	}
+	one := pins[digests[0]]
+	one.ProductObjects[sharedProductObjects["g19pkg128"]] = struct{}{}
+	pins[digests[0]] = one
+	sharedProductPins = pins
+	for _, tc := range []struct {
+		name   string
+		kernel string
+		object string
+		admit  bool
+		reason string
+	}{
+		{"qualified pair", digests[0], sharedProductObjects["g19pkg128"], true, ""},
+		{"other profile on the same pin", digests[0], sharedProductObjects["g19pkg256"], false, "not qualified on pinned kernel"},
+		{"same object on the other pin", digests[1], sharedProductObjects["g19pkg128"], false, "not qualified on pinned kernel"},
+		{"unknown digest", digests[0], strings.Repeat("cd", 32), false, "not a pinned product object"},
+	} {
+		useProductKernel(t, pinnedProductKernel(tc.kernel))
+		pin := sharedProductPins[tc.kernel]
+		err := admitSharedProductImage(sharedProductImageContext(tc.object), sharedProductImageMetadata(), sharedProductPinnedResources(pin))
+		if tc.admit != (err == nil) || (!tc.admit && (!errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), tc.reason))) {
+			t.Errorf("%s: %v, want admit=%v reason %q", tc.name, err, tc.admit, tc.reason)
+		}
+	}
+	// An unpinned kernel: refused by the product gate whatever the build,
+	// even with the probed-kernel opt-in set (it only reaches the
+	// qualification candidate gate of a qualification build).
+	t.Setenv("IG_ENFORCE_EXEC_PROBED_KERNEL", "1")
+	k := pinnedProductKernel(digests[0])
+	k.digest, k.release, k.buildID = strings.Repeat("ef", 32), "6.12.48+deb13-cloud-amd64", "00"
+	useProductKernel(t, k)
+	if _, _, err := verifySharedProductKernel(); !errors.Is(err, ErrSharedNativeUnavailable) {
+		t.Fatalf("unpinned kernel admitted by the product gate (qualification=%v): %v", sharedQualificationBuild, err)
+	}
+	err := admitSharedProductImage(sharedProductImageContext(sharedProductObjects["g19pkg128"]), sharedProductImageMetadata(), sharedProductPinnedResources(one))
+	if !errors.Is(err, ErrSharedNativeUnavailable) {
+		t.Fatalf("product image admitted on an unpinned kernel: %v", err)
+	}
+	// In a default build the candidate gate refuses it too: the override
+	// cannot be enabled there.
+	if !sharedQualificationBuild && sharedProbedKernelOverride() {
+		t.Fatal("probed-kernel override enabled in a default build")
+	}
+}
+
+// anyProductELF is a product object digest (D3: the same set on every pin).
+func anyProductELF(sharedProductPin) string {
+	return sharedProductObjects["g19pkg128"]
+}
+
+// TestSharedProductImageAdmissionRefusals (D1 form; was
+// TestSharedProductFailureTargets): the image's probes are the
+// tracepoint set on their own section targets (no per-kernel symbol, no
+// attach_to override), and the loaded object's sha256 is one of the
+// release's product objects (D3: the same set on every pin).
+func TestSharedProductImageAdmissionRefusals(t *testing.T) {
+	digests := sharedProductPinDigests()
+	var d618 string
 	for _, d := range digests {
-		if strings.HasPrefix(sharedProductPins[d].Release, "6.12.") {
-			d612 = d
-		} else {
+		if !strings.HasPrefix(sharedProductPins[d].Release, "6.12.") {
 			d618 = d
 		}
 	}
-	p612, p618 := sharedProductPins[d612], sharedProductPins[d618]
+	// The real pins qualify exactly this release's four product objects
+	// (S1 AL2023 qualification): each is admitted on both; a digest that
+	// is not a product object is refused.
 	for _, d := range digests {
 		pin := sharedProductPins[d]
 		useProductKernel(t, pinnedProductKernel(d))
-		if err := admitSharedProductImage(sharedProductImageContext(anyProductELF(pin)), sharedProductImageMetadata(pin.OuterSymbol, pin.HandlerSymbol), sharedProductPinnedResources(pin)); err != nil {
-			t.Fatalf("%s: pinned image refused: %v", pin.Release, err)
+		for profile, obj := range sharedProductObjects {
+			if err := admitSharedProductImage(sharedProductImageContext(obj), sharedProductImageMetadata(), sharedProductPinnedResources(pin)); err != nil {
+				t.Fatalf("%s: qualified %s refused: %v", pin.Release, profile, err)
+			}
+		}
+	}
+	// The other refusals, on pins that qualify every product object.
+	qualifyAllProductObjectsForTest(t)
+	p618 := sharedProductPins[d618]
+	for _, d := range digests {
+		pin := sharedProductPins[d]
+		useProductKernel(t, pinnedProductKernel(d))
+		if err := admitSharedProductImage(sharedProductImageContext(anyProductELF(pin)), sharedProductImageMetadata(), sharedProductPinnedResources(pin)); err != nil {
+			t.Fatalf("%s: qualified pinned image refused: %v", pin.Release, err)
 		}
 	}
 	useProductKernel(t, pinnedProductKernel(d618))
 	elf618 := anyProductELF(p618)
 	good := func() *operators.NativeResources { return sharedProductPinnedResources(p618) }
-	cases := map[string]struct {
+	type tcase struct {
 		gc        *gadgetcontext.GadgetContext
 		metadata  *viper.Viper
 		resources *operators.NativeResources
 		reason    string
-	}{
-		"6.12 symbols on the 6.18 pin": {sharedProductImageContext(elf618), sharedProductImageMetadata(p612.OuterSymbol, p612.HandlerSymbol), good(), "failure-frame"},
-		"missing handler target":       {sharedProductImageContext(elf618), sharedProductImageMetadata(p618.OuterSymbol, ""), good(), "failure-frame"},
-		"missing outer target":         {sharedProductImageContext(elf618), sharedProductImageMetadata("", p618.HandlerSymbol), good(), "failure-frame"},
-		"mangled isra suffix":          {sharedProductImageContext(elf618), sharedProductImageMetadata("do_execveat_common.isra.38", p618.HandlerSymbol), good(), "failure-frame"},
-		"unsuffixed outer":             {sharedProductImageContext(elf618), sharedProductImageMetadata("do_execveat_common", p618.HandlerSymbol), good(), "failure-frame"},
-		"no object digest":             {sharedProductImageContext(nil), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "digest unavailable"},
-		"multi-layer digest":           {sharedProductImageContext(""), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "digest unavailable"},
-		"non-string digest":            {sharedProductImageContext([]byte(elf618)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "digest unavailable"},
-		"6.12 object on 6.18":          {sharedProductImageContext(anyProductELF(p612)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "not a pinned product object"},
-		"unknown object":               {sharedProductImageContext(strings.Repeat("ab", 32)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "not a pinned product object"},
-		"uppercase digest":             {sharedProductImageContext(strings.ToUpper(elf618)), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good(), "not a pinned product object"},
 	}
-	moved := map[string]*operators.NativeResources{
-		"free_task birth hook moved":          withProbeTarget(good(), "opaque_real_owner_birth_free_task_candidate", "do_exit"),
-		"sched_process_fork birth hook moved": withProbeTarget(good(), "opaque_real_owner_successful_birth_candidate", "sched_process_exec"),
-		"failure handler moved in resources":  withProbeTarget(good(), "opaque_real_owner_failure_handler_enter", p612.HandlerSymbol),
-		"probe program missing":               withProbeTarget(good(), "opaque_real_owner_birth_free_task_candidate", ""),
-		"no resources":                        nil,
-	}
-	for name, r := range moved {
-		reason := "probe opaque_real_owner_"
-		if r == nil {
-			reason = "missing native resources"
-		}
-		cases[name] = struct {
-			gc        *gadgetcontext.GadgetContext
-			metadata  *viper.Viper
-			resources *operators.NativeResources
-			reason    string
-		}{sharedProductImageContext(elf618), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), r, reason}
+	cases := map[string]tcase{
+		"attach_to override on the fork witness":     {sharedProductImageContext(elf618), sharedProductImageMetadata("d1_witness_fork"), good(), "attach_to override"},
+		"attach_to override on the capsule terminal": {sharedProductImageContext(elf618), sharedProductImageMetadata("real_owner_capsule_terminal"), good(), "attach_to override"},
+		"no object digest":                           {sharedProductImageContext(nil), sharedProductImageMetadata(), good(), "digest unavailable"},
+		"multi-layer digest":                         {sharedProductImageContext(""), sharedProductImageMetadata(), good(), "digest unavailable"},
+		"non-string digest":                          {sharedProductImageContext([]byte(elf618)), sharedProductImageMetadata(), good(), "digest unavailable"},
+		"pre-D3 per-kernel object":                   {sharedProductImageContext("142ae885221167eaf258678f508999eb0528447b53355eb5d776ae009b6115ae"), sharedProductImageMetadata(), good(), "not a pinned product object"},
+		"unknown object":                             {sharedProductImageContext(strings.Repeat("ab", 32)), sharedProductImageMetadata(), good(), "not a pinned product object"},
+		"uppercase digest":                           {sharedProductImageContext(strings.ToUpper(elf618)), sharedProductImageMetadata(), good(), "not a pinned product object"},
+		"exec witness moved off sched_process_exec":  {sharedProductImageContext(elf618), sharedProductImageMetadata(), withProbeTarget(good(), "d1_witness_exec", "sys_enter"), "probe d1_witness_exec"},
+		"capsule terminal moved off sys_exit":        {sharedProductImageContext(elf618), sharedProductImageMetadata(), withProbeTarget(good(), "real_owner_capsule_terminal", "sched_process_exec"), "probe real_owner_capsule_terminal"},
+		"sched_process_fork birth hook moved":        {sharedProductImageContext(elf618), sharedProductImageMetadata(), withProbeTarget(good(), "opaque_real_owner_successful_birth_candidate", "sched_process_exec"), "probe opaque_real_owner_"},
+		"probe program missing":                      {sharedProductImageContext(elf618), sharedProductImageMetadata(), withProbeTarget(good(), "opaque_real_owner_child_exit_candidate", ""), "probe opaque_real_owner_"},
+		"no resources":                               {sharedProductImageContext(elf618), sharedProductImageMetadata(), nil, "missing native resources"},
 	}
 	for name, tc := range cases {
 		if err := admitSharedProductImage(tc.gc, tc.metadata, tc.resources); !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), tc.reason) {
@@ -231,10 +310,12 @@ func TestSharedProductFailureTargets(t *testing.T) {
 	k := pinnedProductKernel(d618)
 	k.ftrace = "0"
 	useProductKernel(t, k)
-	if err := admitSharedProductImage(sharedProductImageContext(elf618), sharedProductImageMetadata(p618.OuterSymbol, p618.HandlerSymbol), good()); !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), "ftrace") {
+	if err := admitSharedProductImage(sharedProductImageContext(elf618), sharedProductImageMetadata(), good()); !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), "ftrace") {
 		t.Fatalf("instantiation kernel gate: %v", err)
 	}
-	if !slices.Contains(sharedProductManifestPrograms, "opaque_real_owner_failure_outer_enter") {
-		t.Fatal("failure-frame program not in the product manifest")
+	for _, gone := range []string{"opaque_real_owner_failure_outer_enter", "opaque_real_owner_failure_handler_enter", "real_owner_capsule_entry", "opaque_real_owner_birth_free_task_candidate"} {
+		if slices.Contains(sharedProductManifestPrograms, gone) {
+			t.Fatalf("exec-frame probe %s still in the product manifest", gone)
+		}
 	}
 }

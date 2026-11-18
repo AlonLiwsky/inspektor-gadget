@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/cilium/ebpf/btf"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -335,6 +337,16 @@ func (v *opaqueVerdictRun) interpBinfmt(files opaqueInterpFiles, name, ext, flag
 }
 
 func interpKernel618(v *opaqueVerdictRun) bool {
+	// D3: on a probed kernel the behaviour follows the feature, not the
+	// release: AT_EXECVE_CHECK exists iff linux_binprm has is_check.
+	if sharedProbedKernelOverride() {
+		kernel, err := btf.LoadKernelSpec()
+		if err != nil {
+			v.t.Fatal(err)
+		}
+		_, err = btfMemberOffsetAny(kernel, "linux_binprm", "is_check")
+		return err == nil
+	}
 	var u unix.Utsname
 	if err := unix.Uname(&u); err != nil {
 		v.t.Fatal(err)

@@ -346,11 +346,12 @@ Without these secrets, the release job will not be run.
 
 The job `test-enforce-exec-product-objects` needs no secrets and pushes
 nothing. In the pinned Debian trixie container, with the pinned toolchain,
-it rebuilds the eight shared product objects
-(`gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check`) at the
+it rebuilds the four shared product objects (stage 1: one CO-RE object per
+profile for every kernel;
+`gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check`) at the
 neutral paths `/src/inspektor-gadget` and `/src/btf`, and compares each
-sha256 with `fullruntime/testdata/shared_product_pins.tsv`. It then packages
-each object into its product gadget image
+sha256 with `fullruntime/testdata/shared_product_objects.tsv`. It then
+packages each object into the product gadget image of each pinned kernel
 (`go run ./gadgets/enforce_exec/fullruntime/cmd/productimages`) and
 compares the manifest and index digests with
 `fullruntime/testdata/shared_product_images.tsv`

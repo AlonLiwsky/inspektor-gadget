@@ -38,7 +38,9 @@ func TestOrderLifecycleMovementDecision(t *testing.T) {
 		"l_exit":      tracing("sched_process_exit", ebpf.AttachTraceRawTp),
 		"m_exec":      tracing("sched_process_exec", ebpf.AttachTraceRawTp),
 	}
-	want := []string{"h_free", "l_exit", "g_alloc", "i_alloc", "e_migrate", "f_newtask", "j_command", "k_publisher", "m_exec", "d_terminal", "c_entry", "b_begin", "a_check"}
+	// D1: the sched_process_exec tp_btf (kernel witness) attaches after the
+	// exec terminals.
+	want := []string{"h_free", "l_exit", "g_alloc", "i_alloc", "e_migrate", "f_newtask", "j_command", "k_publisher", "d_terminal", "c_entry", "m_exec", "b_begin", "a_check"}
 	for range 20 { // map order is random; the result must not be
 		if got := Order(programs); !reflect.DeepEqual(got, want) {
 			t.Fatalf("order %v, want %v", got, want)

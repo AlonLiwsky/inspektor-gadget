@@ -427,6 +427,15 @@ func TestOpaqueRealPolicyVerdictAttached(t *testing.T) {
 		}
 	}
 	selected := map[string]*ebpf.ProgramSpec{}
+	// Stage 1 (D1 LSM-only objects, recognised by the d1_witness map): no
+	// failure-frame kprobes and no capsule entry fentry; the exec frame is
+	// lsm/bprm_creds_for_exec .. tp_btf/sys_exit and the success terminal
+	// is lsm/bprm_committed_creds.
+	lsmOnly := spec.Maps["d1_witness"] != nil
+	capsuleOrder := opaqueVerdictCapsuleOrder
+	if lsmOnly {
+		capsuleOrder = slices.DeleteFunc(slices.Clone(capsuleOrder), func(n string) bool { return n == "real_owner_capsule_entry" })
+	}
 	need := []string{
 		"opaque_real_live_bootstrap_control", "opaque_real_live_bootstrap_birth",
 		"opaque_real_live_bootstrap_qualify", "opaque_real_owner_child_source_candidate",
@@ -504,8 +513,15 @@ func TestOpaqueRealPolicyVerdictAttached(t *testing.T) {
 	if exitStale && spec.Maps["opaque_real_exit_inject_every"] == nil {
 		t.Fatal("IG_OPAQUE_REAL_VERDICT_EXIT_STALE needs ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_INJECTOR_DIAGNOSTIC")
 	}
+	if lsmOnly {
+		// S1 F-PERF: the failure terminal is part of the one syscall-exit
+		// program (real_owner_capsule_terminal), no program of its own.
+		need = slices.DeleteFunc(need, func(n string) bool {
+			return strings.HasPrefix(n, "opaque_real_owner_failure_outer_") || strings.HasPrefix(n, "opaque_real_owner_failure_handler_") || n == "opaque_real_owner_failure_fexit_probe"
+		})
+	}
 	need = append(need, opaqueVerdictCapsuleFree)
-	need = append(need, opaqueVerdictCapsuleOrder...)
+	need = append(need, capsuleOrder...)
 	for _, program := range opaqueVerdictGraphs {
 		need = append(need, program)
 	}
@@ -752,47 +768,56 @@ func TestOpaqueRealPolicyVerdictAttached(t *testing.T) {
 		taskLocator == 0 || keys.Next(&physical, &taskLocator) {
 		t.Fatalf("expected one real opaque TASK: err=%v", keys.Err())
 	}
-	kallsyms, err := os.Open("/proc/kallsyms")
-	if err != nil {
-		t.Fatal(err)
-	}
-	outer, err := opaqueDiagnosticExecOuterSymbol(kallsyms)
-	if err == nil {
-		_, err = kallsyms.Seek(0, io.SeekStart)
-	}
-	var handler string
-	if err == nil {
-		handler, err = opaqueDiagnosticExecHandlerSymbol(kallsyms, os.Getenv("IG_OPAQUE_REAL_LIVE_HANDLER_SYMBOL"))
-	}
-	kallsyms.Close()
-	if err != nil {
-		t.Fatalf("resolve diagnostic exec frames: %v", err)
-	}
-	attachKprobe := func(symbol, name string, ret bool) {
-		t.Helper()
-		var l link.Link
-		var err error
-		if ret {
-			l, err = link.Kretprobe(symbol, c.Programs[name], nil)
-		} else {
-			l, err = link.Kprobe(symbol, c.Programs[name], nil)
-		}
+	if !lsmOnly {
+		kallsyms, err := os.Open("/proc/kallsyms")
 		if err != nil {
-			t.Fatalf("attach %s: %v", name, err)
+			t.Fatal(err)
 		}
-		links = append(links, l)
+		outer, err := opaqueDiagnosticExecOuterSymbol(kallsyms)
+		if err == nil {
+			_, err = kallsyms.Seek(0, io.SeekStart)
+		}
+		var handler string
+		if err == nil {
+			handler, err = opaqueDiagnosticExecHandlerSymbol(kallsyms, os.Getenv("IG_OPAQUE_REAL_LIVE_HANDLER_SYMBOL"))
+		}
+		kallsyms.Close()
+		if err != nil {
+			t.Fatalf("resolve diagnostic exec frames: %v", err)
+		}
+		attachKprobe := func(symbol, name string, ret bool) {
+			t.Helper()
+			var l link.Link
+			var err error
+			if ret {
+				l, err = link.Kretprobe(symbol, c.Programs[name], nil)
+			} else {
+				l, err = link.Kprobe(symbol, c.Programs[name], nil)
+			}
+			if err != nil {
+				t.Fatalf("attach %s: %v", name, err)
+			}
+			links = append(links, l)
+		}
+		attachKprobe(outer, "opaque_real_owner_failure_outer_exit", true)
+		attachKprobe(handler, "opaque_real_owner_failure_handler_exit", true)
+		attachKprobe(handler, "opaque_real_owner_failure_handler_enter", false)
+		attachKprobe(outer, "opaque_real_owner_failure_outer_enter", false)
 	}
-	attachKprobe(outer, "opaque_real_owner_failure_outer_exit", true)
-	attachKprobe(handler, "opaque_real_owner_failure_handler_exit", true)
-	attachKprobe(handler, "opaque_real_owner_failure_handler_enter", false)
-	attachKprobe(outer, "opaque_real_owner_failure_outer_enter", false)
 	// The capsule's death retire (opaqueVerdictCapsuleFree) is already
 	// attached with the task_free programs, before every capsule hook.
-	for _, name := range append([]string{
-		"opaque_real_owner_reader_success_probe",
-		"opaque_real_owner_failure_fexit_probe",
-	}, opaqueVerdictCapsuleOrder...) {
-		l, err := link.AttachTracing(link.TracingOptions{Program: c.Programs[name]})
+	terminals := []string{"opaque_real_owner_reader_success_probe", "opaque_real_owner_failure_fexit_probe"}
+	if lsmOnly {
+		terminals = terminals[:1]
+	}
+	for _, name := range append(terminals, capsuleOrder...) {
+		var l link.Link
+		var err error
+		if c.Programs[name].Type() == ebpf.LSM {
+			l, err = link.AttachLSM(link.LSMOptions{Program: c.Programs[name]})
+		} else {
+			l, err = link.AttachTracing(link.TracingOptions{Program: c.Programs[name]})
+		}
 		if err != nil {
 			t.Fatalf("attach %s: %v", name, err)
 		}
@@ -1187,11 +1212,14 @@ func (v *opaqueVerdictRun) attachChildSource(attach func(string) link.Link) {
 		v.t.Fatal(err)
 	}
 	v.t.Cleanup(func() { _ = birth.Close() })
-	free, err := link.Kprobe("free_task", v.c.Programs["opaque_real_owner_birth_free_task_candidate"], nil)
-	if err != nil {
-		v.t.Fatal(err)
+	// LSM-only objects retire births in lsm/task_free (no kprobe).
+	if p := v.c.Programs["opaque_real_owner_birth_free_task_candidate"]; p != nil {
+		free, err := link.Kprobe("free_task", p, nil)
+		if err != nil {
+			v.t.Fatal(err)
+		}
+		v.t.Cleanup(func() { _ = free.Close() })
 	}
-	v.t.Cleanup(func() { _ = free.Close() })
 }
 
 // expectRole checks the committed UID history row for policy uid 1/epoch 1.

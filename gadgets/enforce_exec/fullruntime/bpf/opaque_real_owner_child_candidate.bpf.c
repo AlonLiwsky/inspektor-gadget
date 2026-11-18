@@ -2525,6 +2525,14 @@ struct {
 struct se_failure_outer_frame {
 	__u64 physical, bprm, cookie, locator, invocation, scope, generation;
 	__u32 depth, uncertain;
+#ifdef ENFORCE_EXEC_D1_LSM_ONLY
+	/* task->self_exec_id at the begin of this exec. The kernel increments
+	 * it in begin_new_exec(), at the point of no return, so an unchanged
+	 * value at a later syscall exit is independent proof that this exec
+	 * never committed a new image. */
+	__u64 exec_id;
+	__u32 exec_id_known, exec_id_reserved;
+#endif
 };
 struct se_failure_handler_frame {
 	__u64 bprm;
@@ -2585,6 +2593,295 @@ real_owner_failure_bind_receipt(const struct se_exec_terminal_receipt *receipt)
 	return 0;
 }
 
+#ifdef ENFORCE_EXEC_D1_LSM_ONLY
+/* D1 kernel witness (review F2; per-task marks: S1 reviews 1 and 2), read
+ * by the node's fail-closed poller. BPF LSM programs run through
+ * ftrace-managed trampolines and stop silently when ftrace is disabled;
+ * tracepoint programs do not. Each LSM hook that has a tracepoint the
+ * kernel fires LATER on the same path MARKS the task, and the tracepoint
+ * checks the mark and clears it:
+ *   lsm/bprm_committed_creds marks the executing task with its
+ *   (self_exec_id, start_time); tp_btf/sched_process_exec requires that
+ *   exact mark ([6] counts every exec without it);
+ *   lsm/task_alloc marks the CHILD with (parent, parent start_time);
+ *   tp_btf/sched_process_fork requires that exact mark on the child ([7]
+ *   counts every fork without it).
+ * The marks live in BPF task storage (S1 review N1): each is freed with
+ * its task (free_task), so there is no shared capacity a user could fill
+ * (io_uring and vhost workers never reach sched_process_fork, zombies of
+ * execs killed after the point of no return keep theirs until reaped:
+ * both only hold their OWN storage) and no task_struct address reuse can
+ * carry a mark to another task. A mark is per event, never a credit.
+ * io_uring/vhost workers (PF_IO_WORKER, PF_USER_WORKER, set before
+ * security_task_alloc) are marked like any child, deliberately: the mark
+ * is theirs alone and dies with them, and no flag test is needed.
+ * The LSM side creates the storage (LSM programs use the non-recursive
+ * helper: creation only fails on an allocation failure, and then refuses
+ * that one fork or exec); the tracepoint
+ * side only looks it up (a lookup is lock-free and never refused for
+ * recursion) and clears it in place.
+ * Every cell is its own 64-byte line (S1 review N2): the per-exit latch
+ * reads never share a line with the exec/fork counters.
+ *   [0] tp exec  [1] lsm commit  [2] tp fork  [3] lsm alloc: counts,
+ *       informational only (an event failing between the hooks banks
+ *       lsm > tp, so a comparison of counts cannot prove a silenced hook);
+ *   [4] latched to 1 by the syscall-exit program when it reads
+ *       kernel.ftrace_enabled == 0 (the sysctl write that clears it returns
+ *       through that very tracepoint);
+ *   [5] stale exec frames healed at a later begin (F1), informational;
+ *   [6] execs without their LSM mark, [7] forks without their LSM mark;
+ *   [8] set to 1 at a syscall exit when the ftrace_enabled ksym resolved,
+ *   [9] set to 1 when it did not (the weak ksym is 0: signal [4] is
+ *       disarmed; the node refuses to start);
+ *   [10] mark creations that failed (S1 review R1: an allocation
+ *       failure; that one fork or exec is refused with -ENOMEM and never
+ *       reaches its tracepoint, so the node does not latch).
+ * There is no such pair for task_free: sched_process_free fires when the
+ * task is released, lsm/task_free at the final put, which a held reference
+ * delays without bound. User space only reads this map. */
+#define D1_WIT_TP_EXEC 0
+#define D1_WIT_LSM_COMMIT 1
+#define D1_WIT_TP_FORK 2
+#define D1_WIT_LSM_ALLOC 3
+#define D1_WIT_FTRACE_OFF 4
+#define D1_WIT_HEALED 5
+#define D1_WIT_EXEC_UNMARKED 6
+#define D1_WIT_FORK_UNMARKED 7
+#define D1_WIT_KSYM_RESOLVED 8
+#define D1_WIT_KSYM_UNRESOLVED 9
+#define D1_WIT_MARK_FAILED 10
+#define D1_WIT_CELLS 11
+struct d1_witness_cell {
+	__u64 value;
+	__u64 pad[7];
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, D1_WIT_CELLS);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, struct d1_witness_cell);
+} d1_witness SEC(".maps");
+struct d1_exec_mark {
+	__u64 exec_id;
+	__u64 start;
+};
+struct d1_fork_mark {
+	__u64 parent;
+	__u64 parent_start;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, struct d1_exec_mark);
+} d1_exec_marks SEC(".maps");
+struct {
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, struct d1_fork_mark);
+} d1_fork_marks SEC(".maps");
+/* Counted from load, with no arming step: the loader attaches each LSM half
+ * BEFORE its tracepoint half and detaches in reverse (nativeattach.Rank), so
+ * a tracepoint half never checks an event whose LSM half was not attached
+ * yet, except an exec or fork that was between its two hooks for the whole
+ * attach of both links (an unmarked event: StartNode refuses, see
+ * sharedKernelWitnessArmed; fail safe). */
+static __always_inline void d1_witness_count(__u32 cell)
+{
+	struct d1_witness_cell *c = bpf_map_lookup_elem(&d1_witness, &cell);
+	if (c)
+		__sync_fetch_and_add(&c->value, 1);
+}
+/* A latch: read first, write only on the first transition (N2). */
+static __always_inline void d1_witness_latch(__u32 cell)
+{
+	struct d1_witness_cell *c = bpf_map_lookup_elem(&d1_witness, &cell);
+	if (c && !*(volatile __u64 *)&c->value)
+		*(volatile __u64 *)&c->value = 1;
+}
+static __always_inline void d1_witness_set(__u32 cell)
+{
+	if (cell == D1_WIT_FTRACE_OFF || cell == D1_WIT_KSYM_RESOLVED ||
+	    cell == D1_WIT_KSYM_UNRESOLVED)
+		d1_witness_latch(cell);
+	else
+		d1_witness_count(cell);
+}
+/* LSM half of the fork pair: mark the child in its own task storage.
+ * noinline: off the task_alloc frame (512-byte combined stack). Returns -1
+ * when the storage cannot be created (an allocation failure): S1 review R1,
+ * the caller then refuses THIS fork (-ENOMEM), which never reaches its
+ * tracepoint, instead of latching the node. */
+static __attribute__((noinline)) int d1_fork_mark(struct task_struct *child)
+{
+	struct task_struct *parent = bpf_get_current_task_btf();
+	struct d1_fork_mark *mark = bpf_task_storage_get(
+		&d1_fork_marks, child, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+	if (!mark) {
+		d1_witness_count(D1_WIT_MARK_FAILED);
+		return -1;
+	}
+	mark->parent = (__u64)parent;
+	mark->parent_start = parent->start_time;
+	return 0;
+}
+/* S1 review R1: the exec mark's storage is created at bprm_creds_for_exec,
+ * which can refuse the exec (-ENOMEM) on an allocation failure;
+ * bprm_committed_creds, which cannot refuse, only fills it. */
+static __attribute__((noinline)) int d1_exec_mark_reserve(void)
+{
+	struct d1_exec_mark *mark = bpf_task_storage_get(
+		&d1_exec_marks, bpf_get_current_task_btf(), 0,
+		BPF_LOCAL_STORAGE_GET_F_CREATE);
+	if (!mark) {
+		d1_witness_count(D1_WIT_MARK_FAILED);
+		return -1;
+	}
+	return 0;
+}
+/* LSM half of the exec pair: mark the executing task after its exec id
+ * moved (begin_new_exec increments self_exec_id before this hook). The
+ * storage exists since this exec's bprm_creds_for_exec (same task). */
+static __attribute__((noinline)) void d1_exec_mark(void)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+	struct d1_exec_mark *mark =
+		bpf_task_storage_get(&d1_exec_marks, task, 0, 0);
+	if (!mark) {
+		d1_witness_count(D1_WIT_MARK_FAILED);
+		return;
+	}
+	mark->exec_id = task->self_exec_id;
+	mark->start = task->start_time;
+}
+#ifdef ENFORCE_EXEC_D1_UNRESOLVED_KSYM_DIAGNOSTIC
+#ifndef SE_PRODUCT_DIAGNOSTIC_TWIN
+#error "the D1 unresolved-ksym injector is test only (diagnostic twin)"
+#endif
+/* Test twin only: a weak ksym no kernel has, as when ftrace_enabled cannot
+ * be resolved (no CONFIG_KALLSYMS_ALL, a restricted kallsyms). */
+#define D1_FTRACE_KSYM d1_s1_no_such_ksym
+#else
+#define D1_FTRACE_KSYM ftrace_enabled
+#endif
+extern const void D1_FTRACE_KSYM __ksym __weak;
+SEC("tp_btf/sched_process_exec")
+int BPF_PROG(d1_witness_exec, struct task_struct *physical, int old_pid,
+	     struct linux_binprm *bprm)
+{
+	(void)old_pid;
+	(void)bprm;
+	d1_witness_count(D1_WIT_TP_EXEC);
+	/* The tracepoint half of the exec pair: the executing task must carry
+	 * the mark of THIS exec (its current exec id and start time). */
+	struct d1_exec_mark *mark =
+		bpf_task_storage_get(&d1_exec_marks, physical, 0, 0);
+	if (!mark || mark->exec_id != physical->self_exec_id ||
+	    mark->start != physical->start_time)
+		d1_witness_count(D1_WIT_EXEC_UNMARKED);
+	if (mark)
+		mark->exec_id = mark->start = 0;
+	return 0;
+}
+/* The tracepoint half of the fork pair (S1 review N1: a tp_btf program, so
+ * the child is a typed task pointer for its task storage). */
+SEC("tp_btf/sched_process_fork")
+int BPF_PROG(d1_witness_fork, struct task_struct *parent,
+	     struct task_struct *child)
+{
+	d1_witness_count(D1_WIT_TP_FORK);
+	struct d1_fork_mark *mark =
+		bpf_task_storage_get(&d1_fork_marks, child, 0, 0);
+	if (!mark || mark->parent != (__u64)parent ||
+	    mark->parent_start != parent->start_time)
+		d1_witness_count(D1_WIT_FORK_UNMARKED);
+	if (mark)
+		mark->parent = mark->parent_start = 0;
+	return 0;
+}
+#ifdef ENFORCE_EXEC_D1_SKIP_EXIT_DIAGNOSTIC
+#ifndef SE_PRODUCT_DIAGNOSTIC_TWIN
+#error "the D1 skipped-syscall-exit injector is test only (diagnostic twin)"
+#endif
+/* D1 oracle, test twin only: while armed with a cgroup ID, the two
+ * syscall-exit programs do nothing for tasks of that cgroup, as for a task
+ * that missed the syscall-tracepoint work flag (review F1). */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_RDONLY_PROG);
+	__type(key, __u32);
+	__type(value, __u64);
+} d1_skip_sys_exit SEC(".maps");
+static __always_inline int d1_sys_exit_skipped(void)
+{
+	__u32 zero = 0;
+	const __u64 *armed = bpf_map_lookup_elem(&d1_skip_sys_exit, &zero);
+	return armed && *armed && *armed == bpf_get_current_cgroup_id();
+}
+#define D1_SYS_EXIT_SKIPPED() d1_sys_exit_skipped()
+#else
+#define D1_SYS_EXIT_SKIPPED() 0
+#endif
+#endif
+#ifdef ENFORCE_EXEC_D1_LSM_ONLY
+/* D1 (LSM-only prototype): no probe on do_execveat_common.isra.N,
+ * exec_binprm or search_binary_handler. The exec frame of the executing
+ * task is opened by lsm/bprm_creds_for_exec (called exactly once per
+ * bprm_execve, before the first bprm_check pass, with the bprm of this exec)
+ * and closed by the task's next tp_btf/sys_exit (the return of that execve
+ * or execveat, whatever its number or ABI: a task between its
+ * bprm_creds_for_exec and its syscall exit runs no other system call).
+ * Both frames keep their original types and meaning: the outer frame is the
+ * one exec of this task, the handler frame carries its bprm for the whole
+ * exec (the exec_binprm shape of the 6.18 pin). A frame still present at a
+ * new begin is a FINISHED exec of this task whose syscall exit was not
+ * observed (a task runs one exec at a time): real_owner_failure_frames_heal
+ * settles and removes it first. Only a frame it cannot judge (no recorded
+ * exec id) reaches this function, and is marked uncertain exactly as a
+ * nested kprobe entry was, so this exec cannot bind a receipt (fail closed),
+ * and its own exit removes it. */
+static __attribute__((noinline)) void
+real_owner_failure_frames_open(__u64 key, __u64 bprm)
+{
+	struct se_failure_outer_frame *old =
+		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
+	if (old) {
+		struct se_failure_handler_frame *stale =
+			bpf_map_lookup_elem(&se_failure_handler_frames, &key);
+		old->uncertain = 1;
+		if (old->depth < 255)
+			old->depth++;
+		if (stale)
+			stale->uncertain = 1;
+		return;
+	}
+	struct se_failure_outer_frame frame = { .physical = key, .depth = 1 };
+	if (!key || !bprm)
+		return;
+	struct task_struct *task = bpf_get_current_task_btf();
+	__u64 exec_id = 0;
+	if (task && !BPF_CORE_READ_INTO(&exec_id, task, self_exec_id)) {
+		frame.exec_id = exec_id;
+		frame.exec_id_known = 1;
+	}
+	if (bpf_map_update_elem(&se_failure_outer_frames, &key, &frame,
+				BPF_NOEXIST)) {
+		SE_DEFERRED_STORAGE_REFUSED(1);
+		return;
+	}
+	(void)bpf_map_delete_elem(&se_failure_handler_frames, &key);
+	struct se_failure_handler_frame handler = {
+		.bprm = bprm,
+		.depth = 1,
+	};
+	if (bpf_map_update_elem(&se_failure_handler_frames, &key, &handler,
+				BPF_NOEXIST))
+		SE_DEFERRED_STORAGE_REFUSED(2);
+}
+#else
 SEC("kprobe/do_execveat_common.isra.38")
 int BPF_KPROBE(opaque_real_owner_failure_outer_enter)
 {
@@ -2680,6 +2977,7 @@ int BPF_KRETPROBE(opaque_real_owner_failure_outer_exit, int ret)
 	(void)bpf_map_delete_elem(&se_failure_outer_frames, &key);
 	return 0;
 }
+#endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_FAILURE_SOURCE_COMPLETION_DIAGNOSTIC
 /* End this producer's lexical frame before entering lock-bearing completion.
  * The independent outer tuple authenticates the receipt; the inner handler
@@ -2706,6 +3004,77 @@ real_owner_failure_fexit_publish(__u64 key, __u64 bprm)
  * user-exec frame remains live while bprm_execve returns; no ordering between
  * fexit and a kretprobe on the same function is assumed. kernel_execve lacks
  * that outer frame and is deliberately not certified by this variant. */
+#ifdef ENFORCE_EXEC_D1_LSM_ONLY
+/* D1, review F1: heal a stale frame at the task's next exec begin. A task
+ * that never runs the syscall-exit program (it was forked while the first
+ * sys_exit link set the per-task syscall-tracepoint flag, a kernel_execve,
+ * a skipped program) would keep its frame forever and every later exec of
+ * it would be uncertain. At a new begin the earlier exec has returned, so:
+ *  - self_exec_id changed: that exec committed its image; its success
+ *    terminal is the LSM hook's business. The frame is only removed; a
+ *    receipt still REGISTERED stays pending and refuses this exec.
+ *  - self_exec_id unchanged: that exec committed nothing, it FAILED. The
+ *    receipt its frame was bound to gets the FAILURE terminal and its WORK
+ *    is completed, exactly as at a syscall exit, then the frame is removed.
+ * The return value of the missed exit is not needed for either. */
+static __attribute__((noinline)) int real_owner_failure_frames_heal(__u64 key)
+{
+	const struct se_failure_outer_frame *old =
+		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
+	if (!old || !old->exec_id_known)
+		return 0;
+	__u64 bprm = old->bprm, then = old->exec_id, now = 0;
+	struct task_struct *task = bpf_get_current_task_btf();
+	if (!task || BPF_CORE_READ_INTO(&now, task, self_exec_id))
+		return 0;
+	if (now == then && bprm && real_owner_failure_fexit_publish(key, bprm))
+		SE_WORK_SYNC_RETURN(
+			SE_SETTLE_SLOT(real_owner_work_completion_shape(key)),
+			REAL_OWNER_WORK_SYNC_SETTLED_EXEC);
+	(void)bpf_map_delete_elem(&se_failure_handler_frames, &key);
+	(void)bpf_map_delete_elem(&se_failure_outer_frames, &key);
+	d1_witness_set(D1_WIT_HEALED);
+	return 1;
+}
+/* D1: the failure terminal. The executing task's syscall exit after a failed
+ * exec publishes FAILURE for the receipt its own outer frame was bound to,
+ * completes the WORK as the fexit producer did, then closes the frames.
+ * FAILURE needs three independent facts, never the return value alone: a
+ * negative syscall return, the frame bound to that exact receipt, and
+ * task->self_exec_id still the value read at this exec's begin (the kernel
+ * increments it at the point of no return, so the exec committed no new
+ * image). A zero return, an unreadable or changed self_exec_id publishes
+ * nothing: a successful exec's terminal comes only from the
+ * bprm_committed_creds hook, and a receipt still REGISTERED after it stays
+ * pending (fail closed). */
+/* S1 F-PERF: no longer a program of its own. The one syscall-exit program
+ * (real_owner_capsule_terminal) calls it for exec syscalls only; it runs
+ * before the capsule part, as its own program did (attach order by name). */
+#define S1_HAVE_FAILURE_TERMINAL 1
+static __attribute__((noinline)) int
+real_owner_failure_terminal(long ret)
+{
+	__u64 key = (__u64)bpf_get_current_task_btf();
+	const struct se_failure_outer_frame *frame =
+		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
+	if (!frame)
+		return 0;
+	__u64 bprm = frame->bprm;
+	__u64 exec_id = 0;
+	struct task_struct *task = bpf_get_current_task_btf();
+	int same_image = frame->exec_id_known && task &&
+			 !BPF_CORE_READ_INTO(&exec_id, task, self_exec_id) &&
+			 exec_id == frame->exec_id;
+	if (ret < 0 && bprm && same_image &&
+	    real_owner_failure_fexit_publish(key, bprm))
+		SE_WORK_SYNC_RETURN(
+			SE_SETTLE_SLOT(real_owner_work_completion_shape(key)),
+			REAL_OWNER_WORK_SYNC_SETTLED_EXEC);
+	(void)bpf_map_delete_elem(&se_failure_handler_frames, &key);
+	(void)bpf_map_delete_elem(&se_failure_outer_frames, &key);
+	return 0;
+}
+#else
 SEC("fexit/bprm_execve")
 int BPF_PROG(opaque_real_owner_failure_fexit_probe, struct linux_binprm *bprm)
 {
@@ -2721,6 +3090,7 @@ int BPF_PROG(opaque_real_owner_failure_fexit_probe, struct linux_binprm *bprm)
 	 * receipt, its later terminal CAS is a no-op, not a second completion. */
 	return 0;
 }
+#endif
 #endif
 #endif
 
@@ -3395,8 +3765,14 @@ long BPF_PROG(opaque_real_owner_birth_signal0_diagnostic,
 {
 	(void)info;
 	(void)cred;
-	if (prior || signal || !target || !real_owner_image_configured())
-		return prior;
+	/* D3: kernels that check the LSM return range ([-4095, 0]; measured:
+	 * RHEL 5.14 el9 and 6.12 el10, Fedora 6.17, Ubuntu 6.17) reject a
+	 * return of the unbounded prior value, and a clamp did not survive
+	 * the compiler. This diagnostic is never attached by the product. */
+	if (prior)
+		return -1; /* -EPERM: a constant the verifier can bound */
+	if (signal || !target || !real_owner_image_configured())
+		return 0;
 	(void)real_owner_birth_qualify(target);
 	return 0;
 }
@@ -3484,11 +3860,19 @@ long BPF_PROG(opaque_real_owner_child_source_candidate,
 	      struct task_struct *child, unsigned long clone_flags, int prior)
 {
 	(void)child;
+#ifdef ENFORCE_EXEC_D1_LSM_ONLY
+	d1_witness_count(D1_WIT_LSM_ALLOC);
+	int unmarked = d1_fork_mark(child);
+#endif
 	/* Preserve the verifier's signed LSM retval range. The BPF_PROG int
 	 * argument cast can lose that range on newer kernels. */
 	__s64 prior_ret = (__s64)ctx[2];
 	if (prior_ret)
 		return prior_ret;
+#ifdef ENFORCE_EXEC_D1_LSM_ONLY
+	if (unmarked)
+		return -12; /* -ENOMEM: this fork only (S1 review R1) */
+#endif
 #ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 	/* A reused task_struct address must never inherit a prior receipt. If
 	 * deletion fails, NOEXIST at publication leaves it unqualified. */
@@ -3846,6 +4230,7 @@ int opaque_real_owner_successful_birth_candidate(
 	return 0;
 }
 
+#ifndef ENFORCE_EXEC_D1_LSM_ONLY
 /* security_task_free is skipped when security_task_alloc itself rejects a
  * fork. free_task is reached by that failure path after an RCU grace period;
  * it also covers later successful exits. Pointer reuse cannot inherit an
@@ -3857,6 +4242,12 @@ int BPF_KPROBE(opaque_real_owner_birth_free_task_candidate,
 	real_owner_birth_retire((__u64)task, 1);
 	return 0;
 }
+#endif
+/* D1: no kprobe/free_task. Since Linux 5.1 security_task_alloc() calls
+ * security_task_free() when a task_alloc hook rejects the fork, and every
+ * other path that frees a task whose task_alloc hooks ran goes through
+ * security_task_free(), so lsm/task_free (below) retires the birth receipt
+ * before the address can be reused. */
 #endif
 
 /* A final-free lease pins the exact physical TASK while the two independent
@@ -4573,6 +4964,11 @@ SEC("lsm/task_free")
 int BPF_PROG(opaque_real_owner_child_final_free_candidate,
 	     struct task_struct *physical)
 {
+#if defined(ENFORCE_EXEC_D1_LSM_ONLY) && defined(SE_REAL_OWNER_BIRTH_QUALIFY)
+	/* D1: the only birth retire (was also kprobe/free_task, which ran
+	 * whatever the gate state): retire before the gate check. */
+	real_owner_birth_retire((__u64)physical, 0);
+#endif
 	if (!real_owner_image_configured()) {
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE
 		/* Consume a tombstone the armed exit left: a gate disarmed
@@ -4582,7 +4978,7 @@ int BPF_PROG(opaque_real_owner_child_final_free_candidate,
 #endif
 		return 0;
 	}
-#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
+#if defined(SE_REAL_OWNER_BIRTH_QUALIFY) && !defined(ENFORCE_EXEC_D1_LSM_ONLY)
 	real_owner_birth_retire((__u64)physical, 0);
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_RECOVERED_INITIAL_TASK_DIAGNOSTIC
@@ -5632,12 +6028,14 @@ static long real_owner_reach_step(__u64 index, void *opaque)
 	return 0;
 }
 /* The current mount namespace's event counter (bumped by every mount tree
- * change), 0 unreadable; 1 when the kernel has none (nothing to bracket). */
+ * change), 0 unreadable or absent: a kernel without the counter cannot
+ * bracket the walk, so reachability is UNKNOWN there (never a constant that
+ * makes the before/after comparison always match). */
 static __always_inline __u64 real_owner_mount_event(struct task_struct *task)
 {
 	__u64 event = 0;
 	if (!bpf_core_field_exists(struct mnt_namespace, event))
-		return 1;
+		return 0;
 	if (BPF_CORE_READ_INTO(&event, task, nsproxy, mnt_ns, event))
 		return 0;
 	return event + 1;
@@ -6916,6 +7314,135 @@ static __always_inline void real_owner_capsule_stat(__u32 index)
  * (real_owner_capsule_free), terminal, entry, begin, then the LSM
  * admission; detach in exact reverse (the death retire is attached before
  * any capsule can exist and detached after the last one can be created). */
+#ifdef ENFORCE_EXEC_D1_LSM_ONLY
+/* D1: the capsule's three exec-frame programs become two stable hooks.
+ * Attach order stays a hard invariant: the death retire, then this terminal
+ * (and the failure terminal above), then the begin, then the LSM admission;
+ * detach in exact reverse.
+ *
+ * Terminal: the executing task's syscall exit. The capsule's own bprm
+ * identifies its exec (a task runs one exec at a time and this exit follows
+ * it), so only OPEN or FROZEN capsules of this task are retired; the entry
+ * marker is cleared either way. */
+/* S1 F-PERF: the exec syscalls whose exit closes an exec frame (orig_ax as
+ * the syscall-exit tracepoint sees it): x86_64 execve/execveat, the ia32
+ * compat execve/execveat, and the x32 execve/execveat (with the x32 bit). A
+ * number shared with an unrelated 64-bit syscall (11 is munmap there) only
+ * takes the slow path below; it decides nothing. A task between its
+ * bprm_creds_for_exec and the exit of that exec runs no other system call,
+ * and an exec frame or capsule left open by an exit this filter missed is
+ * settled exactly like a skipped exit: by the stale-frame heal at the task's
+ * next exec begin or by task_free (the receipt stays pending: fail closed). */
+static __always_inline int real_owner_exec_syscall(long nr)
+{
+	return nr == 59 || nr == 322 || nr == 11 || nr == 358 ||
+	       nr == (0x40000000L | 520) || nr == (0x40000000L | 545);
+}
+/* The capsule part of the one syscall-exit program (exec syscalls only).
+ * Each part is its own subprogram called from a frame-less program body,
+ * so the deepest chain (the failure terminal's completion) costs no more
+ * stack than when it was a program of its own (512-byte combined stack,
+ * as the 6.12 verifier counts it). */
+static __attribute__((noinline)) int real_owner_capsule_exit(long ret)
+{
+	__u64 task = (__u64)bpf_get_current_task_btf();
+	__u64 bprm = 0;
+	/* Two independent lookups, never combined: the verifier refuses
+	 * arithmetic on two map-value pointers. */
+	struct se_exec_capsule *c = real_owner_capsule(0);
+	if (c) {
+		bpf_spin_lock(&c->lock);
+		if (c->task == task &&
+		    (c->phase == SE_CAP_OPEN || c->phase == SE_CAP_FROZEN))
+			bprm = c->bprm;
+		bpf_spin_unlock(&c->lock);
+	}
+	if (!bprm) {
+		struct se_exec_marker *m = real_owner_marker(0);
+		if (m && m->task == task) {
+			m->task = 0;
+			m->bprm = 0;
+		}
+		return 0;
+	}
+	__u64 id = bpf_get_current_pid_tgid();
+	(void)se_cap_on_terminal(id >> 32, (__u32)id, task, bprm, ret);
+	return 0;
+}
+/* The ftrace witness of every syscall exit: a read-only latch check and one
+ * read of the sysctl's variable; 0 latches cell [4] (never cleared here). */
+static __attribute__((noinline)) int d1_ftrace_witness(void)
+{
+	if (&D1_FTRACE_KSYM) {
+		int enabled = 1;
+		d1_witness_set(D1_WIT_KSYM_RESOLVED);
+		if (!bpf_probe_read_kernel(&enabled, sizeof(enabled),
+					   &D1_FTRACE_KSYM) &&
+		    !enabled)
+			d1_witness_set(D1_WIT_FTRACE_OFF);
+	} else {
+		/* Unresolved weak ksym: signal [4] is disarmed. */
+		d1_witness_set(D1_WIT_KSYM_UNRESOLVED);
+	}
+	return 0;
+}
+/* The ONE syscall-exit program (S1 F-PERF: it was two). Every syscall exit
+ * of the node pays for the ftrace witness and one load of the syscall
+ * number; only the exit of an exec syscall reaches the failure terminal
+ * (first, as when it was its own program) and the capsule terminal. */
+SEC("tp_btf/sys_exit")
+int BPF_PROG(real_owner_capsule_terminal, struct pt_regs *regs, long ret)
+{
+	(void)d1_ftrace_witness();
+	if (!real_owner_exec_syscall(regs->orig_ax) || D1_SYS_EXIT_SKIPPED())
+		return 0;
+#ifdef S1_HAVE_FAILURE_TERMINAL
+	(void)real_owner_failure_terminal(ret);
+#endif
+	return real_owner_capsule_exit(ret);
+}
+struct linux_binprm___capsule_check {
+	unsigned int is_check : 1;
+} __attribute__((preserve_access_index));
+/* Entry, begin and the failure frames of one exec, in the one hook the
+ * kernel calls once per bprm_execve with cred_guard_mutex held (the
+ * capsule's serialization premise). An LSM program is never skipped by the
+ * tracing recursion guard. It never denies: a storage fault is counted and
+ * the admission then fails closed on its own checks. */
+/* The capsule part in its own frame: the stale-frame heal's completion
+ * chain must start from a small program frame (512-byte combined stack). */
+static __attribute__((noinline)) int
+real_owner_capsule_begin_core(struct linux_binprm *bprm)
+{
+	__u64 id = bpf_get_current_pid_tgid();
+	__u64 task = (__u64)bpf_get_current_task_btf();
+	__u32 is_check = 0;
+	struct linux_binprm___capsule_check *checked = (void *)bprm;
+	if (bpf_core_field_exists(checked->is_check))
+		is_check = BPF_CORE_READ_BITFIELD_PROBED(checked, is_check);
+	se_cap_on_entry((__u32)id, task, (__u64)bprm);
+	return se_cap_on_begin(id >> 32, (__u32)id, task, (__u64)bprm,
+			       is_check);
+}
+SEC("lsm/bprm_creds_for_exec")
+long BPF_PROG(real_owner_capsule_begin, struct linux_binprm *bprm, int prior)
+{
+	(void)prior;
+	__s64 prior_ret = (__s64)ctx[1];
+	if (prior_ret)
+		return prior_ret;
+	/* S1 review R1: no exec without its witness mark storage. */
+	if (d1_exec_mark_reserve())
+		return -12; /* -ENOMEM: this exec only */
+	(void)real_owner_capsule_begin_core(bprm);
+	if (real_owner_failure_scope()) {
+		__u64 task = (__u64)bpf_get_current_task_btf();
+		(void)real_owner_failure_frames_heal(task);
+		real_owner_failure_frames_open(task, (__u64)bprm);
+	}
+	return 0;
+}
+#else
 SEC("fexit/bprm_execve")
 int BPF_PROG(real_owner_capsule_terminal, struct linux_binprm *bprm, int ret)
 {
@@ -6949,6 +7476,7 @@ int BPF_PROG(real_owner_capsule_begin, struct linux_binprm *bprm)
 			      is_check);
 	return 0;
 }
+#endif
 /* Task death (task-storage adapter): retire a capsule whose terminal was
  * missed, releasing its original-route pin, before the kernel frees the
  * task's storage (security_task_free runs before bpf_task_storage_free). Its
@@ -6990,6 +7518,30 @@ real_owner_pending_class(__u64 key, __u64 bprm, __u32 later)
 		bprm, later);
 }
 #endif
+#ifdef ENFORCE_EXEC_D1_PRECLASS_FAULT_DIAGNOSTIC
+#ifndef SE_PRODUCT_DIAGNOSTIC_TWIN
+#error "the D1 pre-classification fault injector is test only (diagnostic twin)"
+#endif
+/* D1 oracle, test twin only: while armed with a cgroup ID, every exec
+ * admission of that cgroup takes the route-invariant fault path, the
+ * admission fault that has no execution class (the route's class invariant
+ * is what failed). It is the engine's "fault before classification": it
+ * must deny whatever the binding's mode. Userspace writes the cgroup ID
+ * (0 disarms); programs only read it. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_RDONLY_PROG);
+	__type(key, __u32);
+	__type(value, __u64);
+} d1_preclass_fault SEC(".maps");
+static __attribute__((noinline)) int real_owner_d1_preclass_fault(void)
+{
+	__u32 zero = 0;
+	const __u64 *armed = bpf_map_lookup_elem(&d1_preclass_fault, &zero);
+	return armed && *armed && *armed == bpf_get_current_cgroup_id();
+}
+#endif
 static __attribute__((noinline)) int
 real_owner_reader_begin_core(struct linux_binprm *bprm, int terminal_fault)
 {
@@ -7017,6 +7569,13 @@ real_owner_reader_begin_core(struct linux_binprm *bprm, int terminal_fault)
 	}
 #else
 	int admission = se_route_admit(bpf_get_current_cgroup_id(), &claim);
+#endif
+#ifdef ENFORCE_EXEC_D1_PRECLASS_FAULT_DIAGNOSTIC
+	if (real_owner_d1_preclass_fault()) {
+		if (admission == SE_ROUTE_OWNED)
+			(void)real_owner_child_release_claim(&claim);
+		admission = SE_ROUTE_INVARIANT_FAULT;
+	}
 #endif
 	if (admission != SE_ROUTE_OWNED) {
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
@@ -7337,6 +7896,25 @@ long BPF_PROG(opaque_real_owner_reader_begin_probe, struct linux_binprm *bprm,
  * failed exec still needs a separate terminal; never arm/attach this variant
  * as a product or treat it as a complete lifecycle. */
 #endif
+#ifdef ENFORCE_EXEC_D1_LSM_ONLY
+/* D1: the success terminal is the BPF LSM hook bprm_committed_creds, not
+ * tp_btf/sched_process_exec. The kernel calls it from begin_new_exec() after
+ * the point of no return, after de_thread() and commit_creds(), in the
+ * executing task with its bprm: from there the old image never runs again
+ * (a later failure of this exec kills the task, and task_free settles it).
+ * An LSM program is not subject to the tracing recursion guard, which was
+ * measured to skip the tp_btf success program on a PREEMPT_FULL 7.0 kernel
+ * (Ubuntu 7.0.0-43, 11 misses under 8 exec streams): a skipped success
+ * terminal leaves the receipt pending and fails the task's next fork or
+ * exec closed. */
+SEC("lsm/bprm_committed_creds")
+int BPF_PROG(opaque_real_owner_reader_success_probe,
+	     struct linux_binprm *bprm)
+{
+	d1_witness_count(D1_WIT_LSM_COMMIT);
+	d1_exec_mark();
+	__u64 key = (__u64)bpf_get_current_task_btf();
+#else
 SEC("tp_btf/sched_process_exec")
 int BPF_PROG(opaque_real_owner_reader_success_probe,
 	     struct task_struct *physical, int old_pid,
@@ -7344,6 +7922,7 @@ int BPF_PROG(opaque_real_owner_reader_success_probe,
 {
 	(void)old_pid;
 	__u64 key = (__u64)physical;
+#endif
 	struct se_exec_terminal_receipt *receipt =
 		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESS_SOURCE_COMPLETION_DIAGNOSTIC
@@ -7765,3 +8344,13 @@ int opaque_real_owner_work_retry_probe(struct __sk_buff *skb)
 #include "opaque_real_owner_product_publisher.h"
 #endif
 char LICENSE[] SEC("license") = "GPL";
+
+/* S1 review 4: real_owner_exec_syscall (the one syscall-exit program's exec
+ * filter) uses x86_64 syscall numbers (and its ia32/x32 ABIs). On another
+ * architecture every exec exit would be filtered out (fail closed, but no
+ * exec would ever settle): refuse to build instead. Kept at the end of the
+ * file so that the x86 objects' line information, and so their bytes, do
+ * not change. */
+#if !defined(__TARGET_ARCH_x86)
+#error "real_owner_exec_syscall: exec syscall numbers are x86-only"
+#endif

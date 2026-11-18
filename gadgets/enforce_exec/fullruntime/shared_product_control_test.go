@@ -122,7 +122,7 @@ func sharedProductManifest(p SharedProfile) *operators.NativeResources {
 	// G020: the verdict emitter's counters (its ring is in product).
 	r.Maps[SharedVerdictCountersMap] = sharedVerdictCountersShape
 	// M8: the native constants the eBPF operator set (sharedImageOverlayConstants).
-	r.Constants = map[string]uint32{sharedImageOverlayLayoutConstant: 4, sharedVerdictLoadEpochConstant: 8}
+	r.Constants = map[string]uint32{sharedImageOverlayLayoutConstant: 4, sharedImageFmodeBackingConstant: 4, sharedVerdictLoadEpochConstant: 8}
 	return r
 }
 

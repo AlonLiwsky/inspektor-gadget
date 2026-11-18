@@ -44,10 +44,11 @@ const (
 // sharedImageMetadata is a shared image's gadget.yaml for elf: the product
 // metadata merged with overlays (the diagnostic twins' only), its packaging
 // for the object (sharedPackagingForObject), the geometry annotations of
-// profile, the failure-frame kprobe targets outer and handler and, once the
-// verdict emitter landed, the event ABI. yaml.Marshal sorts the keys, so the
-// bytes are a function of the inputs and this source.
-func sharedImageMetadata(elf []byte, outer, handler string, profile SharedProfile, overlays ...[]byte) ([]byte, error) {
+// profile and, once the verdict emitter landed, the event ABI. Stage 1 (D1):
+// no failure-frame attach_to target, so the metadata is the same for every
+// kernel. yaml.Marshal sorts the keys, so the bytes are a function of the
+// inputs and this source.
+func sharedImageMetadata(elf []byte, profile SharedProfile, overlays ...[]byte) ([]byte, error) {
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(elf))
 	if err != nil {
 		return nil, fmt.Errorf("candidate object: %w", err)
@@ -73,12 +74,6 @@ func sharedImageMetadata(elf []byte, outer, handler string, profile SharedProfil
 	}
 	if sharedVerdictEmitterLanded {
 		merged.Set("annotations."+SharedEventABIAnnotation, SharedEventABIVersion)
-	}
-	for name, symbol := range map[string]string{
-		"opaque_real_owner_failure_outer_enter": outer, "opaque_real_owner_failure_outer_exit": outer,
-		"opaque_real_owner_failure_handler_enter": handler, "opaque_real_owner_failure_handler_exit": handler,
-	} {
-		merged.Set("programs."+name+".attach_to", symbol)
 	}
 	return yaml.Marshal(merged.AllSettings())
 }
@@ -181,41 +176,41 @@ type sharedProductImagePin struct {
 // objects (pinset p1, neutral build paths), one per kernel x profile, in
 // pin order. TestSharedProductImagePinsMatchTestdata requires them to equal
 // testdata/shared_product_images.tsv; the product-objects CI job rebuilds
-// the objects and the images and requires these digests. NOT YET
-// REQUALIFIED on AL2023: the objects were rebuilt at neutral paths after the
-// G011 qualification; requalification is pending (G035).
+// the objects and the images and requires these digests. Stage 1: one
+// object per profile for both kernels, qualified on both (ProductObjects),
+// so a profile's two images have the same digests.
 var sharedProductImagePins = []sharedProductImagePin{
 	{
-		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg64", ObjectSHA256: "0d5e4d9732689312a272d2dccc79618f0d0e7b7c3ac011c5d0bccc550e31aab4",
-		ManifestDigest: "sha256:382485d6e53d414cd00e7ebf94d92c8556c7c18cb320cabc8e8d1fc66e829e3a", Index: "sha256:2421e2a74346c11d33b2c94624d6e9d9addcc08f4fd60a5d028763148817500d",
+		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg64", ObjectSHA256: "6e1c3f63c265c58a3954c55e8974b967af2be625eb58421db953fc96a029d826",
+		ManifestDigest: "sha256:ac551568f1a60835aa390f9dd717aaf4ff216290907878402adf52b449d3d2ed", Index: "sha256:34d34703084eb26713816035e45266a8b6b0c832054ce27d66af391d6f0030bd",
 	},
 	{
-		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg128", ObjectSHA256: "507382feed5fd8d534b21d00be11f041b2f9f9068ead6e47666273a50dd6ad1c",
-		ManifestDigest: "sha256:aeb6eaaa67ecb4b9e463c757dd9b6d4025d394b941852ffdba2ab4bd2f5112af", Index: "sha256:cf1eb6ebf6ddd700fae2ff11e894e2480e5705dd394be72448d0ed644d954230",
+		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg128", ObjectSHA256: "9fcc0bf0ee5a39080462f97edc500c2f3da5ef225162a296459489d739fbec9a",
+		ManifestDigest: "sha256:6315e4ea81f13ed7f0bb856c49b4cf0a2b8d58eaeed0fd0f9325a71516f75751", Index: "sha256:306c2eb17a1255c5f3855ba7af305e5c77de467397389710c58aa3082ca71b1e",
 	},
 	{
-		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg256", ObjectSHA256: "528b686977d1920642a225680cafcf2ff0573c2b4bdf0565747fd1e672728f2c",
-		ManifestDigest: "sha256:0f44808a63b3119e12c2a40b4c462bb96284bd3663e071d4f16a0fc0caedca18", Index: "sha256:cc6674c4968a10f54daa72763b72112b1acf6db6efbf6b0277f1e51e7543c495",
+		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg256", ObjectSHA256: "0eca2547079ad4493329144964fcbf25b80e88b4111e394668a08f0ab777bf7b",
+		ManifestDigest: "sha256:5eed40683fb35ca58a8f2a1a346607608ecc085d980ec67276d5d3cc89207c20", Index: "sha256:f93a7a8aa263403ed36fe75e59ff9b319b8ef5d9b62a7e725942fcf2b6c7b2a1",
 	},
 	{
-		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg512", ObjectSHA256: "1b504b838a6086e20a9968b848b09173e7c4273df040d53da2bd21323fb2dfa1",
-		ManifestDigest: "sha256:dee10b290dc2b2346837001da9ad0063635b4a23a66e3bc46f4ecaf531fd2158", Index: "sha256:24125ffa6ca766bb5cb2e09633c247406977597bf48b4eca48e18e069d3090f4",
+		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg512", ObjectSHA256: "b8c9fcc199d1e1f698fb8f39ecf97b5d4bdb199f2f2ec4109c98e92ddbb63f06",
+		ManifestDigest: "sha256:f6f67fcca8395c10494b38477d14b02fe31df93cbb75cda4d4c02f1a74ef64e5", Index: "sha256:52813c583eafca2f1b374828f69b0f8aecb322cce04492c1e4dc1e193a2f27b7",
 	},
 	{
-		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg64", ObjectSHA256: "a3a2f56fa0345904a3b8005001bb4e03929f3e94275382d56622330b0f4c9757",
-		ManifestDigest: "sha256:f2c10f364a62874289c354885ad0e4f27631cdfd668261eed96fef502ff95245", Index: "sha256:3f19b0342a6a522ce25485465981ad7b8d9537ee4c98bf54608be680550a32b7",
+		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg64", ObjectSHA256: "6e1c3f63c265c58a3954c55e8974b967af2be625eb58421db953fc96a029d826",
+		ManifestDigest: "sha256:ac551568f1a60835aa390f9dd717aaf4ff216290907878402adf52b449d3d2ed", Index: "sha256:34d34703084eb26713816035e45266a8b6b0c832054ce27d66af391d6f0030bd",
 	},
 	{
-		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg128", ObjectSHA256: "3fa3da0e7a7f8cb90317e2a648dfe48753df3ba954b2fb6b20575a3c43bc8fc8",
-		ManifestDigest: "sha256:516b5669e73790bc1e59ec56f381a0b29ec06d164874aa66384a161c685b6e53", Index: "sha256:b4f0fa89a64caa1636382941378be664682a2500f51621f207d48e1ed5aab6d0",
+		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg128", ObjectSHA256: "9fcc0bf0ee5a39080462f97edc500c2f3da5ef225162a296459489d739fbec9a",
+		ManifestDigest: "sha256:6315e4ea81f13ed7f0bb856c49b4cf0a2b8d58eaeed0fd0f9325a71516f75751", Index: "sha256:306c2eb17a1255c5f3855ba7af305e5c77de467397389710c58aa3082ca71b1e",
 	},
 	{
-		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg256", ObjectSHA256: "ca63241d3457d1037204c97971e46a1ee63b28f7e6439b19fe66658c16a42be7",
-		ManifestDigest: "sha256:1f17c47573eeb9dc1391a9cb5017fefa30d99da2f3ad736c8f79990554c1cdf7", Index: "sha256:992e3d09a9d3be5ca26900db07e5ccfceca422498d058c05f977621ce1f94846",
+		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg256", ObjectSHA256: "0eca2547079ad4493329144964fcbf25b80e88b4111e394668a08f0ab777bf7b",
+		ManifestDigest: "sha256:5eed40683fb35ca58a8f2a1a346607608ecc085d980ec67276d5d3cc89207c20", Index: "sha256:f93a7a8aa263403ed36fe75e59ff9b319b8ef5d9b62a7e725942fcf2b6c7b2a1",
 	},
 	{
-		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg512", ObjectSHA256: "91b21068719070461138cdce68afa6494d10cc324ea1b75c362c862438ed2de1",
-		ManifestDigest: "sha256:df89f93074d8ebfac1b18536319ebaca5da07f0010a8e5fd711ccc1e0ca8586a", Index: "sha256:2fe300f78856753d198f9f87e97bd6189db83f0a5e0ecd74c3b0e709e24375ef",
+		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg512", ObjectSHA256: "b8c9fcc199d1e1f698fb8f39ecf97b5d4bdb199f2f2ec4109c98e92ddbb63f06",
+		ManifestDigest: "sha256:f6f67fcca8395c10494b38477d14b02fe31df93cbb75cda4d4c02f1a74ef64e5", Index: "sha256:52813c583eafca2f1b374828f69b0f8aecb322cce04492c1e4dc1e193a2f27b7",
 	},
 }
 
@@ -233,8 +228,8 @@ type SharedProductImagePin struct {
 	ObjectSHA256 string
 	// ManifestDigest is the linux/amd64 manifest and IndexDigest the image
 	// index. IG does not check either at run time (its runtime binding is
-	// the object sha256, the failure-frame attach targets and the geometry
-	// annotations); the consumer (node-agent) pins the manifest digest.
+	// the (kernel, object) qualification and the geometry annotations); the
+	// consumer (node-agent) pins the manifest digest.
 	ManifestDigest, IndexDigest string
 	// SharedProfile is the object's profile: the geometry compiled into the
 	// object, and the qualification sizes of the host-side runtime budgets
@@ -285,7 +280,7 @@ func buildSharedProductImage(ctx context.Context, store oras.Target, elf []byte,
 	if !found {
 		return none, fmt.Errorf("unknown product profile %q", profile)
 	}
-	metadata, err := sharedImageMetadata(elf, kernel.OuterSymbol, kernel.HandlerSymbol, out.SharedProfile)
+	metadata, err := sharedImageMetadata(elf, out.SharedProfile)
 	if err != nil {
 		return none, err
 	}

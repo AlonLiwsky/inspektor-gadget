@@ -79,7 +79,12 @@ _Static_assert(sizeof(struct se_image_map_key) == 24,
 	       "se_image_keys key layout (shared_image_kernel.h)");
 
 #define SE_IMAGE_OVERLAYFS_SUPER_MAGIC 0x794c7630UL
-#define SE_IMAGE_FMODE_BACKING (1U << 24)
+/* D3: FMODE_BACKING is a preprocessor constant, invisible to BTF and so to
+ * CO-RE; its bit moved (1 << 25 up to v6.13 and early 6.12.y, 1 << 24 from
+ * v6.14 and later 6.12.y stable). The loader sets se_image_fmode_backing from
+ * a live probe of a real overlay backing file; 0 (unset) refuses (AUTH). */
+#define SE_IMAGE_FMODE_BACKING_24 (1U << 24)
+#define SE_IMAGE_FMODE_BACKING_25 (1U << 25)
 #define SE_IMAGE_S_IFMT 0170000U
 #define SE_IMAGE_S_IFREG 0100000U
 #define SE_IMAGE_MINORBITS 20
@@ -88,11 +93,25 @@ _Static_assert(sizeof(struct se_image_map_key) == 24,
 #define SE_IMAGE_HUGETLBFS_MAGIC 0x958458f6UL
 #define SE_IMAGE_MNT_NS_INTERNAL ((void *)-22L) /* P12 */
 
-/* Overlay private_data layout; MUST match kernel_matrix.go. UNSET refuses. */
+/* Overlay private_data layout; MUST match kernel_matrix.go. UNSET refuses.
+ * D3: the loader no longer takes it from a per-release table. It derives it
+ * from the overlay BTF it positively read (module BTF, or vmlinux BTF when
+ * overlayfs is built in): struct ovl_file absent -> REALFILE, present with
+ * struct file *realfile -> OVL_FILE. The object's own CO-RE relocation of
+ * struct ovl_file must agree with it (below), or the classifier refuses. */
 #define SE_IMAGE_OVL_LAYOUT_UNSET 0
-#define SE_IMAGE_OVL_LAYOUT_REALFILE 1 /* 6.12: private_data = realfile */
-#define SE_IMAGE_OVL_LAYOUT_OVL_FILE 2 /* 6.18: private_data = ovl_file */
+#define SE_IMAGE_OVL_LAYOUT_REALFILE 1 /* < v6.13: private_data = realfile */
+#define SE_IMAGE_OVL_LAYOUT_OVL_FILE 2 /* >= v6.13: private_data = ovl_file */
 const volatile __u32 se_image_ovl_layout = SE_IMAGE_OVL_LAYOUT_UNSET;
+const volatile __u32 se_image_fmode_backing = 0;
+
+/* struct ovl_file is private to overlayfs (fs/overlayfs/file.c); its BTF is in
+ * the overlay module (or vmlinux when built in). The loader's relocation
+ * targets include every loaded module BTF, so this relocates like any other
+ * kernel type, PROVIDED the module is loaded before this object. */
+struct ovl_file___se_image {
+	struct file *realfile;
+} __attribute__((preserve_access_index));
 
 /* Witness slots. Classifier reasons first; command-side slots reserved for the
  * publisher/PREPARE path and never written by se_image_classify. */
@@ -213,18 +232,31 @@ static __always_inline int se_image_classify(struct file *outer, __u64 handle,
 	/* Resolve (P1/P2). */
 	__u32 layout = se_image_ovl_layout;
 	__u32 offset = se_image_user_path_offset(0, 0);
+	__u32 backing = se_image_fmode_backing;
+	/* The loader's probed layout and this object's own relocation of
+	 * struct ovl_file must agree; any disagreement (module BTF loaded after
+	 * the probe, a relocation target the loader did not see) refuses. */
+	int relocated = bpf_core_type_exists(struct ovl_file___se_image) &&
+			bpf_core_field_exists(struct ovl_file___se_image,
+					      realfile);
 	if ((layout != SE_IMAGE_OVL_LAYOUT_REALFILE &&
 	     layout != SE_IMAGE_OVL_LAYOUT_OVL_FILE) ||
-	    !offset)
+	    (backing != SE_IMAGE_FMODE_BACKING_24 &&
+	     backing != SE_IMAGE_FMODE_BACKING_25) ||
+	    relocated != (layout == SE_IMAGE_OVL_LAYOUT_OVL_FILE) || !offset)
 		return se_image_class_note(w, SE_IMAGE_CLASS_AUTH, -1);
 	void *private = 0;
 	struct file *real = 0;
 	if (BPF_CORE_READ_INTO(&private, outer, private_data) || !private)
 		return se_image_class_note(w, SE_IMAGE_CLASS_READ_FAULT, -1);
-	if (layout == SE_IMAGE_OVL_LAYOUT_REALFILE)
+	if (layout == SE_IMAGE_OVL_LAYOUT_REALFILE) {
 		real = private;
-	else if (bpf_probe_read_kernel(&real, sizeof(real), private))
-		return se_image_class_note(w, SE_IMAGE_CLASS_READ_FAULT, -1);
+	} else {
+		struct ovl_file___se_image *of = private;
+		if (BPF_CORE_READ_INTO(&real, of, realfile))
+			return se_image_class_note(
+				w, SE_IMAGE_CLASS_READ_FAULT, -1);
+	}
 	if (!real)
 		return se_image_class_note(w, SE_IMAGE_CLASS_AUTH, -1);
 
@@ -234,7 +266,7 @@ static __always_inline int se_image_classify(struct file *outer, __u64 handle,
 	if (BPF_CORE_READ_INTO(&mode, real, f_mode) ||
 	    bpf_core_read(&outer_path, sizeof(outer_path), &outer->f_path))
 		return se_image_class_note(w, SE_IMAGE_CLASS_READ_FAULT, -1);
-	if (!(mode & SE_IMAGE_FMODE_BACKING))
+	if (!(mode & backing))
 		return se_image_class_note(w, SE_IMAGE_CLASS_AUTH, -1);
 	if (bpf_probe_read_kernel(&user_path, sizeof(user_path),
 				  (void *)real + offset))

@@ -178,7 +178,6 @@ FTRACE=$(cat /proc/sys/kernel/ftrace_enabled 2>/dev/null || echo unreadable)
 TAINT=$(cat /proc/sys/kernel/tainted 2>/dev/null || echo unreadable)
 VMLINUZ=$(sha256sum "/boot/vmlinuz-$REL" 2>/dev/null | cut -d' ' -f1)
 IMAGE_NAME=$(sed -n 's/^image_name="\(.*\)"$/\1/p' /etc/image-id 2>/dev/null)
-ksym() { awk -v s="$1" '$3 == s { found = 1 } END { exit !found }' /proc/kallsyms; }
 
 if [[ $TAG == unpinned ]]; then
 	unpinned=1
@@ -193,8 +192,6 @@ else
 	check "$S" lsm_bpf "lsm $LSM" -- bash -c 'tr , "\n" <<<"$1" | grep -qx bpf' _ "$LSM"
 	check "$S" ftrace_enabled "kernel.ftrace_enabled=$FTRACE" -- test "$FTRACE" = 1
 	check "$S" livepatch_clear "kernel.tainted=$TAINT" -- bash -c '[[ $1 =~ ^[0-9]+$ ]] && (( ($1 & (1 << 15)) == 0 ))' _ "$TAINT"
-	check "$S" kallsyms_outer "outer ${AL2023_OUTER_SYMBOL[$TAG]}" -- ksym "${AL2023_OUTER_SYMBOL[$TAG]}"
-	check "$S" kallsyms_handler "handler ${AL2023_HANDLER_SYMBOL[$TAG]}" -- ksym "${AL2023_HANDLER_SYMBOL[$TAG]}"
 	if [[ $AL2023_LANE == ec2 ]]; then
 		check "$S" platform "ec2: /etc/image-id image_name $IMAGE_NAME, pin ${AL2023_AMI_NAME[$TAG]} (${AL2023_AMI_ID[$TAG]})" -- test "$IMAGE_NAME" = "${AL2023_AMI_NAME[$TAG]}"
 	else
@@ -243,7 +240,6 @@ if [[ $TAG == unpinned ]]; then
 	exit 0
 fi
 
-OTHER=$(al2023_other "$TAG")
 NAMES=$(for p in $AL2023_ALL_PROFILES; do enforce_names "$B/objects/$(al2023_object "$TAG" "$p")"; done | sort -u)
 [[ -n $NAMES ]] || die "no program names from the objects"
 printf '%s\n' "$NAMES" >"$EV/enforce-program-names.txt"
@@ -320,18 +316,19 @@ for p in $AL2023_PROFILES; do
 	s=$(stream restart-exit "$p")
 	check "$E" restart_exit_ready "exit child printed PRODUCT-CHILD READY, no REFUSED" -- bash -c 'grep -q "PRODUCT-CHILD READY" "$1" && ! grep -q "PRODUCT-CHILD REFUSED" "$1"' _ "$s"
 
-	# Step 4: the other kernel's product image of this profile is refused.
-	neg=$(al2023_image "$OTHER" "$p")
-	gotest negatives "$p" TestSharedProductNodeNegativesAttached "${common[@]}" IG_SHARED_PRODUCT_NEG_IMAGES="$neg"
-	check "$E" neg_other_kernel_refused "$neg refused by the pin (the kernel pins ...)" -- grep -qE "product-neg $neg: .*shared product image refused on $REL: .*, the kernel pins " "$(stream negatives "$p")"
+	# Step 4 (stage 1, AL2023_NEG_SET=seam): the product StartNode refuses
+	# the qualification seam before any host run.
+	gotest negatives "$p" TestSharedProductNodeNegativesAttached "${common[@]}" IG_SHARED_PRODUCT_NEG_IMAGES=
+	check "$E" neg_qualification_seam_refused "the qualification seam refused by the product StartNode" -- grep -q "product-neg-qualification: refused before any host run" "$(stream negatives "$p")"
 	end "$E"
 	wait_no_progs 10 || echo "guest.sh: enforce programs still loaded after profile $p"
 done
 
 # ---- step 2b: the ftrace negative, on its own node (after every profile) -------------
-# After the ftrace-off window the node may stay Degraded with stale exit
-# credit until it stops (accepted, fail closed); the test accepts a clean
-# StopNode or one whose only fault is stale exit credit, and says which.
+# Stage 1: after the ftrace-off window the kernel witness keeps the node
+# NotReady until it stops (and stale exit credit may add a Degraded fault);
+# the test requires StopNode to report the latched witness and at most stale
+# exit credit.
 p=$AL2023_FTRACE_PROFILE
 cga=$CG_ROOT/$CG_PREFIX-ftrace-a
 mkdir "$cga" || die "cannot create the ftrace cgroup"
@@ -343,7 +340,7 @@ s=$(stream ftrace "$p") E=$(stream ftrace-evidence "$p")
 check "$E" ftrace_notready "Ready went NotReady naming ftrace" -- grep -q 'product-ftrace-neg: Ready ' "$s"
 check "$E" ftrace_restore_126 "enforcement back after restore: r1000=126" -- grep -q 'product-ftrace-restore: r1000=126 ready=' "$s"
 outcome=$(grep -o 'product-ftrace-outcome: [a-z-]*' "$s" | head -n1)
-check "$E" ftrace_outcome "${outcome:-no outcome logged}" -- grep -qE 'product-ftrace-outcome: (clean|stale-degraded)' "$s"
+check "$E" ftrace_outcome "${outcome:-no outcome logged}" -- grep -qE 'product-ftrace-outcome: witness-latched' "$s"
 end "$E"
 wait_no_progs 10 || echo "guest.sh: enforce programs still loaded after the ftrace negative"
 

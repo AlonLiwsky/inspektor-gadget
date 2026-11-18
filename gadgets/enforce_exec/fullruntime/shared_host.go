@@ -152,6 +152,8 @@ type sharedLiveCandidate struct {
 	// failClosed polls the fail-closed rate witness (nil: the object has
 	// none and is not a product object).
 	failClosed *sharedLiveFailClosed
+	// witness is the D1 kernel witness (nil: not a D1 object).
+	witness *sharedLiveKernelWitness
 	// verdict is the verdict event counters (nil: no G020 emitter).
 	verdict *sharedLiveVerdict
 	// healthStopped is set once stopLiveHealth ran: the reaper and the
@@ -173,41 +175,43 @@ type sharedLiveCandidate struct {
 	recycleStopped bool
 }
 
-// sharedCandidateAttachSet is the pinned steady-state attach set of the
-// shared candidate (G009; TestCandidateAttachSetObjects): 8 links, task_free 2
-// (the product release and the exec capsule's death retire), task_alloc 1,
-// bprm_execve 3, creds_for_exec 1, bprm_check 1. Every other
+// sharedCandidateAttachSet is the pinned steady-state trampoline attach set
+// of the shared candidate, D1 (LSM-only prototype): 6 links, all BPF LSM
+// hooks: task_free 2 (the product release and the exec capsule's death
+// retire), task_alloc 1, bprm_creds_for_exec 1 (the exec frame's begin),
+// bprm_check_security 1. No fentry/fexit program is attached. Every other
 // program of the image must be disabled by its packaged metadata.
 var sharedCandidateAttachSet = map[string]string{
 	"opaque_real_owner_child_final_free_candidate": "bpf_lsm_task_free",
 	"opaque_real_owner_child_source_candidate":     "bpf_lsm_task_alloc",
 	"real_owner_capsule_free":                      "bpf_lsm_task_free",
-	"opaque_real_owner_failure_fexit_probe":        "bprm_execve",
-	"real_owner_capsule_terminal":                  "bprm_execve",
-	"real_owner_capsule_entry":                     "bprm_execve",
-	"real_owner_capsule_begin":                     "security_bprm_creds_for_exec",
+	"real_owner_capsule_begin":                     "bpf_lsm_bprm_creds_for_exec",
 	"opaque_real_owner_reader_begin_probe":         "bpf_lsm_bprm_check_security",
+	// The success terminal (was tp_btf/sched_process_exec).
+	"opaque_real_owner_reader_success_probe": "bpf_lsm_bprm_committed_creds",
 }
 
 // sharedCandidateProbeSet is the pinned non-trampoline part of the steady
-// state, exactly what the qualified loader (TestOpaqueRealPolicyVerdictAttached)
-// also attaches: the four exec failure-frame kprobes, the free_task birth
-// kprobe, the sched_process_fork raw_tp, the sched_process_exec tp_btf and
-// the credit-at-exit sched_process_exit tp_btf (nativeattach.Rank: attached
+// state, D1: stable tracepoints only (no kprobe): the exec frame's two
+// terminals on the syscall-exit raw tracepoint (the failure terminal and
+// the capsule terminal), the sched_process_fork raw_tp (birth, and the
+// kernel witness of lsm/task_alloc), the sched_process_exec tp_btf (ONLY the
+// kernel witness of lsm/bprm_committed_creds: the success terminal is that
+// LSM hook, in the attach set above) and the credit-at-exit
+// sched_process_exit tp_btf
+// (nativeattach.Rank: sys_exit before bprm_creds_for_exec; sched_process_exit
 // after task_free and, since Stop detaches in exact reverse, detached before
-// it).
-// They attach through bpf links and take no trampoline slot. Values are the
-// object's section names; the kernel-specific failure-frame symbols are set
-// through programs.<name>.attach_to.
+// it). They attach through bpf links and take no trampoline slot. Values are
+// the object's section names; none is kernel-specific.
 var sharedCandidateProbeSet = map[string]string{
 	"opaque_real_owner_child_exit_candidate":       "tp_btf/sched_process_exit",
-	"opaque_real_owner_failure_outer_enter":        "kprobe/do_execveat_common.isra.38",
-	"opaque_real_owner_failure_outer_exit":         "kretprobe/do_execveat_common.isra.38",
-	"opaque_real_owner_failure_handler_enter":      "kprobe/search_binary_handler",
-	"opaque_real_owner_failure_handler_exit":       "kretprobe/search_binary_handler",
-	"opaque_real_owner_birth_free_task_candidate":  "kprobe/free_task",
+	"real_owner_capsule_terminal":                  "tp_btf/sys_exit",
 	"opaque_real_owner_successful_birth_candidate": "raw_tp/sched_process_fork",
-	"opaque_real_owner_reader_success_probe":       "tp_btf/sched_process_exec",
+	// The kernel witness of lsm/bprm_committed_creds (review F2) and of
+	// lsm/task_alloc (S1 review N1: a typed tp_btf for the child's task
+	// storage mark).
+	"d1_witness_exec": "tp_btf/sched_process_exec",
+	"d1_witness_fork": "tp_btf/sched_process_fork",
 }
 
 // sharedCandidateCommandSet is the pinned set of enabled syscall commands:
@@ -422,7 +426,9 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 // missing one is a refusal) and the verdict event's se_verdict_load_epoch.
 // The eBPF operator itself keeps skipping absent names for other gadgets.
 func validateSharedProductConstants(resources *operators.NativeResources) error {
-	for name, size := range map[string]uint32{sharedImageOverlayLayoutConstant: 4, sharedVerdictLoadEpochConstant: 8} {
+	// D3: also the probed FMODE_BACKING bit (se_image_fmode_backing; unset is
+	// a value that refuses every overlay file, a missing one is a refusal).
+	for name, size := range map[string]uint32{sharedImageOverlayLayoutConstant: 4, sharedImageFmodeBackingConstant: 4, sharedVerdictLoadEpochConstant: 8} {
 		if got, ok := resources.Constants[name]; !ok || got != size {
 			return fmt.Errorf("product object native constant %s not set as a %d-byte constant", name, size)
 		}
@@ -575,21 +581,13 @@ func sharedSetDiff(a, b []string) []string {
 	return out
 }
 
-// sharedProductFailureTargets maps each failure-frame kprobe to whether it
-// takes the outer (true) or the handler (false) symbol of the pin.
-var sharedProductFailureTargets = map[string]bool{
-	"opaque_real_owner_failure_outer_enter":   true,
-	"opaque_real_owner_failure_outer_exit":    true,
-	"opaque_real_owner_failure_handler_enter": false,
-	"opaque_real_owner_failure_handler_exit":  false,
-}
-
 // admitSharedProductImage binds the product image to the running pinned
 // kernel build: the kernel gate (re-run here, at instantiation); every
 // probe program's effective target (resources, after any attach_to
 // override) is its section's target, the failure-frame ones the pin's
 // symbols (also in the image metadata); and the loaded eBPF object's sha256
-// (operators.NativeProgramDigestKey) is one of the pin's product objects.
+// (operators.NativeProgramDigestKey) is one of the pin's QUALIFIED product
+// objects (sharedProductPin.ProductObjects).
 // Every refusal wraps ErrSharedNativeUnavailable.
 func admitSharedProductImage(gc operators.GadgetContext, metadata *viper.Viper, resources *operators.NativeResources) error {
 	_, pin, err := sharedProductKernelCheck()
@@ -599,25 +597,16 @@ func admitSharedProductImage(gc operators.GadgetContext, metadata *viper.Viper, 
 	refuse := func(cause error) error {
 		return fmt.Errorf("shared product image refused on %s: %w: %w", pin.Release, cause, ErrSharedNativeUnavailable)
 	}
-	for name, outer := range sharedProductFailureTargets {
-		want := pin.HandlerSymbol
-		if outer {
-			want = pin.OuterSymbol
-		}
-		if got := metadata.GetString("programs." + name + ".attach_to"); got != want {
-			return refuse(fmt.Errorf("failure-frame %s attaches to %q, the kernel pins %q", name, got, want))
-		}
-	}
 	if resources == nil {
 		return refuse(fmt.Errorf("missing native resources"))
 	}
+	// D1: every probe's target is its section's own (tracepoints); no
+	// program takes a per-kernel symbol, and the metadata must not carry
+	// an attach_to override for any of them.
 	for name, section := range sharedCandidateProbeSet {
 		_, want, _ := strings.Cut(section, "/")
-		if outer, failure := sharedProductFailureTargets[name]; failure {
-			want = pin.HandlerSymbol
-			if outer {
-				want = pin.OuterSymbol
-			}
+		if got := metadata.GetString("programs." + name + ".attach_to"); got != "" {
+			return refuse(fmt.Errorf("probe %s carries an attach_to override %q", name, got))
 		}
 		program, ok := resources.Programs[name]
 		if !ok || program.Target != want {
@@ -629,8 +618,13 @@ func admitSharedProductImage(gc operators.GadgetContext, metadata *viper.Viper, 
 	if digest == "" {
 		return refuse(fmt.Errorf("eBPF object digest unavailable"))
 	}
-	if _, ok := pin.ProductELF[digest]; !ok {
+	if !sharedProductObject(digest) {
 		return refuse(fmt.Errorf("eBPF object sha256 %s is not a pinned product object", digest))
+	}
+	// S1 review F1: the (kernel, object) pair must be qualified, not only
+	// the kernel and the object separately.
+	if !pin.qualifiesProductObject(digest) {
+		return refuse(fmt.Errorf("eBPF object sha256 %s is a product object of this release but is not qualified on pinned kernel %s", digest, pin.Release))
 	}
 	return nil
 }
@@ -1114,6 +1108,17 @@ func (n *NodeEnforcer) startLiveCandidate(gc operators.GadgetContext, admitted *
 			return fmt.Errorf("shared candidate receipt %s: %w", name, err)
 		}
 	}
+	// D1 objects (the d1_witness map): every attached program must have run
+	// before the node is live, then the kernel witness is armed.
+	// The map is REQUIRED: an object without it is refused, never run
+	// without its canary and witness.
+	if m, ok := admitted.Maps[sharedKernelWitnessMap]; !ok || m.Type != uint32(ebpf.Array) || m.KeySize != 4 || m.ValueSize != sharedKernelWitnessCellSize || m.MaxEntries != sharedKernelWitnessCells {
+		return fmt.Errorf("shared candidate kernel witness map %s missing or malformed", sharedKernelWitnessMap)
+	}
+	witness, err := sharedStartKernelWitness(gc, receipts, n.config.FailClosedPollInterval)
+	if err != nil {
+		return err
+	}
 	capacity, err := sharedExitCreditCapacity(admitted)
 	if err != nil {
 		return err
@@ -1239,6 +1244,10 @@ func (n *NodeEnforcer) startLiveCandidate(gc operators.GadgetContext, admitted *
 	n.host.scopeSlots = make([]*sharedPhysicalScope, n.config.Profile.Bindings)
 	n.host.live = &sharedLiveCandidate{receipts: receipts, publisher: publisher, reaper: reaper, exit: exit, capsule: capsule, birthPark: birthPark, facts: facts, failClosed: failClosed, verdict: verdict}
 	verdictInstalled = true
+	n.host.live.witness = witness
+	if witness != nil {
+		witness.start() // joined by stopLiveHealth
+	}
 	if failClosed != nil {
 		failClosed.start() // joined by stopLiveHealth
 	}
@@ -1415,8 +1424,10 @@ func (n *NodeEnforcer) stopLiveHealth() {
 	var birthPark *sharedLiveBirthPark
 	var facts *sharedLiveFactStats
 	var failClosed *sharedLiveFailClosed
+	var witness *sharedLiveKernelWitness
 	if n.host != nil && n.host.live != nil {
 		reaper, exit, capsule, failClosed = n.host.live.reaper, n.host.live.exit, n.host.live.capsule, n.host.live.failClosed
+		witness = n.host.live.witness
 		birthPark, facts = n.host.live.birthPark, n.host.live.facts
 		// From here on the node is never healthy: health is no longer
 		// watched although hooks may still be attached.
@@ -1434,6 +1445,9 @@ func (n *NodeEnforcer) stopLiveHealth() {
 	}
 	if facts != nil {
 		facts.close()
+	}
+	if witness != nil {
+		witness.close()
 	}
 	if failClosed != nil {
 		failClosed.close() // joins the poller, then the final reading
@@ -1471,6 +1485,9 @@ func (n *NodeEnforcer) liveHealthFault() error {
 	}
 	if n.host.live.failClosed != nil {
 		result = errors.Join(result, n.host.live.failClosed.stickyFault())
+	}
+	if n.host.live.witness != nil {
+		result = errors.Join(result, n.host.live.witness.check())
 	}
 	return errors.Join(result, n.host.live.recycleFault)
 }
@@ -1520,6 +1537,7 @@ type sharedLiveHealth struct {
 	birthPark            *sharedLiveBirthPark
 	facts                *sharedLiveFactStats
 	failClosed           *sharedLiveFailClosed
+	witness              *sharedLiveKernelWitness
 	// image is the product publisher's G020 image index (nil without).
 	image sharedImageReporter
 }
@@ -1530,6 +1548,7 @@ func (n *NodeEnforcer) liveHealthLocked() sharedLiveHealth {
 	}
 	live := n.host.live
 	h := sharedLiveHealth{stopped: live.healthStopped, reaper: live.reaper, exit: live.exit, capsule: live.capsule, birthPark: live.birthPark, facts: live.facts, failClosed: live.failClosed}
+	h.witness = live.witness
 	for _, receipt := range live.receipts {
 		h.receipts = append(h.receipts, receipt)
 	}
@@ -1582,6 +1601,9 @@ func (h sharedLiveHealth) checks() (notReady, degraded []error) {
 	}
 	if h.facts != nil {
 		add(&notReady, h.facts.check())
+	}
+	if h.witness != nil {
+		add(&notReady, h.witness.check())
 	}
 	if h.failClosed != nil {
 		if err := h.failClosed.check(); errors.Is(err, ErrSharedFailClosedNotReady) {

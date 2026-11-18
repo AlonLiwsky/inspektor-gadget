@@ -25,15 +25,23 @@ func TestSharedImageOverlayLayoutLiveModuleBTF(t *testing.T) {
 		t.Fatal(err)
 	}
 	release := sharedCandidateKernelBTF[digest]
-	want := sharedImageOverlayLayouts[release]
-	if want == sharedImageOverlayLayoutUnset {
-		t.Fatalf("kernel BTF %s outside the shared candidate matrix", digest)
-	}
+	want := sharedImageOverlayLayoutsPinned[release]
 	got, err := liveSharedImageOverlayLayout()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if want == sharedImageOverlayLayoutUnset {
+		// D3: off the pinned matrix only the test-only probed-kernel
+		// override admits the kernel; the layout is then the derived one.
+		if !sharedProbedKernelOverride() {
+			t.Fatalf("kernel BTF %s outside the shared candidate matrix", digest)
+		}
+		if release, err = kernelRelease(); err != nil {
+			t.Fatal(err)
+		}
+		want = got
+	}
+	if got != want || got == sharedImageOverlayLayoutUnset {
 		t.Fatalf("%s: live layout %d, want %d", release, got, want)
 	}
 	constants, err := sharedImageOverlayConstants()

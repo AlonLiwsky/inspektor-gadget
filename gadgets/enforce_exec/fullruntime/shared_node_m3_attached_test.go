@@ -383,6 +383,22 @@ var sharedTestQualification func(*SharedNodeQualification)
 
 func startSharedCandidateNode(t *testing.T, object, handlerEnv string, newPublisher func(*ebpf.CollectionSpec) func(operators.GadgetContext) (SharedRoutePublisher, error), configure func(*SharedNodeConfig)) (*NodeEnforcer, *gadgetcontext.GadgetContext, context.Context) {
 	t.Helper()
+	node, gc, ctx, err := startSharedCandidateNodeE(t, object, handlerEnv, newPublisher, configure)
+	if err != nil {
+		t.Fatalf("StartNode: %v", err)
+	}
+	return node, gc, ctx
+}
+
+// sharedCandidateNodeTimeout bounds one startSharedCandidateNode node's
+// context (the D1 oracle raises it for its longer scenarios).
+var sharedCandidateNodeTimeout = 4 * time.Minute
+
+// startSharedCandidateNodeE is startSharedCandidateNode returning the
+// StartNode refusal instead of failing the test (the D1 oracle's admission
+// refusal cases).
+func startSharedCandidateNodeE(t *testing.T, object, handlerEnv string, newPublisher func(*ebpf.CollectionSpec) func(operators.GadgetContext) (SharedRoutePublisher, error), configure func(*SharedNodeConfig)) (*NodeEnforcer, *gadgetcontext.GadgetContext, context.Context, error) {
+	t.Helper()
 	elf, err := os.ReadFile(object)
 	if err != nil {
 		t.Fatal(err)
@@ -391,22 +407,8 @@ func startSharedCandidateNode(t *testing.T, object, handlerEnv string, newPublis
 	if err != nil {
 		t.Fatal(err)
 	}
-	kallsyms, err := os.ReadFile("/proc/kallsyms")
-	if err != nil {
-		t.Fatal(err)
-	}
-	outer, err := opaqueDiagnosticExecOuterSymbol(bytes.NewReader(kallsyms))
-	if err != nil {
-		t.Fatal(err)
-	}
-	handlerName := os.Getenv(handlerEnv)
-	if handlerName == "" {
-		handlerName = os.Getenv("IG_SHARED_M3_HANDLER_SYMBOL")
-	}
-	handlerSymbol, err := opaqueDiagnosticExecHandlerSymbol(bytes.NewReader(kallsyms), handlerName)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// D1: no failure-frame symbol is resolved; handlerEnv is unused.
+	_ = handlerEnv
 	// A product-control object (se_admin: g19pkgpubf128, the birth-park
 	// spin twin g19pkgparkf128) has the product geometry: the product
 	// policy objects (one spare for make-before-break revision) at the
@@ -428,12 +430,6 @@ func startSharedCandidateNode(t *testing.T, object, handlerEnv string, newPublis
 	merged := packagingForObject(t, mergedSharedCandidateMetadataFor(t, true), spec, "m3 object")
 	for key, value := range sharedGeometryAnnotations(nodeConfig.Profile) {
 		merged.Set(key, value)
-	}
-	for name, symbol := range map[string]string{
-		"opaque_real_owner_failure_outer_enter": outer, "opaque_real_owner_failure_outer_exit": outer,
-		"opaque_real_owner_failure_handler_enter": handlerSymbol, "opaque_real_owner_failure_handler_exit": handlerSymbol,
-	} {
-		merged.Set("programs."+name+".attach_to", symbol)
 	}
 	// The diagnostic object adds TEST_RUN programs; none may attach. The
 	// pinned commands (the product reaper's opaque_real_reap) stay enabled.
@@ -506,7 +502,7 @@ func startSharedCandidateNode(t *testing.T, object, handlerEnv string, newPublis
 	if newPublisher != nil {
 		publisherFor = newPublisher(spec)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), sharedCandidateNodeTimeout)
 	t.Cleanup(cancel)
 	q := SharedNodeQualification{Run: run, Publisher: publisherFor}
 	if sharedTestQualification != nil {
@@ -514,9 +510,9 @@ func startSharedCandidateNode(t *testing.T, object, handlerEnv string, newPublis
 	}
 	node, err := StartNode(WithSharedNodeQualification(ctx, q), nodeConfig)
 	if err != nil {
-		t.Fatalf("StartNode: %v", err)
+		return nil, nil, ctx, err
 	}
-	return node, gc, ctx
+	return node, gc, ctx, nil
 }
 
 // TestSharedNodeM3Attached (G019 M3): two bindings on the one StartNode

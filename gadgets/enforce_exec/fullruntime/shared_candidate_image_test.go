@@ -1,7 +1,11 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build enforce_exec_shared_qualification
+// D1 (LSM-only prototype): this file pins the per-kernel failure-frame
+// symbols (sharedProductPin.OuterSymbol/HandlerSymbol, the attach_to
+// overrides of the four failure kprobes) that D1 removes. It is excluded
+// from every build until rewritten for the D1 attach set.
+//go:build enforce_exec_shared_qualification && enforce_exec_failure_frame_pins
 
 package fullruntime
 

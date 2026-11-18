@@ -12,19 +12,18 @@ package fullruntime
 // sharedProductManifestMaps and sharedProductManifestPrograms are the exact
 // map and program name sets of the shared product object, generated from
 // the product objects with sha256:
-//   - 0d5e4d9732689312a272d2dccc79618f0d0e7b7c3ac011c5d0bccc550e31aab4
-//   - 1b504b838a6086e20a9968b848b09173e7c4273df040d53da2bd21323fb2dfa1
-//   - 3fa3da0e7a7f8cb90317e2a648dfe48753df3ba954b2fb6b20575a3c43bc8fc8
-//   - 507382feed5fd8d534b21d00be11f041b2f9f9068ead6e47666273a50dd6ad1c
-//   - 528b686977d1920642a225680cafcf2ff0573c2b4bdf0565747fd1e672728f2c
-//   - 91b21068719070461138cdce68afa6494d10cc324ea1b75c362c862438ed2de1
-//   - a3a2f56fa0345904a3b8005001bb4e03929f3e94275382d56622330b0f4c9757
-//   - ca63241d3457d1037204c97971e46a1ee63b28f7e6439b19fe66658c16a42be7
+//   - 0eca2547079ad4493329144964fcbf25b80e88b4111e394668a08f0ab777bf7b
+//   - 6e1c3f63c265c58a3954c55e8974b967af2be625eb58421db953fc96a029d826
+//   - 9fcc0bf0ee5a39080462f97edc500c2f3da5ef225162a296459489d739fbec9a
+//   - b8c9fcc199d1e1f698fb8f39ecf97b5d4bdb199f2f2ec4109c98e92ddbb63f06
 //
 // Product admission refuses any other name set (validateSharedProductManifest).
 var sharedProductManifestMaps = []string{
 	".bss",
 	".rodata",
+	"d1_exec_marks",
+	"d1_fork_marks",
+	"d1_witness",
 	"opaque_birth_failed_retired",
 	"opaque_birth_outcomes",
 	"opaque_birth_receipt_zero",
@@ -113,12 +112,13 @@ var sharedProductManifestMaps = []string{
 }
 
 var sharedProductManifestPrograms = []string{
+	"d1_witness_exec",
+	"d1_witness_fork",
 	"opaque_real_adopt_finish",
 	"opaque_real_adopt_quarantine",
 	"opaque_real_adopt_task",
 	"opaque_real_adopt_verify",
 	"opaque_real_image_command",
-	"opaque_real_owner_birth_free_task_candidate",
 	"opaque_real_owner_birth_signal0_diagnostic",
 	"opaque_real_owner_child_exit_candidate",
 	"opaque_real_owner_child_final_free_candidate",
@@ -126,11 +126,6 @@ var sharedProductManifestPrograms = []string{
 	"opaque_real_owner_child_target_candidate",
 	"opaque_real_owner_continue_audit",
 	"opaque_real_owner_continue_strict",
-	"opaque_real_owner_failure_fexit_probe",
-	"opaque_real_owner_failure_handler_enter",
-	"opaque_real_owner_failure_handler_exit",
-	"opaque_real_owner_failure_outer_enter",
-	"opaque_real_owner_failure_outer_exit",
 	"opaque_real_owner_finish_audit",
 	"opaque_real_owner_finish_strict",
 	"opaque_real_owner_policy_audit",
@@ -152,7 +147,6 @@ var sharedProductManifestPrograms = []string{
 	"opaque_real_route_recycle",
 	"opaque_real_route_withdraw",
 	"real_owner_capsule_begin",
-	"real_owner_capsule_entry",
 	"real_owner_capsule_free",
 	"real_owner_capsule_terminal",
 	"se_command",

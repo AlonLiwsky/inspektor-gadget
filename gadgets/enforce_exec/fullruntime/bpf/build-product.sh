@@ -2,9 +2,11 @@
 # Copyright 2026 The Inspektor Gadget authors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Builds the shared product objects g19pkg{64,128,256,512}-<kernel>.bpf.o
-# for the two qualified AL2023 kernels and, with --check, compares each
-# sha256 with fullruntime/testdata/shared_product_pins.tsv (sharedProductPins).
+# Builds the shared product objects g19pkg{64,128,256,512}.bpf.o: stage 1,
+# ONE CO-RE object per profile for every kernel (compiled against the
+# AL2023 6.18 vmlinux.h, relocated at load), with the LSM-only exec outcome
+# (ENFORCE_EXEC_D1_LSM_ONLY). With --check it compares each sha256 with
+# fullruntime/testdata/shared_product_objects.tsv (sharedProductObjects).
 #
 # Usage: build-product.sh [--check] [OUTDIR]     (default OUTDIR: a temp dir)
 #   CLANG   the compiler (default clang-21). It must be the Debian package
@@ -39,7 +41,7 @@ fi
 # ---------------------------------------------------------------------------
 # Neutral build paths (pinset p1). The objects carry, in DWARF and BTF, the
 # absolute paths of the build: the repository (also the working directory)
-# and the directory of each kernel's vmlinux.h. The BPF backend also copies
+# and the directory of the vmlinux.h. The BPF backend also copies
 # each source line's text into .BTF, reading the file at that path, and the
 # order of the BTF FWD types follows the real paths the compiler opens. So
 # the compile always runs at these fixed real directories, never at the
@@ -66,7 +68,7 @@ fi
 bpf=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd -- "$bpf/../../../.." && pwd)
 testdata=$repo/gadgets/enforce_exec/fullruntime/testdata
-pins=$testdata/shared_product_pins.tsv
+pins=$testdata/shared_product_objects.tsv
 out=${1:-$(mktemp -d)}
 mkdir -p -- "$out"
 out=$(cd -- "$out" && pwd)
@@ -84,10 +86,9 @@ if [[ $libbpf != "$LIBBPF_VERSION" ]]; then
 	exit 1
 fi
 
-declare -A vmlinux_sha256=(
-	[6.12]=ee6e2d8ede842bbb5a541682c721b4381ab9f15ffbda42f98f626f162d163e47
-	[6.18]=a6b003369e04fe8b0382f2704e64e0c0f71c211dd54a5b160f60de21bd00a4e2
-)
+# The one header of every object (stage 1, D3): the AL2023 6.18 BTF.
+HEADER_KERNEL=6.18
+HEADER_SHA256=a6b003369e04fe8b0382f2704e64e0c0f71c211dd54a5b160f60de21bd00a4e2
 
 P=-DENFORCE_EXEC_POOL_OPAQUE_
 # compile-pkg.sh: the product base (no REAL_RECOVERY, PRCTL_ARM or
@@ -105,13 +106,16 @@ BASE=(
 # build-g19pkg.sh PKG: the product extras (source capsule, eval-WORK
 # witness, fail-closed rate, reap events, credit at exit, no TEST_RUN,
 # synchronous WORK return, 8192 exit tombstones, product publisher with the
-# image geometry, native config gate, interpreter continuation).
+# image geometry, native config gate, interpreter continuation, D1 LSM-only).
 PKG=(
 	"${P}SOURCE_CAPSULE_CANDIDATE=1" "${P}EVAL_WORK_WITNESS_DIAGNOSTIC=1" "${P}FAIL_CLOSED_RATE_CANDIDATE=1"
 	"${P}REAP_EVENTS_CANDIDATE=1" "${P}EXIT_CREDIT_CANDIDATE=1" -DSE_PRODUCT_NO_TEST_RUN=1
 	"${P}WORK_SYNC_RETURN_CANDIDATE=1" -DSE_PROFILE_EXIT_TOMBSTONES=8192
 	"${P}PRODUCT_PUBLISHER_CANDIDATE=1" -USE_PROFILE_IMAGES -DSE_PROFILE_IMAGES=256 -USE_PROFILE_IMAGE_QUOTA -DSE_PROFILE_IMAGE_QUOTA=128
 	"${P}NATIVE_CONFIG_GATE_CANDIDATE=1" "${P}INTERP_CONTINUATION_CANDIDATE=1"
+	# Stage 1 (D1): LSM-only exec outcome, no failure-frame kprobe,
+	# kretprobe, fentry or fexit; the kernel witness map d1_witness.
+	-DENFORCE_EXEC_D1_LSM_ONLY=1
 )
 # q TASK WORK: the per-binding quota profile.
 q() {
@@ -140,50 +144,50 @@ fi
 # it): a logical cd, so PWD (which clang uses) is the canonical path.
 cd -- "$CANON_REPO"
 fail=0
-for kernel in 6.12 6.18; do
-	header=$testdata/al2023-vmlinux/$kernel/vmlinux.h.xz
-	got=$(xz -dc -- "$header" | sha256sum | cut -d' ' -f1)
-	[[ $got == "${vmlinux_sha256[$kernel]}" ]] || { echo "$header decompresses to sha256 $got, want ${vmlinux_sha256[$kernel]}" >&2; exit 1; }
-	if [[ ! -e $CANON_BTF/$kernel/vmlinux.h ]]; then
-		mkdir -p -- "$CANON_BTF/$kernel" && xz -dc -- "$header" >"$CANON_BTF/$kernel/vmlinux.h"
+kernel=$HEADER_KERNEL
+header=$testdata/al2023-vmlinux/$kernel/vmlinux.h.xz
+got=$(xz -dc -- "$header" | sha256sum | cut -d' ' -f1)
+[[ $got == "$HEADER_SHA256" ]] || { echo "$header decompresses to sha256 $got, want $HEADER_SHA256" >&2; exit 1; }
+if [[ ! -e $CANON_BTF/$kernel/vmlinux.h ]]; then
+	mkdir -p -- "$CANON_BTF/$kernel" && xz -dc -- "$header" >"$CANON_BTF/$kernel/vmlinux.h"
+fi
+got=$(sha256sum "$CANON_BTF/$kernel/vmlinux.h" | cut -d' ' -f1)
+[[ $got == "$HEADER_SHA256" ]] || { echo "$CANON_BTF/$kernel/vmlinux.h sha256 $got, want $HEADER_SHA256" >&2; exit 1; }
+for profile in "${PROFILES[@]}"; do
+	read -r name task work <<<"$profile"
+	want=
+	if [[ $check == 1 ]]; then
+		want=$(awk -F'\t' -v n="$name" '$1 == n { print $2 }' "$pins")
+		[[ -n $want ]] || { echo "no pin for $name in $pins" >&2; exit 1; }
 	fi
-	got=$(sha256sum "$CANON_BTF/$kernel/vmlinux.h" | cut -d' ' -f1)
-	[[ $got == "${vmlinux_sha256[$kernel]}" ]] || { echo "$CANON_BTF/$kernel/vmlinux.h sha256 $got, want ${vmlinux_sha256[$kernel]}" >&2; exit 1; }
-	want=$(awk -F'\t' -v k="$kernel." 'index($1, k) == 1 { print $6 }' "$pins")
-	[[ -n $want ]] || { echo "no pin for kernel $kernel in $pins" >&2; exit 1; }
-	IFS=, read -r -a wants <<<"$want"
-	[[ ${#wants[@]} -eq ${#PROFILES[@]} ]] || { echo "kernel $kernel: ${#wants[@]} pinned objects, want ${#PROFILES[@]}" >&2; exit 1; }
-	for i in "${!PROFILES[@]}"; do
-		read -r name task work <<<"${PROFILES[$i]}"
-		obj=$out/$name-$kernel.bpf.o
-		# shellcheck disable=SC2046 # q prints separate flags
-		"$clang" -target bpf -O2 -g -D__TARGET_ARCH_x86 \
-			"${BASE[@]}" "${PKG[@]}" $(q "$task" "$work") \
-			-Wno-missing-declarations -I "$CANON_BTF/$kernel" -I "$CANON_REPO/include" -I "$CANON_REPO/gadgets/enforce_exec/full" \
-			-I "$CANON_REPO/gadgets/enforce_exec/fullpolicy/bpf" \
-			-c "$CANON_REPO/gadgets/enforce_exec/fullruntime/bpf/opaque_real_owner_child_candidate.bpf.c" -o "$obj" 2>"$obj.log" ||
-			{ cat "$obj.log" >&2; echo "BUILD FAIL $name-$kernel" >&2; exit 1; }
-		# No build-host path may reach a published object.
-		for path in /home/ /root/ "$repo/"; do
-			[[ $path == "$CANON_REPO/" ]] && continue
-			# A checkout whose path is a prefix of a canonical root (for
-			# example one mounted at /src) matches the neutral paths
-			# themselves; those are the intended paths, not a leak.
-			[[ $path == "$repo/" && ("$CANON_REPO/" == "$repo/"* || "$CANON_BTF/" == "$repo/"*) ]] && continue
-			if grep -qaF -- "$path" "$obj"; then
-				echo "$name-$kernel embeds the path $path; build at $CANON_REPO" >&2
-				exit 1
-			fi
-		done
-		sum=$(sha256sum "$obj" | cut -d' ' -f1)
-		if [[ $check == 0 ]]; then
-			echo "$sum  $obj"
-		elif [[ $sum == "${wants[$i]}" ]]; then
-			echo "OK   $name-$kernel $sum"
-		else
-			echo "FAIL $name-$kernel $sum, pinned ${wants[$i]}"
-			fail=1
+	obj=$out/$name.bpf.o
+	# shellcheck disable=SC2046 # q prints separate flags
+	"$clang" -target bpf -O2 -g -D__TARGET_ARCH_x86 \
+		"${BASE[@]}" "${PKG[@]}" $(q "$task" "$work") \
+		-Wno-missing-declarations -I "$CANON_BTF/$kernel" -I "$CANON_REPO/include" -I "$CANON_REPO/gadgets/enforce_exec/full" \
+		-I "$CANON_REPO/gadgets/enforce_exec/fullpolicy/bpf" \
+		-c "$CANON_REPO/gadgets/enforce_exec/fullruntime/bpf/opaque_real_owner_child_candidate.bpf.c" -o "$obj" 2>"$obj.log" ||
+		{ cat "$obj.log" >&2; echo "BUILD FAIL $name" >&2; exit 1; }
+	# No build-host path may reach a published object.
+	for path in /home/ /root/ "$repo/"; do
+		[[ $path == "$CANON_REPO/" ]] && continue
+		# A checkout whose path is a prefix of a canonical root (for
+		# example one mounted at /src) matches the neutral paths
+		# themselves; those are the intended paths, not a leak.
+		[[ $path == "$repo/" && ("$CANON_REPO/" == "$repo/"* || "$CANON_BTF/" == "$repo/"*) ]] && continue
+		if grep -qaF -- "$path" "$obj"; then
+			echo "$name embeds the path $path; build at $CANON_REPO" >&2
+			exit 1
 		fi
 	done
+	sum=$(sha256sum "$obj" | cut -d' ' -f1)
+	if [[ $check == 0 ]]; then
+		echo "$sum  $obj"
+	elif [[ $sum == "$want" ]]; then
+		echo "OK   $name $sum"
+	else
+		echo "FAIL $name $sum, pinned $want"
+		fail=1
+	fi
 done
 exit $fail

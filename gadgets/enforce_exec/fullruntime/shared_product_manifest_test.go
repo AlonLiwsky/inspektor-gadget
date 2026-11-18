@@ -68,14 +68,8 @@ func TestSharedProductManifestMatchesObjects(t *testing.T) {
 			t.Errorf("%s: programs %v, manifest %v", path, got, sharedProductManifestPrograms)
 		}
 		sum := sha256.Sum256(data)
-		digest, pinned := hex.EncodeToString(sum[:]), 0
-		for _, pin := range sharedProductPins {
-			if _, ok := pin.ProductELF[digest]; ok {
-				pinned++
-			}
-		}
-		if pinned != 1 {
-			t.Errorf("%s: sha256 %s is a product ELF of %d pins, want 1", path, digest, pinned)
+		if digest := hex.EncodeToString(sum[:]); !sharedProductObject(digest) {
+			t.Errorf("%s: sha256 %s is not a product object", path, digest)
 		}
 	}
 }

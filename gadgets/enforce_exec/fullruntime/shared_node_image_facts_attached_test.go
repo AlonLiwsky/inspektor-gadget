@@ -89,7 +89,9 @@ func sharedImageCopy(t *testing.T, lower, path string, seen map[string]bool) {
 	}
 	libs, _ := f.ImportedLibraries()
 	for _, lib := range libs {
-		for _, dir := range []string{"/usr/lib64", "/lib64"} {
+		// D3: also the Debian/Ubuntu multiarch directories (the fixture's
+		// init died there without libtinfo: a harness gap, not the engine).
+		for _, dir := range []string{"/usr/lib64", "/lib64", "/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu"} {
 			if _, err := os.Stat(filepath.Join(dir, lib)); err == nil {
 				sharedImageCopy(t, lower, filepath.Join(dir, lib), seen)
 				break
@@ -109,11 +111,11 @@ func newSharedImageFixture(t *testing.T, base, name, memfdHelper string) *shared
 		}
 	}
 	seen := map[string]bool{}
-	for _, bin := range []string{"/usr/bin/bash", "/usr/bin/true", "/usr/bin/cp", "/usr/bin/chmod"} {
+	for _, bin := range []string{"/usr/bin/bash", sharedTruePath, "/usr/bin/cp", "/usr/bin/chmod"} {
 		sharedImageCopy(t, f.lower, bin, seen)
 	}
 	// /bin, /lib64 as in the host userland; sh is bash.
-	for link, target := range map[string]string{"bin": "usr/bin", "lib64": "usr/lib64", "usr/bin/sh": "bash"} {
+	for link, target := range map[string]string{"bin": "usr/bin", "lib64": "usr/lib64", "lib": "usr/lib", "usr/bin/sh": "bash"} {
 		if _, err := os.Lstat(filepath.Join(f.lower, link)); err == nil {
 			continue
 		}
@@ -121,7 +123,7 @@ func newSharedImageFixture(t *testing.T, base, name, memfdHelper string) *shared
 			t.Fatal(err)
 		}
 	}
-	raw, err := os.ReadFile("/usr/bin/true")
+	raw, err := os.ReadFile(sharedTruePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,8 +271,9 @@ func TestSharedNodeImageFactsAttached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if layout, err := overlayLayoutReader(); err != nil || layout != sharedImageOverlayLayouts[sharedCandidateKernelBTF[digest]] {
-		t.Fatalf("overlay layout %d (%v), want %s's %d", layout, err, sharedCandidateKernelBTF[digest], sharedImageOverlayLayouts[sharedCandidateKernelBTF[digest]])
+	wantLayout, pinned := sharedImageOverlayLayoutsPinned[sharedCandidateKernelBTF[digest]]
+	if layout, err := overlayLayoutReader(); err != nil || layout == sharedImageOverlayLayoutUnset || (pinned && layout != wantLayout) || (!pinned && !sharedProbedKernelOverride()) {
+		t.Fatalf("overlay layout %d (%v), want %s's %d", layout, err, sharedCandidateKernelBTF[digest], wantLayout)
 	}
 	node, gc, ctx := startSharedCandidateNode(t, object, "IG_SHARED_M4_HANDLER_SYMBOL", nil, nil)
 	defer func() { _ = node.StopNode(context.WithoutCancel(ctx)) }()
@@ -379,14 +382,14 @@ func TestSharedNodeImageFactsAttached(t *testing.T) {
 		image                  int32
 		strict, audit          int
 	}{
-		{"image binary", "/usr/bin/true", "/usr/bin/true", 1, 0, 0},
-		{"new upper file", "cp /usr/bin/true /tmp/new-true && /tmp/new-true", "/tmp/new-true", 0, 126, 0},
+		{"image binary", sharedTruePath, sharedTruePath, 1, 0, 0},
+		{"new upper file", "cp " + sharedTruePath + " /tmp/new-true && /tmp/new-true", "/tmp/new-true", 0, 126, 0},
 		{"copied-up file", "chmod 0755 /usr/bin/cu && /usr/bin/cu", "/usr/bin/cu", 0, 126, 0},
 		// A memfd is UNKNOWN for the image (user ruling: memfd from-image
 		// -> UNKNOWN, SE_IMAGE_CLASS_MEMFD), never from image; its path is
 		// UNKNOWN too (outside the task's root), the helper is. Strict
 		// denies, Audit allows.
-		{"memfd", "/usr/bin/memfd-exec /usr/bin/true", "", -1, 126, 0},
+		{"memfd", "/usr/bin/memfd-exec " + sharedTruePath, "", -1, 126, 0},
 	}
 	for _, c := range cases {
 		for _, name := range []string{"A", "B"} {
@@ -399,7 +402,7 @@ func TestSharedNodeImageFactsAttached(t *testing.T) {
 			if rc != want || got != c.image {
 				t.Fatalf("%s %s: rc %d target image %d, want rc %d image %d (records %+v; classifier %s)", c.label, name, rc, got, want, c.image, records, classes())
 			}
-			if c.target != "/usr/bin/true" && image(c.label, records, "/usr/bin/bash") != 1 {
+			if c.target != sharedTruePath && image(c.label, records, "/usr/bin/bash") != 1 {
 				t.Fatalf("%s %s: the init's own shell is not from the image (%+v)", c.label, name, records)
 			}
 			t.Logf("%s %s: rc %d target image %d", c.label, name, rc, got)

@@ -32,8 +32,6 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 6.12	identity	lsm_bpf	-
 6.12	identity	ftrace_enabled	-
 6.12	identity	livepatch_clear	-
-6.12	identity	kallsyms_outer	-
-6.12	identity	kallsyms_handler	-
 6.12	identity	platform	-
 6.12	raw-load	verdict_load/g19pkg64	-
 6.12	raw-load	verdict_load/g19pkg128	-
@@ -49,7 +47,7 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 6.12	evidence	restart_child_killed	64
 6.12	evidence	restart_no_leftover	64
 6.12	evidence	restart_exit_ready	64
-6.12	evidence	neg_other_kernel_refused	64
+6.12	evidence	neg_qualification_seam_refused	64
 6.12	ready	TestSharedProductNodeReadyAttached	128
 6.12	restart-exit	TestSharedProductNodeReadyAttached	128
 6.12	negatives	TestSharedProductNodeNegativesAttached	128
@@ -60,7 +58,7 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 6.12	evidence	restart_child_killed	128
 6.12	evidence	restart_no_leftover	128
 6.12	evidence	restart_exit_ready	128
-6.12	evidence	neg_other_kernel_refused	128
+6.12	evidence	neg_qualification_seam_refused	128
 6.12	ready	TestSharedProductNodeReadyAttached	256
 6.12	restart-exit	TestSharedProductNodeReadyAttached	256
 6.12	negatives	TestSharedProductNodeNegativesAttached	256
@@ -71,7 +69,7 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 6.12	evidence	restart_child_killed	256
 6.12	evidence	restart_no_leftover	256
 6.12	evidence	restart_exit_ready	256
-6.12	evidence	neg_other_kernel_refused	256
+6.12	evidence	neg_qualification_seam_refused	256
 6.12	ready	TestSharedProductNodeReadyAttached	512
 6.12	restart-exit	TestSharedProductNodeReadyAttached	512
 6.12	negatives	TestSharedProductNodeNegativesAttached	512
@@ -82,7 +80,7 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 6.12	evidence	restart_child_killed	512
 6.12	evidence	restart_no_leftover	512
 6.12	evidence	restart_exit_ready	512
-6.12	evidence	neg_other_kernel_refused	512
+6.12	evidence	neg_qualification_seam_refused	512
 6.12	ftrace	TestSharedProductNodeFtraceNegativeAttached	128
 6.12	ftrace-evidence	ftrace_notready	128
 6.12	ftrace-evidence	ftrace_restore_126	128
@@ -101,8 +99,6 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 6.18	identity	lsm_bpf	-
 6.18	identity	ftrace_enabled	-
 6.18	identity	livepatch_clear	-
-6.18	identity	kallsyms_outer	-
-6.18	identity	kallsyms_handler	-
 6.18	identity	platform	-
 6.18	raw-load	verdict_load/g19pkg64	-
 6.18	raw-load	verdict_load/g19pkg128	-
@@ -118,7 +114,7 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 6.18	evidence	restart_child_killed	64
 6.18	evidence	restart_no_leftover	64
 6.18	evidence	restart_exit_ready	64
-6.18	evidence	neg_other_kernel_refused	64
+6.18	evidence	neg_qualification_seam_refused	64
 6.18	ready	TestSharedProductNodeReadyAttached	128
 6.18	restart-exit	TestSharedProductNodeReadyAttached	128
 6.18	negatives	TestSharedProductNodeNegativesAttached	128
@@ -129,7 +125,7 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 6.18	evidence	restart_child_killed	128
 6.18	evidence	restart_no_leftover	128
 6.18	evidence	restart_exit_ready	128
-6.18	evidence	neg_other_kernel_refused	128
+6.18	evidence	neg_qualification_seam_refused	128
 6.18	ready	TestSharedProductNodeReadyAttached	256
 6.18	restart-exit	TestSharedProductNodeReadyAttached	256
 6.18	negatives	TestSharedProductNodeNegativesAttached	256
@@ -140,7 +136,7 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 6.18	evidence	restart_child_killed	256
 6.18	evidence	restart_no_leftover	256
 6.18	evidence	restart_exit_ready	256
-6.18	evidence	neg_other_kernel_refused	256
+6.18	evidence	neg_qualification_seam_refused	256
 6.18	ready	TestSharedProductNodeReadyAttached	512
 6.18	restart-exit	TestSharedProductNodeReadyAttached	512
 6.18	negatives	TestSharedProductNodeNegativesAttached	512
@@ -151,7 +147,7 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 6.18	evidence	restart_child_killed	512
 6.18	evidence	restart_no_leftover	512
 6.18	evidence	restart_exit_ready	512
-6.18	evidence	neg_other_kernel_refused	512
+6.18	evidence	neg_qualification_seam_refused	512
 6.18	ftrace	TestSharedProductNodeFtraceNegativeAttached	128
 6.18	ftrace-evidence	ftrace_notready	128
 6.18	ftrace-evidence	ftrace_restore_126	128

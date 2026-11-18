@@ -740,9 +740,10 @@ func TestSharedProductConstants(t *testing.T) {
 	}
 	for name, constants := range map[string]map[string]uint32{
 		"none":         nil,
-		"no layout":    {sharedVerdictLoadEpochConstant: 8},
-		"no epoch":     {sharedImageOverlayLayoutConstant: 4},
-		"32-bit epoch": {sharedImageOverlayLayoutConstant: 4, sharedVerdictLoadEpochConstant: 4},
+		"no layout":    {sharedImageFmodeBackingConstant: 4, sharedVerdictLoadEpochConstant: 8},
+		"no epoch":     {sharedImageOverlayLayoutConstant: 4, sharedImageFmodeBackingConstant: 4},
+		"32-bit epoch": {sharedImageOverlayLayoutConstant: 4, sharedImageFmodeBackingConstant: 4, sharedVerdictLoadEpochConstant: 4},
+		"no backing":   {sharedImageOverlayLayoutConstant: 4, sharedVerdictLoadEpochConstant: 8},
 	} {
 		r := sharedProductFakeManifest()
 		r.Constants = constants

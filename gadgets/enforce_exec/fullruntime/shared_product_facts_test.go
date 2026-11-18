@@ -297,7 +297,7 @@ var sharedImageFactPins = []pin{
 	// The layout constant is installed per load (with the M7 load epoch);
 	// without it a product object is refused at admission (M8).
 	{"shared_host.go", "if constants, err := sharedImageOverlayConstants(); err == nil {\ngc.SetVar(operators.NativeConstantsKey, constants)\n}"},
-	{"kernel_matrix.go", "return map[string]any{sharedImageOverlayLayoutConstant: layout, sharedVerdictLoadEpochConstant: epoch}, nil"},
+	{"kernel_matrix.go", "return map[string]any{sharedImageOverlayLayoutConstant: layout, sharedImageFmodeBackingConstant: backing, sharedVerdictLoadEpochConstant: epoch}, nil"},
 	{"shared_host.go", "if err := validateSharedProductConstants(resources); err != nil {"},
 }
 

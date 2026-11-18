@@ -26,13 +26,26 @@ func selectOpaqueNormalChurnBirthPrograms(spec *ebpf.CollectionSpec, selected ma
 	if spec.Maps["opaque_birth_receipts"] == nil || spec.Maps["opaque_birth_receipt_zero"] == nil {
 		return errors.New("normal churn requires the guarded successful-birth receipt object")
 	}
-	for _, want := range []struct {
+	sources := []struct {
 		name, section string
 		kind          ebpf.ProgramType
 	}{
 		{"opaque_real_owner_successful_birth_candidate", "raw_tp/sched_process_fork", ebpf.RawTracepoint},
 		{"opaque_real_owner_birth_free_task_candidate", "kprobe/free_task", ebpf.Kprobe},
-	} {
+	}
+	// Stage 1 (D1 LSM-only objects, the d1_witness map): no kprobe. The
+	// birth retire runs in lsm/task_free (opaque_real_owner_child_final_free_candidate,
+	// before its gate check), which the caller attaches first.
+	if spec.Maps["d1_witness"] != nil {
+		if spec.Programs["opaque_real_owner_birth_free_task_candidate"] != nil {
+			return errors.New("an LSM-only object must not carry kprobe/free_task")
+		}
+		if p := spec.Programs["opaque_real_owner_child_final_free_candidate"]; p == nil || p.SectionName != "lsm/task_free" {
+			return errors.New("an LSM-only object needs its birth retire in lsm/task_free")
+		}
+		sources = sources[:1]
+	}
+	for _, want := range sources {
 		program := spec.Programs[want.name]
 		if program == nil || program.Type != want.kind || program.SectionName != want.section || program.Flags != 0 {
 			return fmt.Errorf("normal churn requires exact non-sleepable birth source %s (%s)", want.name, want.section)
@@ -71,11 +84,14 @@ func runOpaqueRealNormalChurnAttached(t *testing.T, c *ebpf.Collection, spec *eb
 		t.Fatalf("attach source-owned successful birth: %v", err)
 	}
 	defer birthLink.Close()
-	freeLink, err := link.Kprobe("free_task", c.Programs["opaque_real_owner_birth_free_task_candidate"], nil)
-	if err != nil {
-		t.Fatalf("attach source-owned birth receipt cleanup: %v", err)
+	// LSM-only objects retire births in lsm/task_free (no kprobe).
+	if p := c.Programs["opaque_real_owner_birth_free_task_candidate"]; p != nil {
+		freeLink, err := link.Kprobe("free_task", p, nil)
+		if err != nil {
+			t.Fatalf("attach source-owned birth receipt cleanup: %v", err)
+		}
+		defer freeLink.Close()
 	}
-	defer freeLink.Close()
 	var taskType, metaType *btf.Struct
 	if err := spec.Types.TypeByName("se_task_state", &taskType); err != nil {
 		t.Fatal(err)
