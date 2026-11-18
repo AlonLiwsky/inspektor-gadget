@@ -38,7 +38,7 @@ BPFTOOL_URL=https://github.com/libbpf/bpftool/releases/download/v7.8.1/bpftool-v
 BPFTOOL_SHA256=112026bbdf48d0d00ccfc4926e59878d47943f97c197f959f110abe29c898ddc
 FULL_KERNELS=build,6.12,6.18,unpinned
 # The full run's row count (expected.tsv with every group and profile).
-AL2023_FULL_ROWS=153
+AL2023_FULL_ROWS=145
 
 die() { echo "host.sh: $*" >&2; exit 2; }
 log() { echo "[host.sh $(date -u +%T)] $*"; }

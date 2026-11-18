@@ -87,10 +87,10 @@ func (pin sharedProductPin) qualifiesProductObject(digest string) bool {
 // pinned toolchain at the neutral paths; testdata/shared_product_objects.tsv
 // mirrors them.
 var sharedProductObjects = map[string]string{
-	"g19pkg64":  "6e1c3f63c265c58a3954c55e8974b967af2be625eb58421db953fc96a029d826",
-	"g19pkg128": "9fcc0bf0ee5a39080462f97edc500c2f3da5ef225162a296459489d739fbec9a",
-	"g19pkg256": "0eca2547079ad4493329144964fcbf25b80e88b4111e394668a08f0ab777bf7b",
-	"g19pkg512": "b8c9fcc199d1e1f698fb8f39ecf97b5d4bdb199f2f2ec4109c98e92ddbb63f06",
+	"g19pkg64":  "104347be5fd2de72fbd2938599e988f109c3492f66e09ec160d22f22ff8ade66",
+	"g19pkg128": "5b4416dca8b62a81ccf920bb5004b9d09c325ac910a345b4fc62ecc6a0ab82ff",
+	"g19pkg256": "1f4165a86b4bd399ef123a6d730f7cdfb14bc714824daa22a72df5bae84000dd",
+	"g19pkg512": "8389431175a29a313a63bbc6050105be46b1519cdeb96cdc8a74d9c7c0b5024b",
 }
 
 // sharedProductObject reports whether digest is a product object of this
@@ -113,10 +113,10 @@ var sharedProductPins = map[string]sharedProductPin{
 		// Stage 1 qualification on this pinned build (stage-1 PR build):
 		// the stage-1 oracle (D3 34 steps, D1 18), Strict + Audit, 0 FAIL 0 SKIP.
 		ProductObjects: map[string]struct{}{
-			"6e1c3f63c265c58a3954c55e8974b967af2be625eb58421db953fc96a029d826": {}, // g19pkg64
-			"9fcc0bf0ee5a39080462f97edc500c2f3da5ef225162a296459489d739fbec9a": {}, // g19pkg128
-			"0eca2547079ad4493329144964fcbf25b80e88b4111e394668a08f0ab777bf7b": {}, // g19pkg256
-			"b8c9fcc199d1e1f698fb8f39ecf97b5d4bdb199f2f2ec4109c98e92ddbb63f06": {}, // g19pkg512
+			"104347be5fd2de72fbd2938599e988f109c3492f66e09ec160d22f22ff8ade66": {}, // g19pkg64
+			"5b4416dca8b62a81ccf920bb5004b9d09c325ac910a345b4fc62ecc6a0ab82ff": {}, // g19pkg128
+			"1f4165a86b4bd399ef123a6d730f7cdfb14bc714824daa22a72df5bae84000dd": {}, // g19pkg256
+			"8389431175a29a313a63bbc6050105be46b1519cdeb96cdc8a74d9c7c0b5024b": {}, // g19pkg512
 		},
 	},
 	"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
@@ -126,10 +126,10 @@ var sharedProductPins = map[string]sharedProductPin{
 		// Stage 1 qualification on this pinned build (stage-1 PR build):
 		// the stage-1 oracle (D3 34 steps, D1 18), Strict + Audit, 0 FAIL 0 SKIP.
 		ProductObjects: map[string]struct{}{
-			"6e1c3f63c265c58a3954c55e8974b967af2be625eb58421db953fc96a029d826": {}, // g19pkg64
-			"9fcc0bf0ee5a39080462f97edc500c2f3da5ef225162a296459489d739fbec9a": {}, // g19pkg128
-			"0eca2547079ad4493329144964fcbf25b80e88b4111e394668a08f0ab777bf7b": {}, // g19pkg256
-			"b8c9fcc199d1e1f698fb8f39ecf97b5d4bdb199f2f2ec4109c98e92ddbb63f06": {}, // g19pkg512
+			"104347be5fd2de72fbd2938599e988f109c3492f66e09ec160d22f22ff8ade66": {}, // g19pkg64
+			"5b4416dca8b62a81ccf920bb5004b9d09c325ac910a345b4fc62ecc6a0ab82ff": {}, // g19pkg128
+			"1f4165a86b4bd399ef123a6d730f7cdfb14bc714824daa22a72df5bae84000dd": {}, // g19pkg256
+			"8389431175a29a313a63bbc6050105be46b1519cdeb96cdc8a74d9c7c0b5024b": {}, // g19pkg512
 		},
 	},
 }

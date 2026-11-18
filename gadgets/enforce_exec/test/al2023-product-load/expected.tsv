@@ -10,14 +10,10 @@
 # here is an unexpected row and fails the run.
 #
 # build: GitHub-hosted runner, no special kernel.
-build	objects	pin/g19pkg64-6.12	-
-build	objects	pin/g19pkg128-6.12	-
-build	objects	pin/g19pkg256-6.12	-
-build	objects	pin/g19pkg512-6.12	-
-build	objects	pin/g19pkg64-6.18	-
-build	objects	pin/g19pkg128-6.18	-
-build	objects	pin/g19pkg256-6.18	-
-build	objects	pin/g19pkg512-6.18	-
+build	objects	pin/g19pkg64	-
+build	objects	pin/g19pkg128	-
+build	objects	pin/g19pkg256	-
+build	objects	pin/g19pkg512	-
 build	layout	TestBuildSharedProductLayout	-
 build	layout-repro	rebuild_identical	-
 build	userspace	TestSharedProductManifestMatchesObjects	-

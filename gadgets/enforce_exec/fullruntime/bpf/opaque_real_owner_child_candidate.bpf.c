@@ -2743,16 +2743,17 @@ static __attribute__((noinline)) int d1_exec_mark_reserve(void)
 }
 /* LSM half of the exec pair: mark the executing task after its exec id
  * moved (begin_new_exec increments self_exec_id before this hook). The
- * storage exists since this exec's bprm_creds_for_exec (same task). */
+ * storage exists since this exec's bprm_creds_for_exec (same task); if it
+ * is absent here, bprm_creds_for_exec ran before attachment (an attach
+ * race, not an allocation failure), so leave D1_WIT_MARK_FAILED untouched
+ * and let d1_witness_exec's D1_WIT_EXEC_UNMARKED remain retryable. */
 static __attribute__((noinline)) void d1_exec_mark(void)
 {
 	struct task_struct *task = bpf_get_current_task_btf();
 	struct d1_exec_mark *mark =
 		bpf_task_storage_get(&d1_exec_marks, task, 0, 0);
-	if (!mark) {
-		d1_witness_count(D1_WIT_MARK_FAILED);
+	if (!mark)
 		return;
-	}
 	mark->exec_id = task->self_exec_id;
 	mark->start = task->start_time;
 }
