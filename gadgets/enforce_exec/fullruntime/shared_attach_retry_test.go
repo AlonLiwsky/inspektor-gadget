@@ -18,55 +18,74 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf/nativeattach"
 )
 
-// The shared node never inherits the unbounded
-// nativeattach.DefaultRetry: WithNodeEnforcer sets a retry with a finite
-// attempt count and a total time budget, and admission refuses any other.
-func TestSharedNodeAttachRetryIsBounded(t *testing.T) {
+// The shared node never retries inside the gadget's Start (that would hold
+// the host manager's lifecycle lock across every backoff wait):
+// WithNodeEnforcer sets NativeAttachRetryKey to false and admission refuses
+// any other value. StartNode's own retry is bounded, and StartNode refuses an
+// unbounded one before running anything.
+func TestSharedNodeAttachFailFastInStart(t *testing.T) {
 	n, err := NewNodeEnforcer(sharedQualifiedConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
 	gc := gadgetcontext.New(t.Context(), n.config.Image, WithNodeEnforcer(n))
-	value, ok := gc.GetVar(operators.NativeAttachRetryKey)
-	retry, isRetry := value.(nativeattach.Retry)
-	if !ok || !isRetry || retry.MaxAttempts <= 0 || retry.Budget <= 0 || retry.State == nil {
-		t.Fatalf("WithNodeEnforcer retry %T %+v, want an explicit bounded nativeattach.Retry", value, value)
+	if value, ok := gc.GetVar(operators.NativeAttachRetryKey); !ok || value != false {
+		t.Fatalf("WithNodeEnforcer retry %T %+v, want false (no retry inside Start)", value, value)
 	}
-	// The waits alone stay within the budget's order (the budget also
-	// stops a wait that would end past it).
+	retry := sharedNodeAttachRetry()
+	if err := sharedNodeRetryBounded(retry); err != nil {
+		t.Fatal(err)
+	}
 	var waits time.Duration
 	for d, k := retry.Initial, 1; k < retry.MaxAttempts; k++ {
 		waits += d
 		d = min(2*d, retry.Max)
 	}
 	if retry.Budget > time.Minute || waits > time.Minute {
-		t.Fatalf("shared node retry may hold the lifecycle lock for %s (budget %s)", waits, retry.Budget)
+		t.Fatalf("shared node retry may delay StartNode for %s (budget %s)", waits, retry.Budget)
 	}
 
 	validator, _ := gc.GetVar(operators.NativeResourceValidatorKey)
 	validate := validator.(func(*operators.NativeResources) error)
 	for name, v := range map[string]any{
-		"opt-out":            false,
+		"true":               true,
 		"default unbounded":  nativeattach.DefaultRetry,
-		"no attempt bound":   nativeattach.Retry{Initial: time.Millisecond, Max: time.Millisecond, Budget: time.Second},
-		"no time budget":     nativeattach.Retry{Initial: time.Millisecond, Max: time.Millisecond, MaxAttempts: 3},
+		"bounded in Start":   sharedNodeAttachRetry(),
 		"not a retry policy": "bounded",
 	} {
 		gc.SetVar(operators.NativeAttachRetryKey, v)
-		if err := validate(sharedCandidateFakeManifest()); err == nil || !strings.Contains(err.Error(), "bounded native attach retry") {
-			t.Fatalf("%s: admission %v, want the bounded-retry refusal", name, err)
+		if err := validate(sharedCandidateFakeManifest()); err == nil || !strings.Contains(err.Error(), "fail-fast native attach") {
+			t.Fatalf("%s: admission %v, want the fail-fast refusal", name, err)
 		}
 	}
-	gc.SetVar(operators.NativeAttachRetryKey, retry)
-	if err := sharedNodeAttachRetryBounded(gc); err != nil {
-		t.Fatalf("default shared node retry refused: %v", err)
+	gc.SetVar(operators.NativeAttachRetryKey, false)
+	if err := sharedNodeAttachFailFast(gc); err != nil {
+		t.Fatalf("fail-fast shared node attach refused: %v", err)
+	}
+
+	sharedEnableQualification(t)
+	for name, r := range map[string]nativeattach.Retry{
+		"default unbounded": nativeattach.DefaultRetry,
+		"no attempt bound":  {Initial: time.Millisecond, Max: time.Millisecond, Budget: time.Second},
+		"no time budget":    {Initial: time.Millisecond, Max: time.Millisecond, MaxAttempts: 3},
+	} {
+		runs := 0
+		run := func(context.Context, gadgetcontext.Option) (func(context.Context) error, <-chan error, error) {
+			runs++
+			return nil, nil, errors.New("unexpected run")
+		}
+		_, err := StartNode(WithSharedNodeQualification(t.Context(), SharedNodeQualification{Run: run, attachRetry: &r}), sharedQualifiedConfig())
+		if err == nil || !strings.Contains(err.Error(), "bounded native attach retry") || runs != 0 {
+			t.Fatalf("%s: StartNode %v runs %d, want the bounded-retry refusal before any run", name, err, runs)
+		}
 	}
 }
 
-// Through StartNode: while StartNode is blocked in the bounded
-// retry the host sees every capacity refusal (SharedNodeConfig.AttachState),
-// then nil once attached; an exhausted retry ends StartNode (it never
-// hangs), fails closed (no node, one teardown) and is NotReady.
+// Through StartNode: each attempt is one host Run (one StartGadget) that
+// fails at once on a capacity refusal and is torn down before StartNode
+// waits. The host sees every refusal (SharedNodeConfig.AttachState), then nil
+// once started; an exhausted retry ends StartNode (it never hangs), fails
+// closed (no node, every attempt torn down) and is NotReady.
 func TestSharedNodeAttachStateThroughStartNode(t *testing.T) {
 	sharedEnableQualification(t)
 	refusal := func() error { return &nativeattach.ErrAttachCapacity{Target: "bpf_lsm_task_alloc", Err: unix.E2BIG} }
@@ -79,28 +98,25 @@ func TestSharedNodeAttachStateThroughStartNode(t *testing.T) {
 			var states []error
 			config := sharedQualifiedConfig()
 			config.AttachState = func(err error) { mu.Lock(); states = append(states, err); mu.Unlock() }
-			attempts, stops := 0, 0
+			attempts, stops, live := 0, 0, 0
 			run := func(ctx context.Context, opt gadgetcontext.Option) (func(context.Context) error, <-chan error, error) {
 				gc := gadgetcontext.New(ctx, config.Image, opt)
-				value, _ := gc.GetVar(operators.NativeAttachRetryKey)
-				retry, ok := value.(nativeattach.Retry)
-				if !ok {
-					t.Fatalf("no explicit retry: %T", value)
+				if value, _ := gc.GetVar(operators.NativeAttachRetryKey); value != false {
+					t.Fatalf("retry inside Start: %T %+v", value, value)
 				}
+				if live != 0 {
+					t.Fatalf("attempt %d runs beside %d live attempt(s)", attempts+1, live)
+				}
+				attempts++
+				live++
+				stop := func(context.Context) error { stops++; live--; return nil }
 				done := make(chan error, 1)
-				// The operator's attach transaction.
-				err := retry.Run(ctx, func() error {
-					attempts++
-					if tc.refusals < 0 || attempts <= tc.refusals {
-						return refusal()
-					}
-					return nil
-				})
-				if err == nil {
-					err = errors.New("test gadget ends after attaching")
+				// The operator's fail-fast attach transaction.
+				if tc.refusals < 0 || attempts <= tc.refusals {
+					return stop, done, refusal()
 				}
-				done <- err
-				return func(context.Context) error { stops++; return nil }, done, nil
+				done <- errors.New("test gadget ends after attaching")
+				return stop, done, nil
 			}
 			small := &nativeattach.Retry{Initial: time.Millisecond, Max: 2 * time.Millisecond, MaxAttempts: 3, Budget: time.Second}
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -112,15 +128,15 @@ func TestSharedNodeAttachStateThroughStartNode(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 			var capErr *nativeattach.ErrAttachCapacity
+			if attempts != 3 || stops != 3 || live != 0 || len(states) != 3 {
+				t.Fatalf("attempts %d stops %d live %d states %v, want 3 attempts, each torn down, 3 states", attempts, stops, live, states)
+			}
 			if tc.refusals < 0 {
 				if !errors.Is(err, ErrSharedNodeNotReady) || !errors.As(err, &capErr) || errors.Is(err, context.DeadlineExceeded) {
 					t.Fatalf("exhausted attach: %v, want ErrSharedNodeNotReady wrapping the capacity refusal", err)
 				}
-				if attempts != 3 || stops != 1 || len(states) != 3 {
-					t.Fatalf("attempts %d stops %d states %v, want 3 refusals reported and one teardown", attempts, stops, states)
-				}
-			} else if attempts != 3 || len(states) != 3 || states[2] != nil {
-				t.Fatalf("attempts %d states %v, want two refusals then nil", attempts, states)
+			} else if states[2] != nil || errors.As(err, &capErr) {
+				t.Fatalf("states %v err %v, want two refusals then nil and a non-capacity end", states, err)
 			}
 			for _, s := range states[:2] {
 				if !errors.As(s, &capErr) || capErr.Target != "bpf_lsm_task_alloc" {
@@ -128,5 +144,31 @@ func TestSharedNodeAttachStateThroughStartNode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A failed teardown of a refused attempt ends StartNode: no further attempt
+// may run beside something possibly still attached.
+func TestSharedNodeAttachRetryStopsOnTeardownFailure(t *testing.T) {
+	sharedEnableQualification(t)
+	runs := 0
+	teardown := errors.New("injected teardown failure")
+	run := func(context.Context, gadgetcontext.Option) (func(context.Context) error, <-chan error, error) {
+		runs++
+		return func(context.Context) error { return teardown }, make(chan error, 1),
+			&nativeattach.ErrAttachCapacity{Target: "bpf_lsm_task_alloc", Err: unix.E2BIG}
+	}
+	small := &nativeattach.Retry{Initial: time.Millisecond, Max: time.Millisecond, MaxAttempts: 5, Budget: time.Second}
+	var states []error
+	config := sharedQualifiedConfig()
+	config.AttachState = func(err error) { states = append(states, err) }
+	_, err := StartNode(WithSharedNodeQualification(t.Context(), SharedNodeQualification{Run: run, attachRetry: small}), config)
+	var capErr *nativeattach.ErrAttachCapacity
+	if runs != 1 || !errors.Is(err, teardown) || !errors.Is(err, ErrSharedNodeNotReady) || !errors.As(err, &capErr) {
+		t.Fatalf("runs %d err %v, want one run and the typed refusal joined with the teardown failure", runs, err)
+	}
+	// The host sees the refusal the returned error wraps as the last state.
+	if len(states) == 0 || !errors.As(states[len(states)-1], &capErr) || capErr.Target != "bpf_lsm_task_alloc" {
+		t.Fatalf("attach states %v, want the refusal last", states)
 	}
 }
