@@ -205,13 +205,28 @@ func goTextStart(f *safeelf.File, textSection *elf.Section, pclntabData []byte) 
 		return 0, fmt.Errorf("reading .dynsym: %w", err)
 	}
 	if externallyLinked {
-		return 0, errors.New("pclntab textStart unavailable for externally linked binary")
+		return 0, fmt.Errorf("%w: pclntab textStart unavailable for externally linked binary", errGoSymbolUnsupported)
 	}
 
 	// Internally linked binaries may leave textStart unset. In that format,
 	// pclntab function offsets are relative to the ELF .text section.
 	return textSection.Addr, nil
 }
+
+// errGoSymbolNotFound reports that the binary parsed cleanly and has no such
+// function. It is a stable answer for a file version, so goSymbols caches it.
+var errGoSymbolNotFound = errors.New("not found in .gopclntab")
+
+// errGoSymbolUnsupported reports a binary layout this resolver cannot read.
+// It depends only on the file version, so goSymbols caches it as a negative
+// answer instead of reading .gopclntab again on every attach.
+var errGoSymbolUnsupported = errors.New("unsupported Go binary")
+
+// goParseSlots bounds concurrent .gopclntab reads of different binaries, so
+// their peaks do not stack. goSymbols already collapses reads of one binary.
+// Only the read and the table build hold a slot; the cheap section checks
+// before them do not, so non-Go executables never wait.
+var goParseSlots = make(chan struct{}, 2)
 
 // resolveGoSymbol is the Go symbol resolver. It looks up a function address in
 // a Go binary's .gopclntab section. It works when the standard ELF symbol
@@ -265,7 +280,7 @@ func resolveGoSymbol(file *os.File, symbol string) (addr uint64, err error) {
 		return 0, fmt.Errorf("no .gopclntab section found (not a Go binary?)")
 	}
 	if pclntab.Size > maxGoSectionSize {
-		return 0, fmt.Errorf(".gopclntab too large (%d bytes, max %d)", pclntab.Size, maxGoSectionSize)
+		return 0, fmt.Errorf("%w: .gopclntab too large (%d bytes, max %d)", errGoSymbolUnsupported, pclntab.Size, maxGoSectionSize)
 	}
 
 	// .gosymtab may be absent in stripped binaries. Go 1.16+ embeds all
@@ -273,7 +288,7 @@ func resolveGoSymbol(file *os.File, symbol string) (addr uint64, err error) {
 	var symtabData []byte
 	if symtab := f.Section(".gosymtab"); symtab != nil {
 		if symtab.Size > maxGoSectionSize {
-			return 0, fmt.Errorf(".gosymtab too large (%d bytes, max %d)", symtab.Size, maxGoSectionSize)
+			return 0, fmt.Errorf("%w: .gosymtab too large (%d bytes, max %d)", errGoSymbolUnsupported, symtab.Size, maxGoSectionSize)
 		}
 		symtabData, err = symtab.Data()
 		if err != nil {
@@ -286,6 +301,8 @@ func resolveGoSymbol(file *os.File, symbol string) (addr uint64, err error) {
 		return 0, fmt.Errorf("no .text section found")
 	}
 
+	goParseSlots <- struct{}{}
+	defer func() { <-goParseSlots }()
 	pclntabData, err := pclntab.Data()
 	if err != nil {
 		return 0, fmt.Errorf("reading .gopclntab: %w", err)
@@ -300,21 +317,21 @@ func resolveGoSymbol(file *os.File, symbol string) (addr uint64, err error) {
 	// allocation is a fatal runtime error that recover() cannot catch.
 	funcCount, err := pclntabFuncCount(pclntabData, f.ByteOrder)
 	if err != nil {
-		return 0, fmt.Errorf("reading Go function count: %w", err)
+		return 0, fmt.Errorf("%w: reading Go function count: %w", errGoSymbolUnsupported, err)
 	}
 	if funcCount > maxGoFuncCount {
-		return 0, fmt.Errorf("too many Go functions: %d (max %d)", funcCount, maxGoFuncCount)
+		return 0, fmt.Errorf("%w: too many Go functions: %d (max %d)", errGoSymbolUnsupported, funcCount, maxGoFuncCount)
 	}
 
 	lineTable := gosym.NewLineTable(pclntabData, textStart)
 	table, err := gosym.NewTable(symtabData, lineTable)
 	if err != nil {
-		return 0, fmt.Errorf("parsing Go symbol table: %w", err)
+		return 0, fmt.Errorf("%w: parsing Go symbol table: %w", errGoSymbolUnsupported, err)
 	}
 
 	fn := table.LookupFunc(symbol)
 	if fn == nil {
-		return 0, fmt.Errorf("symbol %q not found in .gopclntab", symbol)
+		return 0, fmt.Errorf("symbol %q: %w", symbol, errGoSymbolNotFound)
 	}
 
 	// Convert virtual address to file offset using the executable LOAD segment.

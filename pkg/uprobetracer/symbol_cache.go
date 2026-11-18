@@ -29,7 +29,14 @@ import (
 
 // Keep only individual answers, never ELF symbol tables, executable objects or
 // descriptors. The bound covers successes and stable negative answers alike.
-var ordinarySymbols = newSymbolCache(2048)
+var ordinarySymbols = newSymbolCache(2048, parseOrdinarySymbol)
+
+// goSymbols caches the stripped-Go fallback. One lookup reads all of
+// .gopclntab and builds a table of every function in the binary, tens of
+// megabytes for a large binary. Uncached, that work repeated on every attach
+// to every process of the binary, and a burst of new Go processes pushed the
+// agent past its memory limit.
+var goSymbols = newSymbolCache(2048, parseGoSymbol)
 
 type symbolVersion struct {
 	device, inode     uint64
@@ -63,8 +70,24 @@ type symbolCache struct {
 	parse    func(*os.File, string) (symbolResult, error)
 }
 
-func newSymbolCache(capacity int) *symbolCache {
-	return &symbolCache{capacity: capacity, entries: make(map[symbolKey]*list.Element), pending: make(map[symbolKey]*symbolFlight), parse: parseOrdinarySymbol}
+func newSymbolCache(capacity int, parse func(*os.File, string) (symbolResult, error)) *symbolCache {
+	return &symbolCache{capacity: capacity, entries: make(map[symbolKey]*list.Element), pending: make(map[symbolKey]*symbolFlight), parse: parse}
+}
+
+// parseGoSymbol adapts resolveGoSymbol to the cache. A missing function and an
+// unsupported layout are cached negative answers; every other error (I/O, a
+// recovered panic) stays uncached, as for ordinary symbols.
+func parseGoSymbol(file *os.File, name string) (symbolResult, error) {
+	address, err := resolveGoSymbol(file, name)
+	if errors.Is(err, errGoSymbolNotFound) || errors.Is(err, errGoSymbolUnsupported) {
+		return symbolResult{}, nil
+	}
+	if err != nil {
+		return symbolResult{}, err
+	}
+	// .gopclntab gives no ELF symbol size. A resolved function is never empty,
+	// so report a non-zero size for offset().
+	return symbolResult{address: address, size: 1, found: true}, nil
 }
 
 func fileSymbolVersion(file *os.File) (symbolVersion, error) {
@@ -212,7 +235,7 @@ func (t *Tracer[Event]) bindOrdinarySites(file *os.File, offsets []uint64, bind 
 			// fallback for stripped Go binaries. Go uretprobes are excluded
 			// because their return handling must account for moving stacks.
 			var goErr error
-			offset, goErr = resolveGoSymbol(file, t.attachSymbol)
+			offset, goErr = goSymbols.resolve(file, t.attachSymbol)
 			if goErr != nil {
 				return nil, fmt.Errorf("resolving symbol %q (ELF: %w; gopclntab: %w)", t.attachSymbol, err, goErr)
 			}

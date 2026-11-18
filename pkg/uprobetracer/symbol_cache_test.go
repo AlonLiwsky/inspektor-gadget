@@ -31,6 +31,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/ebpf/link"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,7 +47,7 @@ func cacheTestFile(t *testing.T) *os.File {
 
 func TestSymbolCacheReuseEvictionAndErrors(t *testing.T) {
 	f := cacheTestFile(t)
-	c := newSymbolCache(2)
+	c := newSymbolCache(2, parseOrdinarySymbol)
 	calls := 0
 	c.parse = func(*os.File, string) (symbolResult, error) { calls++; return symbolResult{}, nil }
 	for range 2 {
@@ -69,7 +70,7 @@ func TestSymbolCacheReuseEvictionAndErrors(t *testing.T) {
 
 func TestSymbolCacheConcurrentMiss(t *testing.T) {
 	f := cacheTestFile(t)
-	c := newSymbolCache(2)
+	c := newSymbolCache(2, parseOrdinarySymbol)
 	var calls atomic.Int32
 	started, release := make(chan struct{}), make(chan struct{})
 	c.parse = func(*os.File, string) (symbolResult, error) {
@@ -94,7 +95,7 @@ func TestSymbolCacheConcurrentMiss(t *testing.T) {
 
 func TestSymbolCacheFileChanges(t *testing.T) {
 	f := cacheTestFile(t)
-	c := newSymbolCache(2)
+	c := newSymbolCache(2, parseOrdinarySymbol)
 	calls := 0
 	c.parse = func(*os.File, string) (symbolResult, error) { calls++; return symbolResult{}, nil }
 	_, _ = c.resolve(f, "target")
@@ -122,7 +123,7 @@ func TestSymbolCacheFileChanges(t *testing.T) {
 
 func TestSymbolCacheDoesNotCacheConcurrentRewrite(t *testing.T) {
 	f := cacheTestFile(t)
-	c := newSymbolCache(2)
+	c := newSymbolCache(2, parseOrdinarySymbol)
 	c.parse = func(*os.File, string) (symbolResult, error) {
 		require.NoError(t, f.Truncate(100))
 		return symbolResult{found: true, address: 1, size: 1}, nil
@@ -149,7 +150,7 @@ func TestSymbolResultErrors(t *testing.T) {
 
 func TestSymbolCacheLongNames(t *testing.T) {
 	f := cacheTestFile(t)
-	c := newSymbolCache(2)
+	c := newSymbolCache(2, parseOrdinarySymbol)
 	c.parse = func(*os.File, string) (symbolResult, error) { return symbolResult{}, nil }
 	_, err := c.resolve(f, strings.Repeat("x", 1025))
 	require.ErrorIs(t, err, link.ErrNoSymbol)
@@ -160,7 +161,7 @@ func TestSymbolCacheSymlinkAndDescriptorReuse(t *testing.T) {
 	first, second := cacheTestFile(t), cacheTestFile(t)
 	symlink := filepath.Join(t.TempDir(), "link")
 	require.NoError(t, os.Symlink(first.Name(), symlink))
-	c := newSymbolCache(4)
+	c := newSymbolCache(4, parseOrdinarySymbol)
 	calls := 0
 	c.parse = func(*os.File, string) (symbolResult, error) { calls++; return symbolResult{}, nil }
 	opened, err := os.Open(symlink)
@@ -365,7 +366,7 @@ func BenchmarkOrdinarySymbolAbsent(b *testing.B) {
 			name = "cache"
 		}
 		b.Run(name, func(b *testing.B) {
-			c := newSymbolCache(2048)
+			c := newSymbolCache(2048, parseOrdinarySymbol)
 			_, _ = c.resolve(f, "absent_uprobe_symbol")
 			b.ReportAllocs()
 			for b.Loop() {
@@ -395,7 +396,7 @@ func TestParseOrdinarySymbolReadsDynamicErrors(t *testing.T) {
 	require.NoError(t, err)
 	_, err = parseOrdinarySymbol(f, "target")
 	require.Error(t, err)
-	c := newSymbolCache(2)
+	c := newSymbolCache(2, parseOrdinarySymbol)
 	_, err = c.resolve(f, "target")
 	require.Error(t, err)
 	require.Empty(t, c.entries)
@@ -408,4 +409,88 @@ func TestParseOrdinarySymbolNonExecutableSegment(t *testing.T) {
 	result, err := parseOrdinarySymbol(f, "target")
 	require.NoError(t, err)
 	require.Equal(t, uint64(0x1020), result.address)
+}
+
+func buildStrippedGoTarget(t *testing.T) *os.File {
+	t.Helper()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "main.go")
+	require.NoError(t, os.WriteFile(source, []byte(`package main
+//go:noinline
+func target() { println("target") }
+func main() { target() }
+`), 0o600))
+	binary := filepath.Join(dir, "target")
+	output, err := exec.Command("go", "build", "-buildvcs=false", "-ldflags=-s -w", "-o", binary, source).CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	file, err := os.Open(binary)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
+func TestGoSymbolCacheParsesOncePerFile(t *testing.T) {
+	file := buildStrippedGoTarget(t)
+	want, err := resolveGoSymbol(file, "main.target")
+	require.NoError(t, err)
+
+	var parses atomic.Int32
+	c := newSymbolCache(8, func(file *os.File, name string) (symbolResult, error) {
+		parses.Add(1)
+		return parseGoSymbol(file, name)
+	})
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := c.resolve(file, "main.target")
+			assert.NoError(t, err)
+			assert.Equal(t, want, got)
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, int32(1), parses.Load())
+
+	// A missing function is a stable answer: parse once, then answer from the cache.
+	for range 3 {
+		_, err = c.resolve(file, "main.absent")
+		require.ErrorIs(t, err, link.ErrNoSymbol)
+	}
+	require.Equal(t, int32(2), parses.Load())
+}
+
+func TestParseGoSymbolWaitsForASlot(t *testing.T) {
+	file := buildStrippedGoTarget(t)
+	taken := 0
+	t.Cleanup(func() {
+		for ; taken > 0; taken-- {
+			<-goParseSlots
+		}
+	})
+	for range cap(goParseSlots) {
+		goParseSlots <- struct{}{}
+		taken++
+	}
+	// A file without .gopclntab answers without a slot.
+	_, err := parseGoSymbol(symbolFixture(t, elf.ELFCLASS64, elf.ET_EXEC, nil, nil), "main.target")
+	require.Error(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = parseGoSymbol(file, "main.target")
+	}()
+	select {
+	case <-done:
+		t.Fatal("parse ran while every slot was taken")
+	case <-time.After(100 * time.Millisecond):
+	}
+	<-goParseSlots
+	taken--
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("parse did not run after a slot was freed")
+	}
 }
