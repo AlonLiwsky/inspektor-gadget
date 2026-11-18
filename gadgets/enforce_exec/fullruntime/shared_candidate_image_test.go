@@ -122,6 +122,7 @@ func TestBuildSharedCandidateImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	t.Setenv("IG_ENFORCE_EXEC_PROBED_KERNEL", "")
 	for name, bad := range map[string]KernelMatrixEntry{
 		"outside the matrix": {Release: "6.1.0-generic", Profile: kernel.Profile},
 		"invalid profile":    {Release: release},
