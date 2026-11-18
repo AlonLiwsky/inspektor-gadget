@@ -299,9 +299,12 @@ allocates its `struct bpf_local_storage` (about 176 bytes, 192-byte class),
 shared with the engine's other task-storage maps. So each live task that forked
 (its own fork mark) and exec'd (its exec mark) since the agent loaded holds at
 most 2 x 192 + 192 = 576 bytes, freed with the task: about 58 MB per 100,000
-live tasks in the worst case. A creation that fails (memory limit) refuses only
-that fork or exec with `-ENOMEM` and is counted in cell [10]; it never latches
-the node.
+live tasks in the worst case. Size the node-agent DaemonSet memory limit with
+headroom for `576 B * max_live_tasks` above the agent's baseline (for example,
+about 58 MiB for 100,000 live tasks). A creation that fails (memory limit) is
+counted in cell [10] and latches the node NotReady (`ErrSharedKernelWitness`);
+it refuses with `-ENOMEM` only when the task is in a Strict-bound cgroup, so
+Audit, unbound, and host tasks are never blocked.
 
 **One syscall-exit program.** `real_owner_capsule_terminal`
 (`tp_btf/sys_exit`) carries the ftrace witness and, for exec syscalls only
@@ -395,14 +398,14 @@ source into its `tracers.tar` and must reproduce the pinned digests.
 
 | Kernel | Profile | Image (local reference) | Manifest digest | Index digest |
 |---|---|---|---|---|
-| `6.12.113-138.209` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.12.113-138.209` | `sha256:30bdf381c82b2e5bdf8a1626c68e33f503ddf1862d9430430d8a2d3dfb1c4c9f` | `sha256:e79a2c415c2b20db338719008e961884ca51e9ab1305b4e6c7a3250ff9685e00` |
-| `6.12.113-138.209` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.12.113-138.209` | `sha256:bc314d4b3fc7d9f21a1f80664df9075d6a8120fb0571dc42ce7c924d63479f50` | `sha256:87114c059c5b890aab9f1d9f31566d24e1fc780de0c9172d4e4c89f1ea4500d1` |
-| `6.12.113-138.209` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.12.113-138.209` | `sha256:62fd7c179f9c8ded60d3542db4a12360973cb6e3de6c68a932a62b69ad35a1c8` | `sha256:8f85d6b0600d6203504786c16aca4b394ecb1cadd6a314448412e4dbd3ed3bb8` |
-| `6.12.113-138.209` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.12.113-138.209` | `sha256:50c3513fe33ac785f53fca547a5133c83d0cfaf9b15846873269605765d7b648` | `sha256:43ac8194eaa476e0f3d7625d9f08686fcddc61d4d006f949edda5e8362c02dc8` |
-| `6.18.56-125.164` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.18.56-125.164` | `sha256:30bdf381c82b2e5bdf8a1626c68e33f503ddf1862d9430430d8a2d3dfb1c4c9f` | `sha256:e79a2c415c2b20db338719008e961884ca51e9ab1305b4e6c7a3250ff9685e00` |
-| `6.18.56-125.164` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.18.56-125.164` | `sha256:bc314d4b3fc7d9f21a1f80664df9075d6a8120fb0571dc42ce7c924d63479f50` | `sha256:87114c059c5b890aab9f1d9f31566d24e1fc780de0c9172d4e4c89f1ea4500d1` |
-| `6.18.56-125.164` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.18.56-125.164` | `sha256:62fd7c179f9c8ded60d3542db4a12360973cb6e3de6c68a932a62b69ad35a1c8` | `sha256:8f85d6b0600d6203504786c16aca4b394ecb1cadd6a314448412e4dbd3ed3bb8` |
-| `6.18.56-125.164` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.18.56-125.164` | `sha256:50c3513fe33ac785f53fca547a5133c83d0cfaf9b15846873269605765d7b648` | `sha256:43ac8194eaa476e0f3d7625d9f08686fcddc61d4d006f949edda5e8362c02dc8` |
+| `6.12.113-138.209` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.12.113-138.209` | `sha256:394725f46a06fc712548eb8d06b077aef07362c47ccafddf63113ff63d6d744e` | `sha256:d479e1640f224cd290a60bd7d962047feae0ab138b6331764c21ac154c3ede11` |
+| `6.12.113-138.209` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.12.113-138.209` | `sha256:91ddb1816a7330af366dc580c673480a82f331bf717e895853317d69838117b3` | `sha256:d787b9305048d3dac04401ba08c0ed94d16696aaa2d02996b68b342ae99b7c06` |
+| `6.12.113-138.209` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.12.113-138.209` | `sha256:b2980cc0976550dbea549bd91a683c305254acb38acf5405dc65ad0cae005909` | `sha256:792501332082798ce6f5c8306edf8806513449d665a542e88f4ff7e3292b2116` |
+| `6.12.113-138.209` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.12.113-138.209` | `sha256:313883bc686923022d1e619aad725b8a2f86ea10400eb38d54c87894da639dbc` | `sha256:b442a32a3c4b85d6bac82d0dbaec30693af44a3007dcea4e539b0d3ff6e33f0a` |
+| `6.18.56-125.164` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.18.56-125.164` | `sha256:394725f46a06fc712548eb8d06b077aef07362c47ccafddf63113ff63d6d744e` | `sha256:d479e1640f224cd290a60bd7d962047feae0ab138b6331764c21ac154c3ede11` |
+| `6.18.56-125.164` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.18.56-125.164` | `sha256:91ddb1816a7330af366dc580c673480a82f331bf717e895853317d69838117b3` | `sha256:d787b9305048d3dac04401ba08c0ed94d16696aaa2d02996b68b342ae99b7c06` |
+| `6.18.56-125.164` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.18.56-125.164` | `sha256:b2980cc0976550dbea549bd91a683c305254acb38acf5405dc65ad0cae005909` | `sha256:792501332082798ce6f5c8306edf8806513449d665a542e88f4ff7e3292b2116` |
+| `6.18.56-125.164` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.18.56-125.164` | `sha256:313883bc686923022d1e619aad725b8a2f86ea10400eb38d54c87894da639dbc` | `sha256:b442a32a3c4b85d6bac82d0dbaec30693af44a3007dcea4e539b0d3ff6e33f0a` |
 
 - **Pins.** `testdata/shared_product_images.tsv` (release, profile, image,
   object sha256, manifest and index digest) mirrors `sharedProductImagePins`
@@ -1161,11 +1164,13 @@ User-approved G025 capacity thresholds:
     `Inspect`) for 60 s after it is observed (the fail-closed witness's
     Degraded window, `FailClosedRateDegradedWindow`), then it clears. It is
     never benign in steady state: the attach order leaves no window where a
-    capsule exists without its terminal, the final reading is taken before
-    detach, and every exec returns through `bprm_execve`'s fexit, so a
-    retire means the terminal program did not run (a trampoline recursion
-    miss). It is not sticky: the retire released the pin (a failed release
-    is a sticky release fault) and the exec's admission was evaluated.
+    capsule exists without its terminal, and the final reading is taken before
+    detach. In D1, `tp_btf/sys_exit` can be skipped by the tracing recursion
+    guard, so a death retire is an expected recovery path when `sys_exit` was
+    skipped (the health poller exports `SysExitRecursionMisses` from
+    `ProgramStats.RecursionMisses`). It is not sticky: the retire released the
+    pin (a failed release is a sticky release fault) and the exec's admission
+    was evaluated.
   - Uncovered exec (security review M2): when begin-time coverage is lost
     (the exec did not matter at begin, or the tracing helper's trylock made
     the create miss), the first selected admission freezes uncovered and

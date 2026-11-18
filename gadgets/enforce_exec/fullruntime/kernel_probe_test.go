@@ -124,7 +124,7 @@ func TestSharedProbedKernelLiveRefusal(t *testing.T) {
 func btfMemberOffsetAny(spec *btf.Spec, structName, member string) (uint32, error) {
 	structs, err := btfStructs(spec, structName)
 	if err != nil || len(structs) != 1 {
-		return 0, fmt.Errorf("BTF struct %s: %d matches, %v", structName, len(structs), err)
+		return 0, fmt.Errorf("BTF struct %s: %d matches, %w", structName, len(structs), err)
 	}
 	for _, m := range structs[0].Members {
 		if m.Name == member {

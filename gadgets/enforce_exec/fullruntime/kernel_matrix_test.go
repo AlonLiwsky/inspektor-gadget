@@ -50,11 +50,11 @@ func TestSharedCandidateKernelMatrixIsSeparate(t *testing.T) {
 	want := map[string]sharedProductPin{
 		"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": {
 			Release: "6.12.113-138.209.amzn2023.x86_64", BuildID: "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
-			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"104347be5fd2de72fbd2938599e988f109c3492f66e09ec160d22f22ff8ade66": {}, "5b4416dca8b62a81ccf920bb5004b9d09c325ac910a345b4fc62ecc6a0ab82ff": {}, "1f4165a86b4bd399ef123a6d730f7cdfb14bc714824daa22a72df5bae84000dd": {}, "8389431175a29a313a63bbc6050105be46b1519cdeb96cdc8a74d9c7c0b5024b": {}},
+			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"da796db9846e32d64b475fb2b7dbd33178e297c5630e9303c3dc57c60d9f119f": {}, "8bc88d1505dac04fa744cf9d2f0af511b2337da8dd889efa5798c64977f51987": {}, "74b21461d18e98d6336cac320e7f830a5ee8e441198e3053dcf68b98ad093845": {}, "206decf3344b9f7c90dd285d36ec653dbf5f557ef081d986fa4e56c6cd726b35": {}},
 		},
 		"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
 			Release: "6.18.56-125.164.amzn2023.x86_64", BuildID: "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
-			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"104347be5fd2de72fbd2938599e988f109c3492f66e09ec160d22f22ff8ade66": {}, "5b4416dca8b62a81ccf920bb5004b9d09c325ac910a345b4fc62ecc6a0ab82ff": {}, "1f4165a86b4bd399ef123a6d730f7cdfb14bc714824daa22a72df5bae84000dd": {}, "8389431175a29a313a63bbc6050105be46b1519cdeb96cdc8a74d9c7c0b5024b": {}},
+			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"da796db9846e32d64b475fb2b7dbd33178e297c5630e9303c3dc57c60d9f119f": {}, "8bc88d1505dac04fa744cf9d2f0af511b2337da8dd889efa5798c64977f51987": {}, "74b21461d18e98d6336cac320e7f830a5ee8e441198e3053dcf68b98ad093845": {}, "206decf3344b9f7c90dd285d36ec653dbf5f557ef081d986fa4e56c6cd726b35": {}},
 		},
 	}
 	if !reflect.DeepEqual(sharedProductPins, want) {

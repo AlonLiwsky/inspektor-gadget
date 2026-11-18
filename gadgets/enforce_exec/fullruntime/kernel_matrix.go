@@ -87,10 +87,10 @@ func (pin sharedProductPin) qualifiesProductObject(digest string) bool {
 // pinned toolchain at the neutral paths; testdata/shared_product_objects.tsv
 // mirrors them.
 var sharedProductObjects = map[string]string{
-	"g19pkg64":  "104347be5fd2de72fbd2938599e988f109c3492f66e09ec160d22f22ff8ade66",
-	"g19pkg128": "5b4416dca8b62a81ccf920bb5004b9d09c325ac910a345b4fc62ecc6a0ab82ff",
-	"g19pkg256": "1f4165a86b4bd399ef123a6d730f7cdfb14bc714824daa22a72df5bae84000dd",
-	"g19pkg512": "8389431175a29a313a63bbc6050105be46b1519cdeb96cdc8a74d9c7c0b5024b",
+	"g19pkg64":  "da796db9846e32d64b475fb2b7dbd33178e297c5630e9303c3dc57c60d9f119f",
+	"g19pkg128": "8bc88d1505dac04fa744cf9d2f0af511b2337da8dd889efa5798c64977f51987",
+	"g19pkg256": "74b21461d18e98d6336cac320e7f830a5ee8e441198e3053dcf68b98ad093845",
+	"g19pkg512": "206decf3344b9f7c90dd285d36ec653dbf5f557ef081d986fa4e56c6cd726b35",
 }
 
 // sharedProductObject reports whether digest is a product object of this
@@ -113,10 +113,10 @@ var sharedProductPins = map[string]sharedProductPin{
 		// Stage 1 qualification on this pinned build (stage-1 PR build):
 		// the stage-1 oracle (D3 34 steps, D1 18), Strict + Audit, 0 FAIL 0 SKIP.
 		ProductObjects: map[string]struct{}{
-			"104347be5fd2de72fbd2938599e988f109c3492f66e09ec160d22f22ff8ade66": {}, // g19pkg64
-			"5b4416dca8b62a81ccf920bb5004b9d09c325ac910a345b4fc62ecc6a0ab82ff": {}, // g19pkg128
-			"1f4165a86b4bd399ef123a6d730f7cdfb14bc714824daa22a72df5bae84000dd": {}, // g19pkg256
-			"8389431175a29a313a63bbc6050105be46b1519cdeb96cdc8a74d9c7c0b5024b": {}, // g19pkg512
+			"da796db9846e32d64b475fb2b7dbd33178e297c5630e9303c3dc57c60d9f119f": {}, // g19pkg64
+			"8bc88d1505dac04fa744cf9d2f0af511b2337da8dd889efa5798c64977f51987": {}, // g19pkg128
+			"74b21461d18e98d6336cac320e7f830a5ee8e441198e3053dcf68b98ad093845": {}, // g19pkg256
+			"206decf3344b9f7c90dd285d36ec653dbf5f557ef081d986fa4e56c6cd726b35": {}, // g19pkg512
 		},
 	},
 	"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
@@ -126,10 +126,10 @@ var sharedProductPins = map[string]sharedProductPin{
 		// Stage 1 qualification on this pinned build (stage-1 PR build):
 		// the stage-1 oracle (D3 34 steps, D1 18), Strict + Audit, 0 FAIL 0 SKIP.
 		ProductObjects: map[string]struct{}{
-			"104347be5fd2de72fbd2938599e988f109c3492f66e09ec160d22f22ff8ade66": {}, // g19pkg64
-			"5b4416dca8b62a81ccf920bb5004b9d09c325ac910a345b4fc62ecc6a0ab82ff": {}, // g19pkg128
-			"1f4165a86b4bd399ef123a6d730f7cdfb14bc714824daa22a72df5bae84000dd": {}, // g19pkg256
-			"8389431175a29a313a63bbc6050105be46b1519cdeb96cdc8a74d9c7c0b5024b": {}, // g19pkg512
+			"da796db9846e32d64b475fb2b7dbd33178e297c5630e9303c3dc57c60d9f119f": {}, // g19pkg64
+			"8bc88d1505dac04fa744cf9d2f0af511b2337da8dd889efa5798c64977f51987": {}, // g19pkg128
+			"74b21461d18e98d6336cac320e7f830a5ee8e441198e3053dcf68b98ad093845": {}, // g19pkg256
+			"206decf3344b9f7c90dd285d36ec653dbf5f557ef081d986fa4e56c6cd726b35": {}, // g19pkg512
 		},
 	},
 }
@@ -178,7 +178,7 @@ func sharedImageOverlayLayout(overlay *btf.Spec) (uint32, error) {
 	// A split spec may carry a type name more than once (a module's own copy
 	// of a vmlinux type): look types up by name, never by a unique match.
 	if n, err := btfStructs(overlay, "ovl_inode"); err != nil || len(n) == 0 {
-		return sharedImageOverlayLayoutUnset, fmt.Errorf("overlay BTF carries no overlayfs types (struct ovl_inode): %v", err)
+		return sharedImageOverlayLayoutUnset, fmt.Errorf("overlay BTF carries no overlayfs types (struct ovl_inode): %w", err)
 	}
 	files, err := btfStructs(overlay, "ovl_file")
 	if err != nil {

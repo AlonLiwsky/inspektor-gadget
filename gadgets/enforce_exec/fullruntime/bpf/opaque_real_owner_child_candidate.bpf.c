@@ -2616,8 +2616,9 @@ real_owner_failure_bind_receipt(const struct se_exec_terminal_receipt *receipt)
  * security_task_alloc) are marked like any child, deliberately: the mark
  * is theirs alone and dies with them, and no flag test is needed.
  * The LSM side creates the storage (LSM programs use the non-recursive
- * helper: creation only fails on an allocation failure, and then refuses
- * that one fork or exec); the tracepoint
+ * helper: creation only fails on an allocation failure; that refuses only
+ * Strict-bound tasks with -ENOMEM and counts cell [10] to latch the node
+ * NotReady so Audit and unbound tasks are never blocked); the tracepoint
  * side only looks it up (a lookup is lock-free and never refused for
  * recursion) and clears it in place.
  * Every cell is its own 64-byte line (S1 review N2): the per-exit latch
@@ -2709,6 +2710,33 @@ static __always_inline void d1_witness_set(__u32 cell)
 	else
 		d1_witness_count(cell);
 }
+/* Returns 1 if the current task's cgroup has an active Strict (class 2)
+ * route, 0 otherwise (Audit, unbound, or host). Used only on the rare
+ * witness-mark allocation failure path so Audit and unbound tasks are never
+ * refused by -ENOMEM. */
+static __attribute__((noinline)) int d1_task_in_strict_cgroup(void)
+{
+	__u64 cgroup = bpf_get_current_cgroup_id();
+	if (!cgroup)
+		return 0;
+	const __u64 *locator = se_opaque_real_route_index(&cgroup);
+	if (!locator)
+		return 0;
+	__u64 loc = *locator;
+	__u32 slot = (__u32)loc;
+	struct se_route_anchor *a = se_opaque_real_route_anchor(&slot);
+	if (!a)
+		return 0;
+	int strict = 0;
+	bpf_spin_lock(&a->lock);
+	if ((__u32)loc == a->payload_slot &&
+	    (__u32)(loc >> 32) == a->incarnation && a->incarnation &&
+	    a->cgroup_identity == cgroup && a->phase == SE_ROUTE_ACTIVE &&
+	    a->execution_class == 2)
+		strict = 1;
+	bpf_spin_unlock(&a->lock);
+	return strict;
+}
 /* LSM half of the fork pair: mark the child in its own task storage.
  * noinline: off the task_alloc frame (512-byte combined stack). Returns -1
  * when the storage cannot be created (an allocation failure): S1 review R1,
@@ -2732,9 +2760,9 @@ static __attribute__((noinline)) int d1_fork_mark(struct task_struct *child)
  * bprm_committed_creds, which cannot refuse, only fills it. */
 static __attribute__((noinline)) int d1_exec_mark_reserve(void)
 {
-	struct d1_exec_mark *mark = bpf_task_storage_get(
-		&d1_exec_marks, bpf_get_current_task_btf(), 0,
-		BPF_LOCAL_STORAGE_GET_F_CREATE);
+	struct d1_exec_mark *mark =
+		bpf_task_storage_get(&d1_exec_marks, bpf_get_current_task_btf(),
+				     0, BPF_LOCAL_STORAGE_GET_F_CREATE);
 	if (!mark) {
 		d1_witness_count(D1_WIT_MARK_FAILED);
 		return -1;
@@ -2844,8 +2872,8 @@ static __always_inline int d1_sys_exit_skipped(void)
  * exec id) reaches this function, and is marked uncertain exactly as a
  * nested kprobe entry was, so this exec cannot bind a receipt (fail closed),
  * and its own exit removes it. */
-static __attribute__((noinline)) void
-real_owner_failure_frames_open(__u64 key, __u64 bprm)
+static __attribute__((noinline)) void real_owner_failure_frames_open(__u64 key,
+								     __u64 bprm)
 {
 	struct se_failure_outer_frame *old =
 		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
@@ -3052,8 +3080,7 @@ static __attribute__((noinline)) int real_owner_failure_frames_heal(__u64 key)
  * (real_owner_capsule_terminal) calls it for exec syscalls only; it runs
  * before the capsule part, as its own program did (attach order by name). */
 #define S1_HAVE_FAILURE_TERMINAL 1
-static __attribute__((noinline)) int
-real_owner_failure_terminal(long ret)
+static __attribute__((noinline)) int real_owner_failure_terminal(long ret)
 {
 	__u64 key = (__u64)bpf_get_current_task_btf();
 	const struct se_failure_outer_frame *frame =
@@ -3871,8 +3898,8 @@ long BPF_PROG(opaque_real_owner_child_source_candidate,
 	if (prior_ret)
 		return prior_ret;
 #ifdef ENFORCE_EXEC_D1_LSM_ONLY
-	if (unmarked)
-		return -12; /* -ENOMEM: this fork only (S1 review R1) */
+	if (unmarked && d1_task_in_strict_cgroup())
+		return -12; /* -ENOMEM: Strict-bound fork only */
 #endif
 #ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 	/* A reused task_struct address must never inherit a prior receipt. If
@@ -7432,9 +7459,10 @@ long BPF_PROG(real_owner_capsule_begin, struct linux_binprm *bprm, int prior)
 	__s64 prior_ret = (__s64)ctx[1];
 	if (prior_ret)
 		return prior_ret;
-	/* S1 review R1: no exec without its witness mark storage. */
-	if (d1_exec_mark_reserve())
-		return -12; /* -ENOMEM: this exec only */
+	/* Only Strict-bound execs are refused on mark allocation failure; Audit
+	 * and unbound tasks proceed and cell [10] latches the node NotReady. */
+	if (d1_exec_mark_reserve() && d1_task_in_strict_cgroup())
+		return -12; /* -ENOMEM: Strict-bound exec only */
 	(void)real_owner_capsule_begin_core(bprm);
 	if (real_owner_failure_scope()) {
 		__u64 task = (__u64)bpf_get_current_task_btf();
@@ -7909,8 +7937,7 @@ long BPF_PROG(opaque_real_owner_reader_begin_probe, struct linux_binprm *bprm,
  * terminal leaves the receipt pending and fails the task's next fork or
  * exec closed. */
 SEC("lsm/bprm_committed_creds")
-int BPF_PROG(opaque_real_owner_reader_success_probe,
-	     struct linux_binprm *bprm)
+int BPF_PROG(opaque_real_owner_reader_success_probe, struct linux_binprm *bprm)
 {
 	d1_witness_count(D1_WIT_LSM_COMMIT);
 	d1_exec_mark();

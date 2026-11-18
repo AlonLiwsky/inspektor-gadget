@@ -24,21 +24,21 @@ func tracing(fn string, at ebpf.AttachType) *ebpf.ProgramSpec {
 
 func TestOrderLifecycleMovementDecision(t *testing.T) {
 	programs := map[string]*ebpf.ProgramSpec{
-		"a_check":     lsm("bprm_check_security"),
-		"b_begin":     tracing("security_bprm_creds_for_exec", ebpf.AttachTraceFEntry),
+		"a_check":      lsm("bprm_check_security"),
+		"b_begin":      tracing("security_bprm_creds_for_exec", ebpf.AttachTraceFEntry),
 		"c_entry":      tracing("bprm_execve", ebpf.AttachTraceFEntry),
 		"d1_committed": lsm("bprm_committed_creds"),
 		"d2_sys_exit":  tracing("sys_exit", ebpf.AttachTraceRawTp),
 		"d_terminal":   tracing("bprm_execve", ebpf.AttachTraceFExit),
-		"e_migrate":   tracing("cgroup_migrate", ebpf.AttachTraceFEntry),
-		"f_newtask":   tracing("task_newtask", ebpf.AttachTraceRawTp),
-		"g_alloc":     lsm("task_alloc"),
-		"h_free":      lsm("task_free"),
-		"i_alloc":     lsm("task_alloc"),
-		"j_command":   {Type: ebpf.Syscall},
-		"k_publisher": lsm("task_prctl"),
-		"l_exit":      tracing("sched_process_exit", ebpf.AttachTraceRawTp),
-		"m_exec":      tracing("sched_process_exec", ebpf.AttachTraceRawTp),
+		"e_migrate":    tracing("cgroup_migrate", ebpf.AttachTraceFEntry),
+		"f_newtask":    tracing("task_newtask", ebpf.AttachTraceRawTp),
+		"g_alloc":      lsm("task_alloc"),
+		"h_free":       lsm("task_free"),
+		"i_alloc":      lsm("task_alloc"),
+		"j_command":    {Type: ebpf.Syscall},
+		"k_publisher":  lsm("task_prctl"),
+		"l_exit":       tracing("sched_process_exit", ebpf.AttachTraceRawTp),
+		"m_exec":       tracing("sched_process_exec", ebpf.AttachTraceRawTp),
 	}
 	// D1: the sched_process_exec tp_btf (kernel witness) attaches after the
 	// exec terminals (including lsm/bprm_committed_creds and tp_btf/sys_exit).

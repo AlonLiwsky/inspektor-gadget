@@ -57,7 +57,7 @@ const (
 	sharedWitnessForkUnmarked = 7  // forks without their LSM mark
 	sharedWitnessKsymResolved = 8  // 1: the ftrace_enabled ksym resolved
 	sharedWitnessKsymMissing  = 9  // 1: it did not ([4] is disarmed)
-	sharedWitnessMarkFailed   = 10 // mark inserts that failed (informational)
+	sharedWitnessMarkFailed   = 10 // mark inserts that failed (latches NotReady)
 )
 
 // sharedKernelWitnessVerdict judges one reading. S1 review F2: the exec and
@@ -75,8 +75,11 @@ func sharedKernelWitnessVerdict(c [sharedKernelWitnessCells]uint64) error {
 	if n := c[sharedWitnessForkUnmarked]; n != 0 {
 		reasons = append(reasons, fmt.Sprintf("%d fork(s) reached sched_process_fork without the lsm/task_alloc mark", n))
 	}
-	if c[sharedWitnessKsymMissing] != 0 {
+	if n := c[sharedWitnessKsymMissing]; n != 0 {
 		reasons = append(reasons, "the ftrace_enabled ksym is unresolved: the ftrace signal is disarmed")
+	}
+	if n := c[sharedWitnessMarkFailed]; n != 0 {
+		reasons = append(reasons, fmt.Sprintf("%d witness mark allocation(s) failed", n))
 	}
 	if len(reasons) == 0 {
 		return nil
@@ -97,9 +100,9 @@ func sharedKernelWitnessVerdict(c [sharedKernelWitnessCells]uint64) error {
 // down) and calls StartNode again; the witness counts from load, so only a
 // NEW load starts clean. The agent retries with backoff (the race needs an
 // exec or fork in flight during the few milliseconds of the attach); a
-// refusal that recurs on every attempt is not this race and is reported as
-// the plain witness fault. Every other witness refusal at start (ftrace seen
-// off, the ftrace ksym unresolved) is permanent for this boot: it is NOT
+// refusal that recurs on every attempt is not this race and is returned
+// as-is on the final attempt. Every other witness refusal at start (ftrace
+// seen off, the ftrace ksym unresolved) is permanent for this boot: it is NOT
 // marked retryable.
 var ErrSharedKernelWitnessRetryable = errors.New("kernel witness: an exec or fork straddled the attach; retry StartNode")
 
@@ -154,17 +157,19 @@ func StartNodeRetrying(ctx context.Context, attempts int, backoff, maxBackoff ti
 }
 
 type sharedLiveKernelWitness struct {
-	read     func() ([sharedKernelWitnessCells]uint64, error)
-	interval time.Duration
+	read                func() ([sharedKernelWitnessCells]uint64, error)
+	readRecursionMisses func() (uint64, error)
+	interval            time.Duration
 
 	mu    sync.Mutex
 	fault error // latched
 	// closed: the collection is closing; the maps are never read again and
 	// the verdict is the last reading's.
-	closed bool
-	last   [sharedKernelWitnessCells]uint64
-	stop   chan struct{}
-	done   chan struct{}
+	closed              bool
+	last                [sharedKernelWitnessCells]uint64
+	lastRecursionMisses uint64
+	stop                chan struct{}
+	done                chan struct{}
 	// stopOnce: NodeEnforcer.stopLiveHealth runs from Stop, Close and
 	// stopLiveCollection (StopNode), which can overlap on different
 	// goroutines; the poller is joined and the final reading taken once,
@@ -174,7 +179,7 @@ type sharedLiveKernelWitness struct {
 
 // borrowSharedKernelWitness borrows the witness map (the programs count from
 // load; there is nothing to arm).
-func borrowSharedKernelWitness(gc operators.GadgetContext, interval time.Duration) (*sharedLiveKernelWitness, error) {
+func borrowSharedKernelWitness(gc operators.GadgetContext, receipts map[string]*operators.NativeAttachment, interval time.Duration) (*sharedLiveKernelWitness, error) {
 	value, _ := gc.GetVar(operators.MapPrefix + sharedKernelWitnessMap)
 	cells, _ := value.(*ebpf.Map)
 	if cells == nil || cells.MaxEntries() != sharedKernelWitnessCells || cells.ValueSize() != sharedKernelWitnessCellSize {
@@ -191,16 +196,46 @@ func borrowSharedKernelWitness(gc operators.GadgetContext, interval time.Duratio
 		}
 		return c, nil
 	}
+	var sysExitProgID uint32
+	for _, r := range receipts {
+		if r != nil && r.Target == "sys_exit" && r.ProgramID != 0 {
+			sysExitProgID = r.ProgramID
+			break
+		}
+	}
+	var readMisses func() (uint64, error)
+	if sysExitProgID != 0 {
+		readMisses = func() (uint64, error) {
+			p, err := ebpf.NewProgramFromID(ebpf.ProgramID(sysExitProgID))
+			if err != nil {
+				return 0, err
+			}
+			defer p.Close()
+			st, err := p.Stats()
+			if err != nil {
+				return 0, err
+			}
+			return st.RecursionMisses, nil
+		}
+	}
 	if interval <= 0 {
 		interval = SharedFailClosedPollInterval
 	}
-	return &sharedLiveKernelWitness{read: read, interval: interval}, nil
+	return &sharedLiveKernelWitness{read: read, readRecursionMisses: readMisses, interval: interval}, nil
 }
 
 func (w *sharedLiveKernelWitness) sample() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.fault != nil || w.closed {
+	if w.closed {
+		return
+	}
+	if w.readRecursionMisses != nil {
+		if misses, err := w.readRecursionMisses(); err == nil {
+			w.lastRecursionMisses = misses
+		}
+	}
+	if w.fault != nil {
 		return
 	}
 	c, err := w.read()
@@ -270,15 +305,33 @@ func (n *NodeEnforcer) KernelWitness() ([sharedKernelWitnessCells]uint64, error)
 	return w.last, err
 }
 
+// SysExitRecursionMisses returns the last sampled kernel recursion-miss count
+// (ProgramStats.RecursionMisses) for the tp_btf/sys_exit terminal program.
+func (n *NodeEnforcer) SysExitRecursionMisses() (uint64, error) {
+	n.mu.Lock()
+	var w *sharedLiveKernelWitness
+	if n.host != nil && n.host.live != nil {
+		w = n.host.live.witness
+	}
+	n.mu.Unlock()
+	if w == nil {
+		return 0, fmt.Errorf("no kernel witness")
+	}
+	err := w.check()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lastRecursionMisses, err
+}
+
 // sharedStartKernelWitness runs the attach canary, then borrows and arms the
 // kernel witness. A variable only so that unit tests with a fake native host
 // (no kernel maps, fake program IDs) can stand in for it; product code never
 // replaces it.
-var sharedStartKernelWitness = func(gc operators.GadgetContext, receipts map[string]*operators.NativeAttachment, interval time.Duration) (*sharedLiveKernelWitness, error) {
-	if err := runSharedAttachCanary(receipts); err != nil {
+var sharedStartKernelWitness = func(gc operators.GadgetContext, receipts map[string]*operators.NativeAttachment, interval time.Duration, canaryCmd []string) (*sharedLiveKernelWitness, error) {
+	if err := runSharedAttachCanaryWith(receipts, canaryCmd); err != nil {
 		return nil, err
 	}
-	w, err := borrowSharedKernelWitness(gc, interval)
+	w, err := borrowSharedKernelWitness(gc, receipts, interval)
 	if err != nil {
 		return nil, err
 	}
@@ -299,6 +352,10 @@ var sharedStartKernelWitness = func(gc operators.GadgetContext, receipts map[str
 // forks and execs this binary as a canary (which exits at once), and
 // requires each receipt's program run count to have increased.
 func runSharedAttachCanary(receipts map[string]*operators.NativeAttachment) error {
+	return runSharedAttachCanaryWith(receipts, nil)
+}
+
+func runSharedAttachCanaryWith(receipts map[string]*operators.NativeAttachment, canaryCmd []string) error {
 	stats, err := ebpf.EnableStats(uint32(unix.BPF_STATS_RUN_TIME))
 	if err != nil {
 		return fmt.Errorf("attach canary: BPF run statistics: %w", err)
@@ -327,8 +384,13 @@ func runSharedAttachCanary(receipts map[string]*operators.NativeAttachment) erro
 	var silent []string
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		cmd := exec.Command("/proc/self/exe")
-		cmd.Env = []string{sharedCanaryEnv + "=1"}
+		var cmd *exec.Cmd
+		if len(canaryCmd) > 0 {
+			cmd = exec.Command(canaryCmd[0], canaryCmd[1:]...)
+		} else {
+			cmd = exec.Command("/proc/self/exe")
+			cmd.Env = []string{sharedCanaryEnv + "=1"}
+		}
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("attach canary: exec: %w", err)
 		}

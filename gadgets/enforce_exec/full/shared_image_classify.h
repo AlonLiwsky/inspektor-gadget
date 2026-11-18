@@ -236,9 +236,9 @@ static __always_inline int se_image_classify(struct file *outer, __u64 handle,
 	/* The loader's probed layout and this object's own relocation of
 	 * struct ovl_file must agree; any disagreement (module BTF loaded after
 	 * the probe, a relocation target the loader did not see) refuses. */
-	int relocated = bpf_core_type_exists(struct ovl_file___se_image) &&
-			bpf_core_field_exists(struct ovl_file___se_image,
-					      realfile);
+	int relocated =
+		bpf_core_type_exists(struct ovl_file___se_image) &&
+		bpf_core_field_exists(struct ovl_file___se_image, realfile);
 	if ((layout != SE_IMAGE_OVL_LAYOUT_REALFILE &&
 	     layout != SE_IMAGE_OVL_LAYOUT_OVL_FILE) ||
 	    (backing != SE_IMAGE_FMODE_BACKING_24 &&
@@ -254,8 +254,8 @@ static __always_inline int se_image_classify(struct file *outer, __u64 handle,
 	} else {
 		struct ovl_file___se_image *of = private;
 		if (BPF_CORE_READ_INTO(&real, of, realfile))
-			return se_image_class_note(
-				w, SE_IMAGE_CLASS_READ_FAULT, -1);
+			return se_image_class_note(w, SE_IMAGE_CLASS_READ_FAULT,
+						   -1);
 	}
 	if (!real)
 		return se_image_class_note(w, SE_IMAGE_CLASS_AUTH, -1);

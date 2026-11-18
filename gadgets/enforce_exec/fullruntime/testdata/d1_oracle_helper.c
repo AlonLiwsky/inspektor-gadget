@@ -90,7 +90,6 @@ static void *idle_thread(void *p)
 	return 0;
 }
 
-
 /* S1 review N1: count this process's tasks whose comm starts with prefix. */
 static long count_tasks(const char *prefix)
 {
@@ -103,7 +102,8 @@ static long count_tasks(const char *prefix)
 		if (e->d_name[0] == '.')
 			continue;
 		char path[300], comm[32] = { 0 };
-		snprintf(path, sizeof(path), "/proc/self/task/%s/comm", e->d_name);
+		snprintf(path, sizeof(path), "/proc/self/task/%s/comm",
+			 e->d_name);
 		int fd = open(path, O_RDONLY);
 		if (fd < 0)
 			continue;
@@ -199,9 +199,10 @@ int main(int argc, char **argv)
 		size_t sqsz = p.sq_off.array + p.sq_entries * sizeof(unsigned);
 		char *sq = mmap(0, sqsz, PROT_READ | PROT_WRITE, MAP_SHARED,
 				ring, IORING_OFF_SQ_RING);
-		struct io_uring_sqe *sqes = mmap(
-			0, p.sq_entries * sizeof(struct io_uring_sqe),
-			PROT_READ | PROT_WRITE, MAP_SHARED, ring, IORING_OFF_SQES);
+		struct io_uring_sqe *sqes =
+			mmap(0, p.sq_entries * sizeof(struct io_uring_sqe),
+			     PROT_READ | PROT_WRITE, MAP_SHARED, ring,
+			     IORING_OFF_SQES);
 		if (sq == MAP_FAILED || sqes == MAP_FAILED) {
 			out("MMAP_ERRNO=%ld\n", errno);
 			return 1;
@@ -213,7 +214,8 @@ int main(int argc, char **argv)
 		}
 		unsigned *array = (unsigned *)(sq + p.sq_off.array);
 		unsigned *tail = (unsigned *)(sq + p.sq_off.tail);
-		unsigned t = *tail, mask = *(unsigned *)(sq + p.sq_off.ring_mask);
+		unsigned t = *tail,
+			 mask = *(unsigned *)(sq + p.sq_off.ring_mask);
 		for (unsigned i = 0; i < n && i < p.sq_entries; i++) {
 			struct io_uring_sqe *e = &sqes[i];
 			memset(e, 0, sizeof(*e));
@@ -241,17 +243,32 @@ int main(int argc, char **argv)
 		/* Requests that already completed (a worker never parked on
 		 * them): COMPLETED and the first result, for the record. */
 		{
-			size_t cqsz = p.cq_off.cqes + p.cq_entries * sizeof(struct io_uring_cqe);
-			char *cq = (p.features & IORING_FEAT_SINGLE_MMAP) ? sq :
-				mmap(0, cqsz, PROT_READ | PROT_WRITE, MAP_SHARED, ring, IORING_OFF_CQ_RING);
+			size_t cqsz =
+				p.cq_off.cqes +
+				p.cq_entries * sizeof(struct io_uring_cqe);
+			char *cq = (p.features & IORING_FEAT_SINGLE_MMAP) ?
+					   sq :
+					   mmap(0, cqsz, PROT_READ | PROT_WRITE,
+						MAP_SHARED, ring,
+						IORING_OFF_CQ_RING);
 			if (p.features & IORING_FEAT_SINGLE_MMAP && cqsz > sqsz)
-				cq = mmap(0, cqsz, PROT_READ | PROT_WRITE, MAP_SHARED, ring, IORING_OFF_SQ_RING);
+				cq = mmap(0, cqsz, PROT_READ | PROT_WRITE,
+					  MAP_SHARED, ring, IORING_OFF_SQ_RING);
 			if (cq != MAP_FAILED) {
-				unsigned head = *(unsigned *)(cq + p.cq_off.head);
-				unsigned ctail = __atomic_load_n((unsigned *)(cq + p.cq_off.tail), __ATOMIC_ACQUIRE);
+				unsigned head =
+					*(unsigned *)(cq + p.cq_off.head);
+				unsigned ctail = __atomic_load_n(
+					(unsigned *)(cq + p.cq_off.tail),
+					__ATOMIC_ACQUIRE);
 				out("COMPLETED=%ld\n", (long)(ctail - head));
 				if (ctail != head)
-					out("FIRST_RES=%ld\n", ((struct io_uring_cqe *)(cq + p.cq_off.cqes))[head & *(unsigned *)(cq + p.cq_off.ring_mask)].res);
+					out("FIRST_RES=%ld\n",
+					    ((struct io_uring_cqe
+						      *)(cq + p.cq_off.cqes))
+						    [head &
+						     *(unsigned *)(cq +
+								   p.cq_off.ring_mask)]
+							    .res);
 			}
 		}
 		out("WORKERS=%ld\n", w);

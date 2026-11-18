@@ -1112,7 +1112,7 @@ func (n *NodeEnforcer) startLiveCandidate(gc operators.GadgetContext, admitted *
 	if m, ok := admitted.Maps[sharedKernelWitnessMap]; !ok || m.Type != uint32(ebpf.Array) || m.KeySize != 4 || m.ValueSize != sharedKernelWitnessCellSize || m.MaxEntries != sharedKernelWitnessCells {
 		return fmt.Errorf("shared candidate kernel witness map %s missing or malformed", sharedKernelWitnessMap)
 	}
-	witness, err := sharedStartKernelWitness(gc, receipts, n.config.FailClosedPollInterval)
+	witness, err := sharedStartKernelWitness(gc, receipts, n.config.FailClosedPollInterval, n.config.CanaryCommand)
 	if err != nil {
 		return err
 	}

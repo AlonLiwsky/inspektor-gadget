@@ -23,12 +23,12 @@ import (
 // context that publishes the real d1_witness map always gets the real path.
 func init() {
 	start := sharedStartKernelWitness
-	sharedStartKernelWitness = func(gc operators.GadgetContext, receipts map[string]*operators.NativeAttachment, interval time.Duration) (*sharedLiveKernelWitness, error) {
+	sharedStartKernelWitness = func(gc operators.GadgetContext, receipts map[string]*operators.NativeAttachment, interval time.Duration, canaryCmd []string) (*sharedLiveKernelWitness, error) {
 		value, _ := gc.GetVar(operators.MapPrefix + sharedKernelWitnessMap)
 		if m, _ := value.(*ebpf.Map); m == nil {
 			return nil, nil
 		}
-		return start(gc, receipts, interval)
+		return start(gc, receipts, interval, canaryCmd)
 	}
 }
 
@@ -43,7 +43,7 @@ func TestSharedKernelWitnessVerdict(t *testing.T) {
 		"banked credit is no fault":    {cells: [11]uint64{9, 10, 7, 9}},
 		"counts alone never latch":     {cells: [11]uint64{11, 10, 8, 7}},
 		"healed frames are no fault":   {cells: [11]uint64{1, 1, 1, 1, 0, 5}},
-		"mark failures alone":          {cells: [11]uint64{10: 3}},
+		"mark failures alone":          {cells: [11]uint64{10: 3}, bad: true},
 		"exec without its mark":        {cells: [11]uint64{6: 1}, bad: true},
 		"fork without its mark":        {cells: [11]uint64{7: 1}, bad: true},
 		"ftrace seen off":              {cells: [11]uint64{10, 10, 7, 7, 1}, bad: true},

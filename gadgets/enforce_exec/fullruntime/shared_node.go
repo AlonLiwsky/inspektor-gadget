@@ -60,6 +60,10 @@ type SharedNodeConfig struct {
 	// the last call is the last refusal and StartNode returns it. It is
 	// called outside the host manager's lifecycle lock. It must not block.
 	AttachState func(error)
+	// CanaryCommand, if non-empty, is exec'd as the startup attach canary
+	// instead of /proc/self/exe with IG_ENFORCE_EXEC_CANARY=1 (e.g. a
+	// fixed static helper or /bin/true).
+	CanaryCommand []string
 }
 
 func (c SharedNodeConfig) failClosedPollInterval() time.Duration {
@@ -555,6 +559,11 @@ func sharedNodeHostFrom(ctx context.Context) (SharedNodeHost, bool) {
 // product image, only in a product build and only on an exact pinned kernel
 // build (verifySharedProductKernel, checked before the host runs anything).
 // Without either StartNode refuses with ErrSharedNativeUnavailable.
+//
+// When config.CanaryCommand is empty, the startup attach canary execs
+// /proc/self/exe with IG_ENFORCE_EXEC_CANARY=1, which fullruntime's init()
+// handles by exiting 0; importers that do not set CanaryCommand must treat
+// IG_ENFORCE_EXEC_CANARY as reserved.
 func StartNode(ctx context.Context, config SharedNodeConfig) (*NodeEnforcer, error) {
 	if q, ok := sharedQualificationFrom(ctx); ok {
 		return startQualifiedSharedNode(ctx, config, q)
