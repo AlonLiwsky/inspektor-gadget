@@ -119,7 +119,8 @@ func (i *ebpfInstance) attachNativePrograms(gc operators.GadgetContext) error {
 // refusal, or with the nativeattach.Retry under operators.NativeAttachRetryKey.
 // The value false opts out and returns a refusal at once. Each attempt re-runs
 // the capacity hint and the whole transaction; a refused attempt leaves no
-// link or receipt behind.
+// link or receipt behind. The waits run inside Start: under an instance
+// manager they hold its lifecycle lock (see operators.NativeAttachRetryKey).
 func (i *ebpfInstance) attachNativeProgramsRetrying(gc operators.GadgetContext) error {
 	retry := nativeattach.DefaultRetry
 	retry.State = func(err error) {

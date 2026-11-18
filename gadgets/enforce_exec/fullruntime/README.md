@@ -1781,25 +1781,37 @@ other BPF consumer on the node, as the preexisting `file_open` link shows.
   (`State` then receives every NotReady, Ready and a final non-capacity
   error), or `false` to opt out. `Retry.Budget` bounds the total time from
   the first attempt (0: no time bound).
-* **The shared node retries a bounded number of times.**
-  `WithNodeEnforcer` sets an explicit `nativeattach.Retry`
-  (`sharedNodeAttachRetry`): at most 8 attempts, 500 ms doubling to a 5 s
-  cap, and no wait that would end past 30 s from the first attempt, so
-  Start returns within about 30 s plus the final attempt. Admission refuses
-  the node unless the effective `NativeAttachRetryKey` is a
-  `nativeattach.Retry` with `MaxAttempts > 0` and `Budget > 0`. While
-  `StartNode` is blocked in the retry, `SharedNodeConfig.AttachState` (if
-  set) receives every `*nativeattach.ErrAttachCapacity` (the host shows the
-  node NotReady with it) and then nil once attached; `Ready` itself is only
-  reachable after `StartNode` returns. When the retry runs out, nothing
-  stays attached and `StartNode` returns `ErrSharedNodeNotReady` wrapping
-  the last refusal; it never falls open. **Limits:** the retry runs inside
-  the gadget's Start, under the manager's lifecycle lock. It can only help
-  when the links that fill the trampoline belong to something outside this
-  manager. Within the same manager it only adds delay: a stop or replace
-  that would free links waits for the lock. Moving the retry out of the
-  lock, so that the host retries `StartGadget`, is a follow-up: it changes
-  the instance-manager contract that other gadgets share.
+* **The shared node retries outside the lifecycle lock, a bounded number of
+  times.** The in-Start retry above runs inside the gadget's Start, so under
+  an instance manager it holds the manager's lifecycle lock across every
+  wait. The shared node therefore never retries there: `WithNodeEnforcer`
+  sets `operators.NativeAttachRetryKey` to `false`, and admission refuses any
+  other value. A capacity refusal fails that `StartGadget` at once (rolled
+  back, nothing attached). `StartNode` then joins the host's teardown (the
+  `stop` from `Run`), and only after that waits and calls `Run` again with a
+  fresh `NodeEnforcer`. So the lock is free during every wait: a stop,
+  replace or start on the same manager (for example the stop that frees the
+  trampoline links) runs at once, and two attempts never coexist. Each retry
+  repeats the full start (image load, collection load and verification),
+  bounded by the retry budget. The retry (`sharedNodeAttachRetry`) allows at most 8 attempts, 500 ms doubling to a
+  5 s cap, and no wait that would end past 30 s from the first attempt;
+  `StartNode` refuses an unbounded retry before running anything. Canceling
+  the `StartNode` context ends a wait at once. A failed teardown ends the
+  retry, with no further attempt; `AttachState` then receives the refusal
+  that the returned error wraps. While `StartNode` retries,
+  `SharedNodeConfig.AttachState` (if set) receives every
+  `*nativeattach.ErrAttachCapacity` (the host shows the node NotReady with
+  it) and then nil once started; `Ready` itself is only reachable after
+  `StartNode` returns. When the retry runs out or is canceled during a wait,
+  nothing stays attached and `StartNode` returns `ErrSharedNodeNotReady`
+  wrapping the last refusal; it never falls open. A cancel during a later
+  attempt's `Run` returns that attempt's context error without the earlier
+  refusal (still nothing attached). **Host contract:** `Run` may be called
+  again for the same gadget ID after its `stop` returned nil. The host must
+  not run two `StartNode` calls for the same gadget ID concurrently: `stop`
+  targets the gadget ID, so a refused attempt's `stop` could tear down the
+  other caller's live gadget. `stop` should be a no-op when its own
+  `StartGadget` failed.
 * **Legacy Owner refuses at once.** `WithOwner` sets
   `operators.NativeAttachRetryKey` to `false`: the legacy per-cgroup Owner
   does not retry and its Start returns the capacity refusal immediately.

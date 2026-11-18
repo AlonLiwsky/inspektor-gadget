@@ -31,11 +31,15 @@ const sharedNodeKey = "enforce-exec/native-shared-node"
 // retry: a capacity refusal (*nativeattach.ErrAttachCapacity) is
 // retried at most 8 times, and no wait starts that would end past 30 s from
 // the first attempt (so the bound is about 30 s plus the final attempt).
-// Then Start fails with the last refusal and StartNode returns it wrapped
-// in ErrSharedNodeNotReady. Nothing stays attached after a refused attempt,
-// so exhaustion fails closed. The retry runs inside Start, under the
-// manager's lifecycle lock: it can only wait for links held outside this
-// manager to go away; a stop on the same manager waits for the lock.
+// Then StartNode returns the last refusal wrapped in ErrSharedNodeNotReady.
+//
+// StartNode runs it around the host's whole start (startLiveSharedNode), never
+// inside the gadget's Start: each refused attempt has already returned from
+// the host's StartGadget, so the manager's lifecycle lock is released and the
+// attempt's gadget fully torn down before a backoff wait begins. A stop,
+// replace or start on that manager (for example the one that frees the
+// trampoline links) runs during the wait, and nothing of the refused attempt
+// stays attached, so exhaustion fails closed.
 func sharedNodeAttachRetry() nativeattach.Retry {
 	return nativeattach.Retry{
 		Initial:     500 * time.Millisecond,
@@ -45,14 +49,23 @@ func sharedNodeAttachRetry() nativeattach.Retry {
 	}
 }
 
-// sharedNodeAttachRetryBounded is the admission rule: the effective
-// NativeAttachRetryKey must be a nativeattach.Retry with an attempt bound
-// and a time budget, never the unbounded default or an opt-out.
-func sharedNodeAttachRetryBounded(gc operators.GadgetContext) error {
+// sharedNodeRetryBounded refuses a StartNode retry without an attempt bound
+// or a time budget.
+func sharedNodeRetryBounded(retry nativeattach.Retry) error {
+	if retry.MaxAttempts <= 0 || retry.Budget <= 0 {
+		return fmt.Errorf("shared node requires a bounded native attach retry, got %+v", retry)
+	}
+	return nil
+}
+
+// sharedNodeAttachFailFast is the admission rule: the effective
+// NativeAttachRetryKey must be false, so a capacity refusal fails the
+// gadget's Start at once and no backoff wait runs under the manager's
+// lifecycle lock. StartNode retries outside it (sharedNodeAttachRetry).
+func sharedNodeAttachFailFast(gc operators.GadgetContext) error {
 	value, ok := gc.GetVar(operators.NativeAttachRetryKey)
-	retry, isRetry := value.(nativeattach.Retry)
-	if !ok || !isRetry || retry.MaxAttempts <= 0 || retry.Budget <= 0 {
-		return fmt.Errorf("shared node requires a bounded native attach retry, got %T %+v", value, value)
+	if v, isBool := value.(bool); !ok || !isBool || v {
+		return fmt.Errorf("shared node requires a fail-fast native attach (no retry inside Start), got %T %+v", value, value)
 	}
 	return nil
 }
@@ -63,8 +76,6 @@ type sharedHostState struct {
 	// overlayFailure is the node's "overlay layout unavailable" reason from
 	// this node's constants computation (nil: the layout is set).
 	overlayFailure atomic.Pointer[error]
-	// attachRetry is the qualification seam's retry (nil: default).
-	attachRetry *nativeattach.Retry
 	sharedProtocolHostOwnership
 	borrowed                                 []sharedBorrowedFD
 	context                                  operators.GadgetContext
@@ -374,24 +385,10 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 	return func(gc *gadgetcontext.GadgetContext) {
 		gc.SetVar(sharedNodeKey, node)
 		gc.SetVar(operators.NativeOwnerRequiredKey, true)
-		retry := sharedNodeAttachRetry()
-		if node != nil && node.host != nil && node.host.attachRetry != nil {
-			retry = *node.host.attachRetry
-		}
-		retry.State = func(err error) {
-			// Only a capacity refusal is a NotReady attach state; nil or
-			// any other (final) error clears it.
-			var capErr *nativeattach.ErrAttachCapacity
-			if !errors.As(err, &capErr) {
-				err = nil
-			} else {
-				gc.Logger().Warnf("shared node native attach not ready: %v", err)
-			}
-			if node != nil && node.config.AttachState != nil {
-				node.config.AttachState(err)
-			}
-		}
-		gc.SetVar(operators.NativeAttachRetryKey, retry)
+		// No retry inside Start: Start runs under the manager's lifecycle
+		// lock. A capacity refusal fails Start at once (rolled back) and
+		// StartNode retries the whole host start outside the lock.
+		gc.SetVar(operators.NativeAttachRetryKey, false)
 		if node != nil && node.config.RecoveryDevelopment {
 			gc.SetVar(operators.NativeRecoveryTestRunKey, true)
 		}
@@ -412,7 +409,7 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 			if node == nil || node.host == nil {
 				return fmt.Errorf("missing host-owned shared node")
 			}
-			if err := sharedNodeAttachRetryBounded(gc); err != nil {
+			if err := sharedNodeAttachFailFast(gc); err != nil {
 				return err
 			}
 			return node.admitSharedResources(resources)
@@ -1655,11 +1652,84 @@ func startProductSharedNode(ctx context.Context, config SharedNodeConfig, h Shar
 }
 
 // startLiveSharedNode is the shared body of the qualified and the product
-// start: seams is the qualification seam set (empty for product).
+// start: seams is the qualification seam set (empty for product). It retries
+// the whole host start (startLiveSharedNodeOnce) on a capacity refusal with
+// the bounded sharedNodeAttachRetry, outside the host manager's lifecycle
+// lock: each refused attempt has returned from run's StartGadget and been
+// torn down (StopNode joined) before the wait, and every attempt uses a fresh
+// NodeEnforcer. ctx cancels a wait at once. A failed teardown ends the retry
+// (no further attempt may run beside something possibly still attached).
 func startLiveSharedNode(ctx context.Context, config SharedNodeConfig, run func(context.Context, gadgetcontext.Option) (func(context.Context) error, <-chan error, error), seams SharedNodeQualification, product bool) (*NodeEnforcer, error) {
+	// Validate the config once before any run; the handle is discarded
+	// (every attempt builds its own in startLiveSharedNodeOnce).
+	if _, err := NewNodeEnforcer(config); err != nil {
+		return nil, err
+	}
+	retry := sharedNodeAttachRetry()
+	if seams.attachRetry != nil {
+		retry = *seams.attachRetry
+	}
+	if err := sharedNodeRetryBounded(retry); err != nil {
+		return nil, err
+	}
+	retry.State = func(err error) {
+		// Only a capacity refusal is a NotReady attach state; nil or any
+		// other (final) error clears it.
+		var capErr *nativeattach.ErrAttachCapacity
+		if !errors.As(err, &capErr) {
+			err = nil
+		}
+		if config.AttachState != nil {
+			config.AttachState(err)
+		}
+	}
+	var node *NodeEnforcer
+	var final error
+	err := retry.Run(ctx, func() error {
+		n, startErr, stopErr := startLiveSharedNodeOnce(ctx, config, run, seams, product)
+		if startErr == nil {
+			node = n
+			return nil
+		}
+		if stopErr != nil {
+			// Terminal: hide the capacity refusal from the retry, return
+			// the full (typed) error below.
+			final = startErr
+			if !errors.Is(startErr, stopErr) {
+				final = errors.Join(startErr, stopErr)
+			}
+			return fmt.Errorf("shared node teardown failed: %w", stopErr)
+		}
+		return startErr
+	})
+	if final != nil {
+		err = final
+		// The retry reports nothing (attempt 1) or clears the state
+		// (n>1) for this terminal error: report the refusal it wraps.
+		var capErr *nativeattach.ErrAttachCapacity
+		if errors.As(final, &capErr) && config.AttachState != nil {
+			config.AttachState(capErr)
+		}
+	}
+	if err != nil {
+		// A capacity refusal (exhausted or canceled retry) is a NotReady
+		// reason.
+		var capErr *nativeattach.ErrAttachCapacity
+		if errors.As(err, &capErr) && !errors.Is(err, ErrSharedNodeNotReady) {
+			err = fmt.Errorf("%w: native attach capacity: %w", ErrSharedNodeNotReady, err)
+		}
+		return nil, err
+	}
+	return node, nil
+}
+
+// startLiveSharedNodeOnce runs one host start (run: the host's one
+// StartGadget call) of a fresh NodeEnforcer. On failure it returns the start
+// error and the result of the joined teardown (StopNode).
+func startLiveSharedNodeOnce(ctx context.Context, config SharedNodeConfig, run func(context.Context, gadgetcontext.Option) (func(context.Context) error, <-chan error, error), seams SharedNodeQualification, product bool) (*NodeEnforcer, error, error) {
 	n, err := NewNodeEnforcer(config)
 	if err != nil {
-		return nil, err
+		return nil, err, nil
 	}
 	q := seams
 	started := make(chan error, 1)
@@ -1672,11 +1742,12 @@ func startLiveSharedNode(ctx context.Context, config SharedNodeConfig, run func(
 	n.host.newProductPublisher = q.newProductPublisher
 	n.host.verdictCounters, n.host.verdictClock = q.verdictCounters, q.verdictClock
 	n.host.imageSource = q.imageSource
-	n.host.attachRetry = q.attachRetry
 	n.host.strictRefused = sharedNamespaceCheck()
 	stop, done, err := run(ctx, WithNodeEnforcer(n))
 	if stop == nil {
-		return nil, errors.Join(err, fmt.Errorf("missing shared candidate host teardown"))
+		// Nothing to join: the teardown is unknown, so never retry.
+		missing := fmt.Errorf("missing shared candidate host teardown")
+		return nil, errors.Join(err, missing), missing
 	}
 	// Recorded before any wait: StopNode always joins the host teardown,
 	// whatever startLiveCandidate installs concurrently.
@@ -1695,14 +1766,9 @@ func startLiveSharedNode(ctx context.Context, config SharedNodeConfig, run func(
 	if err != nil {
 		// Typed refusals (nativeattach.ErrAttachCapacity, ErrNotReady) pass
 		// through; the transaction already rolled back, and teardown joins.
-		// An exhausted attach retry is a NotReady reason.
-		var capErr *nativeattach.ErrAttachCapacity
-		if errors.As(err, &capErr) && !errors.Is(err, ErrSharedNodeNotReady) {
-			err = fmt.Errorf("%w: native attach capacity: %w", ErrSharedNodeNotReady, err)
-		}
-		return nil, errors.Join(err, n.StopNode(context.WithoutCancel(ctx)))
+		return nil, err, n.StopNode(context.WithoutCancel(ctx))
 	}
-	return n, nil
+	return n, nil, nil
 }
 
 // stopLiveCollection tears the host gadget down once, after BeforeStop.

@@ -798,14 +798,17 @@ func TestSharedStartNodeQualifiedCapacityRefusal(t *testing.T) {
 	sharedEnableQualification(t)
 	refusal := &nativeattach.ErrAttachCapacity{Target: "bprm_execve", Err: syscall.E2BIG}
 	host := &sharedFakeNativeHost{manifest: sharedCandidateFakeManifest(), refuse: refusal}
-	ctx := WithSharedNodeQualification(t.Context(), host.qualification(nil))
-	n, err := StartNode(ctx, sharedQualifiedConfig())
+	// StartNode retries the whole host start outside the lifecycle lock:
+	// every refused attempt is torn down before the next one.
+	q := host.qualification(nil)
+	q.attachRetry = &nativeattach.Retry{Initial: time.Millisecond, Max: time.Millisecond, MaxAttempts: 3, Budget: time.Second}
+	n, err := StartNode(WithSharedNodeQualification(t.Context(), q), sharedQualifiedConfig())
 	var capacity *nativeattach.ErrAttachCapacity
-	if n != nil || !errors.As(err, &capacity) || capacity.Target != "bprm_execve" {
+	if n != nil || !errors.As(err, &capacity) || capacity.Target != "bprm_execve" || !errors.Is(err, ErrSharedNodeNotReady) {
 		t.Fatalf("capacity refusal: node=%v err=%v", n, err)
 	}
-	if host.stops != 1 || len(host.attached) != 0 {
-		t.Fatalf("refusal left state: stops=%d attached=%d", host.stops, len(host.attached))
+	if host.runs != 3 || host.stops != 3 || len(host.attached) != 0 {
+		t.Fatalf("refusal left state: runs=%d stops=%d attached=%d", host.runs, host.stops, len(host.attached))
 	}
 }
 
