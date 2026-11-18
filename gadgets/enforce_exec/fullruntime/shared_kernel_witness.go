@@ -126,12 +126,14 @@ func sharedKernelWitnessArmed(c [sharedKernelWitnessCells]uint64) error {
 	return err
 }
 
+var errSharedNodeTeardownFailed = errors.New("shared node teardown failed")
+
 // StartNodeRetrying runs start (StartNode, or a wrapper) up to attempts
 // times while it refuses with ErrSharedKernelWitnessRetryable, waiting
 // backoff, then twice as long each time (capped at maxBackoff), between
-// attempts (S1 review N3). Any other refusal, or the last retryable one, is
-// returned as is; a canceled ctx ends the waits. A failed StartNode has
-// already torn its node down, so every attempt is a fresh load.
+// attempts (S1 review N3). Any other refusal, a failed teardown, or the last
+// retryable refusal is returned as is; a canceled ctx ends the waits. A failed
+// StartNode has already torn its node down, so every attempt is a fresh load.
 func StartNodeRetrying(ctx context.Context, attempts int, backoff, maxBackoff time.Duration, start func(context.Context) (*NodeEnforcer, error)) (*NodeEnforcer, error) {
 	if attempts < 1 {
 		attempts = 1
@@ -140,7 +142,7 @@ func StartNodeRetrying(ctx context.Context, attempts int, backoff, maxBackoff ti
 	for attempt := 1; ; attempt++ {
 		var n *NodeEnforcer
 		n, err = start(ctx)
-		if err == nil || !errors.Is(err, ErrSharedKernelWitnessRetryable) || attempt >= attempts {
+		if err == nil || errors.Is(err, errSharedNodeTeardownFailed) || !errors.Is(err, ErrSharedKernelWitnessRetryable) || attempt >= attempts {
 			return n, err
 		}
 		timer := time.NewTimer(backoff)
@@ -328,7 +330,11 @@ func (n *NodeEnforcer) SysExitRecursionMisses() (uint64, error) {
 // (no kernel maps, fake program IDs) can stand in for it; product code never
 // replaces it.
 var sharedStartKernelWitness = func(gc operators.GadgetContext, receipts map[string]*operators.NativeAttachment, interval time.Duration, canaryCmd []string) (*sharedLiveKernelWitness, error) {
-	if err := runSharedAttachCanaryWith(receipts, canaryCmd); err != nil {
+	ctx := gc.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := runSharedAttachCanaryWith(ctx, receipts, canaryCmd); err != nil {
 		return nil, err
 	}
 	w, err := borrowSharedKernelWitness(gc, receipts, interval)
@@ -352,10 +358,10 @@ var sharedStartKernelWitness = func(gc operators.GadgetContext, receipts map[str
 // forks and execs this binary as a canary (which exits at once), and
 // requires each receipt's program run count to have increased.
 func runSharedAttachCanary(receipts map[string]*operators.NativeAttachment) error {
-	return runSharedAttachCanaryWith(receipts, nil)
+	return runSharedAttachCanaryWith(context.Background(), receipts, nil)
 }
 
-func runSharedAttachCanaryWith(receipts map[string]*operators.NativeAttachment, canaryCmd []string) error {
+func runSharedAttachCanaryWith(ctx context.Context, receipts map[string]*operators.NativeAttachment, canaryCmd []string) error {
 	stats, err := ebpf.EnableStats(uint32(unix.BPF_STATS_RUN_TIME))
 	if err != nil {
 		return fmt.Errorf("attach canary: BPF run statistics: %w", err)
@@ -382,20 +388,31 @@ func runSharedAttachCanaryWith(receipts map[string]*operators.NativeAttachment, 
 		return err
 	}
 	var silent []string
-	deadline := time.Now().Add(5 * time.Second)
+	canaryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	for {
 		var cmd *exec.Cmd
 		if len(canaryCmd) > 0 {
-			cmd = exec.Command(canaryCmd[0], canaryCmd[1:]...)
+			cmd = exec.CommandContext(canaryCtx, canaryCmd[0], canaryCmd[1:]...)
 		} else {
-			cmd = exec.Command("/proc/self/exe")
+			cmd = exec.CommandContext(canaryCtx, "/proc/self/exe")
 			cmd.Env = []string{sharedCanaryEnv + "=1"}
 		}
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("attach canary: exec: %w", err)
 		}
 		// task_free runs after the reaped child's RCU grace period.
-		time.Sleep(50 * time.Millisecond)
+		t := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-canaryCtx.Done():
+			t.Stop()
+			if len(silent) > 0 && errors.Is(canaryCtx.Err(), context.DeadlineExceeded) {
+				sort.Strings(silent)
+				return fmt.Errorf("attach canary: attached but never ran during a fork+exec+exit: %s", strings.Join(silent, ", "))
+			}
+			return fmt.Errorf("attach canary: %w", canaryCtx.Err())
+		case <-t.C:
+		}
 		after, err := runs()
 		if err != nil {
 			return err
@@ -408,10 +425,6 @@ func runSharedAttachCanaryWith(receipts map[string]*operators.NativeAttachment, 
 		}
 		if len(silent) == 0 {
 			return nil
-		}
-		if time.Now().After(deadline) {
-			sort.Strings(silent)
-			return fmt.Errorf("attach canary: attached but never ran during a fork+exec+exit: %s", strings.Join(silent, ", "))
 		}
 	}
 }

@@ -186,4 +186,12 @@ func TestStartNodeRetrying(t *testing.T) {
 	if _, err := StartNodeRetrying(ctx, 5, time.Hour, time.Hour, func(context.Context) (*NodeEnforcer, error) { return nil, retryable }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled context: %v", err)
 	}
+	teardownCalls := 0
+	teardownFail := errors.Join(retryable, errSharedNodeTeardownFailed)
+	if _, err := StartNodeRetrying(context.Background(), 5, time.Millisecond, time.Millisecond, func(context.Context) (*NodeEnforcer, error) {
+		teardownCalls++
+		return nil, teardownFail
+	}); !errors.Is(err, errSharedNodeTeardownFailed) || teardownCalls != 1 {
+		t.Fatalf("teardown failure must stop retries: calls=%d err=%v", teardownCalls, err)
+	}
 }

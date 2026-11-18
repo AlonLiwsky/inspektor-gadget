@@ -1692,11 +1692,11 @@ func startLiveSharedNode(ctx context.Context, config SharedNodeConfig, run func(
 			return nil
 		}
 		if stopErr != nil {
-			// Terminal: hide the capacity refusal from the retry, return
-			// the full (typed) error below.
-			final = startErr
+			// Terminal: hide the capacity refusal from the attach retry and
+			// mark teardown failure terminal for StartNodeRetrying as well.
+			final = errors.Join(startErr, errSharedNodeTeardownFailed)
 			if !errors.Is(startErr, stopErr) {
-				final = errors.Join(startErr, stopErr)
+				final = errors.Join(final, stopErr)
 			}
 			return fmt.Errorf("shared node teardown failed: %w", stopErr)
 		}
