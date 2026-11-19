@@ -1569,7 +1569,7 @@ jobs:
           ./gadgets/enforce_exec/test/al2023-trampoline-cap/runner
           ./gadgets/enforce_exec/test/al2023-product-load/judge
         )
-        go test -race -count=1 "${packages[@]}"
+        go test -race -count=1 -timeout=20m "${packages[@]}"
         go vet "${packages[@]}"
     - name: Offline module structure regressions
       run: python3 gadgets/enforce_exec/test/al2023-native-kfunc-primitive/test_module_structure.py

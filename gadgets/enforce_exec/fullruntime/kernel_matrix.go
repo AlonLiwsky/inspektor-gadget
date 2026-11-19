@@ -110,8 +110,8 @@ var sharedProductPins = map[string]sharedProductPin{
 		Release:      "6.12.113-138.209.amzn2023.x86_64",
 		BuildID:      "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
 		FmodeBacking: sharedFmodeBacking24,
-		// Stage 1 qualification on this pinned build (stage-1 PR build):
-		// the stage-1 oracle (D3 34 steps, D1 18), Strict + Audit, 0 FAIL 0 SKIP.
+		// G003 pr35-review-refresh-r1: oracle-al2023-k612 (D3 34, D1 18)
+		// and product-al2023-k612 (9 checks); 0 FAIL, 0 SKIP.
 		ProductObjects: map[string]struct{}{
 			"8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954": {}, // g19pkg64
 			"4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7": {}, // g19pkg128
@@ -123,8 +123,8 @@ var sharedProductPins = map[string]sharedProductPin{
 		Release:      "6.18.56-125.164.amzn2023.x86_64",
 		BuildID:      "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
 		FmodeBacking: sharedFmodeBacking24,
-		// Stage 1 qualification on this pinned build (stage-1 PR build):
-		// the stage-1 oracle (D3 34 steps, D1 18), Strict + Audit, 0 FAIL 0 SKIP.
+		// G003 pr35-review-refresh-r1: oracle-al2023-k618 (D3 34, D1 18)
+		// and product-al2023-k618 (9 checks); 0 FAIL, 0 SKIP.
 		ProductObjects: map[string]struct{}{
 			"8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954": {}, // g19pkg64
 			"4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7": {}, // g19pkg128

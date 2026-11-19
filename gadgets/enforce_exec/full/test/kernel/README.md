@@ -31,9 +31,11 @@ The integrated reader classifies post-exec FD0 only on x86 when the current task
 is the sole owner of its descriptor table. Anonymous pipes and named FIFOs are
 pipes; a CLOEXEC FD0 does not survive exec and is classified as not a pipe.
 Shared tables, unsupported architectures, and failed reads are unknown, not
-false. A policy that needs an unknown observation fails closed, sets the sticky
-full fault map and causes native readiness to become NotReady while retaining
-installed enforcement. This can disrupt helpers using shared descriptor tables.
+false. If another condition is known false, the rule cannot match, even with
+an unknown stdin observation. If no condition is known false and the rule
+still needs the observation, Strict fails closed, sets the sticky full fault
+map and causes native readiness to become NotReady while retaining installed
+enforcement. This can disrupt helpers using shared descriptor tables.
 
 The combined fixture includes pipe, regular-file and negated-pipe controls.
 CLOEXEC, named FIFO and shared-table/race cases are separately exercised by the
