@@ -1,6 +1,7 @@
 package uprobetracer
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,7 +33,8 @@ func (t *Tracer[Event]) SetStartupMappedLibPattern(pattern *regexp.Regexp) {
 // operations, not an in-flight resolver/attach (which is not preemptible). New containers must never enter this
 // path: their PID can still name the host's runc shim. Reattachment retains the
 // tracked-container guards, resolver gates, inode deduplication and teardown.
-func (t *Tracer[Event]) attachExistingProcesses(containerPid uint32) {
+// It returns whether a symbol lookup did not finish, so the caller can retry.
+func (t *Tracer[Event]) attachExistingProcesses(containerPid uint32) (lookupIncomplete bool) {
 	t.mu.Lock()
 	pattern := t.startupMappedLibPattern
 	t.mu.Unlock()
@@ -53,6 +55,7 @@ func (t *Tracer[Event]) attachExistingProcesses(containerPid uint32) {
 		// The entrypoint executable was handled by attachContainerWork already.
 		if pid != containerPid {
 			if err := t.reattachContainerExecPid(containerPid, pid, expectedMntns); err != nil {
+				lookupIncomplete = lookupIncomplete || errors.Is(err, errSymbolLookupIncomplete)
 				t.logger.Debugf("startup executable attach containerPid=%d pid=%d: %v", containerPid, pid, err)
 			}
 		}
@@ -61,9 +64,11 @@ func (t *Tracer[Event]) attachExistingProcesses(containerPid uint32) {
 			break
 		}
 		if err := t.reattachContainerMappedLibsPid(containerPid, pid, pattern, expectedMntns); err != nil {
+			lookupIncomplete = lookupIncomplete || errors.Is(err, errSymbolLookupIncomplete)
 			t.logger.Debugf("startup mapped-library attach containerPid=%d pid=%d: %v", containerPid, pid, err)
 		}
 	}
+	return lookupIncomplete
 }
 
 // existingProcessPids walks a bounded snapshot of descendants, including children

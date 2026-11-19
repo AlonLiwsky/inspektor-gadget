@@ -270,7 +270,9 @@ type Tracer[Event any] struct {
 	syncAttach bool
 
 	closed bool
-	mu     sync.Mutex
+	// closing is closed by Close, so a runAttachJob retry wait ends at once.
+	closing chan struct{}
+	mu      sync.Mutex
 }
 
 // maxConcurrentAttaches caps concurrent background create-time attaches.
@@ -352,6 +354,7 @@ func NewTracer[Event any](logger logger.Logger) (*Tracer[Event], error) {
 		statExeIdentity:         defaultStatExeIdentity,
 		openMapFileFunc:         openMapFile,
 		attachSem:               globalAttachSem,
+		closing:                 make(chan struct{}),
 		logger:                  logger,
 		closed:                  false,
 	}
@@ -545,9 +548,7 @@ func (t *Tracer[Event]) AttachProg(progName string, progType ProgType, attachTo 
 		t.attachWg.Add(1)
 		go func() {
 			defer t.attachWg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			t.attachContainerWork(job)
+			t.runAttachJob(job, sem)
 		}()
 	}
 	t.pendingContainerPids = nil
@@ -555,7 +556,7 @@ func (t *Tracer[Event]) AttachProg(progName string, progType ProgType, attachTo 
 	t.mu.Unlock()
 
 	for _, job := range syncJobs {
-		t.attachContainerWork(job)
+		t.runAttachJob(job, nil)
 	}
 
 	return nil
@@ -676,9 +677,11 @@ func (t *Tracer[Event]) executableFromOCIConfig(containerPid uint32, ociConfig s
 
 // attachUprobe attaches the uprobe program to the inode of the file passed in.
 //
-// Custom offsets are resolved during the lock-free open phase. Ordinary names
-// use the bounded shared symbol cache; a cache miss reads ELF under t.mu, as
-// cilium's ordinary-name attachment previously did.
+// Custom offsets and, on the open-phase paths, the attach symbol's offset are
+// resolved during the lock-free open phase. Otherwise ordinary names use the
+// bounded shared symbol cache; a cache miss reads ELF under t.mu, as cilium's
+// ordinary-name attachment previously did, and the stripped-Go fallback never
+// waits for a parse slot there (lockedLookup).
 func (t *Tracer[Event]) attachUprobe(file *os.File, offsets []uint64) ([]link.Link, error) {
 	attachPath := path.Join(host.HostProcFs, "self/fd/", fmt.Sprint(file.Fd()))
 	ex, err := link.OpenExecutable(attachPath)
@@ -801,7 +804,9 @@ func (t *Tracer[Event]) bindProbe(ex *link.Executable, offset *uint64) (link.Lin
 //     attach or a refcount bump from another pid's already-existing attach).
 //   - added=false + err=nil: the inode was already in `existing` (idempotent
 //     no-op) or attachToFile failed with symbol-absent (non-fatal skip, no ref).
-//   - err != nil: a hard failure (inode read failed); caller logs and skips.
+//   - err != nil: a hard failure (inode read failed, or a symbol lookup that
+//     did not finish, errSymbolLookupIncomplete); caller logs and skips, and
+//     its retry guard does not latch.
 func (t *Tracer[Event]) attachOneOpenFile(containerPid uint32, file *os.File, label string, offsets []uint64, existing map[uint64]bool) (uint64, bool, error) {
 	realInodePtr, err := t.readRealInode(int(file.Fd()))
 	if err != nil {
@@ -825,6 +830,12 @@ func (t *Tracer[Event]) attachOneOpenFile(containerPid uint32, file *os.File, la
 	}
 
 	progLinks, err := t.attachToFile(file, offsets)
+	// A symbol lookup that did not finish is not a missing symbol: fail the
+	// target, so the caller's retry guard does not record it as handled.
+	if errors.Is(err, errSymbolLookupIncomplete) {
+		file.Close()
+		return 0, false, fmt.Errorf("not attaching uprobe %q to %q for container %d: %w", t.progName, label, containerPid, err)
+	}
 	if err != nil {
 		// The target exists but does not export the symbol (e.g. runc, a wrapper
 		// executable, or BoringSSL which omits SSL_read_ex/SSL_write_ex), or a
@@ -886,10 +897,15 @@ func (t *Tracer[Event]) attachOneFile(ctx context.Context, containerPid uint32, 
 type openedTarget struct {
 	file  *os.File
 	label string
-	// offsets are the file offsets resolved by the AttachOffsetsResolver during
-	// the open phase, or empty to attach by symbol name. Carried to the commit
-	// phase so no ELF/pread work is needed under t.mu.
+	// offsets are the file offsets resolved during the open phase: by the
+	// AttachOffsetsResolver, else the attach symbol's offset
+	// (prepareSymbolOffsets). Empty means the commit resolves the symbol under
+	// t.mu, from the cache in the normal case. Carried to the commit phase so
+	// no ELF/pread work is needed under t.mu.
 	offsets []uint64
+	// symbol is the file version the open-phase symbol lookup read; the
+	// commit checks it again before it binds offsets.
+	symbol preparedSymbol
 }
 
 // openTargets opens each resolved in-container path WITHOUT holding t.mu — the
@@ -911,7 +927,14 @@ func (t *Tracer[Event]) openTargets(ctx context.Context, containerPid uint32, pa
 			openFailed = true
 			continue
 		}
-		opened = append(opened, openedTarget{file: file, label: filePath, offsets: t.resolveAttachOffsets(file, containerPid)})
+		opened = append(opened, openedTarget{file: file, label: filePath})
+	}
+	// Open every target before any symbol lookup: a wait for a parse slot must
+	// not use up the time the other opens need. A lookup that runs out of time
+	// is repeated at commit, and reported there if it still cannot finish.
+	for i := range opened {
+		ot := &opened[i]
+		ot.offsets, ot.symbol = t.prepareSymbolOffsets(ctx, ot.file, t.resolveAttachOffsets(ot.file, containerPid))
 	}
 	return opened, openFailed
 }
@@ -970,8 +993,9 @@ func (t *Tracer[Event]) Stats() TracerStats {
 // standard readRealInode → inodeRefCount dedup → containerPid2Inodes bookkeeping via
 // attachOneOpenFile (which consumes/closes every file). Caller holds t.mu and has
 // already re-validated that containerPid is still tracked. Returns whether any
-// candidate hit a hard attach error (for the caller's retry guard).
-func (t *Tracer[Event]) commitOpenedTargets(containerPid uint32, opened []openedTarget) bool {
+// candidate hit a hard attach error (for the caller's retry guard), and whether
+// any of those errors was a symbol lookup that did not finish.
+func (t *Tracer[Event]) commitOpenedTargets(containerPid uint32, opened []openedTarget) (attachFailed, lookupIncomplete bool) {
 	defer t.muHold.ObserveSince(time.Now())
 
 	attachedRealInodes := t.containerPid2Inodes[containerPid]
@@ -979,12 +1003,13 @@ func (t *Tracer[Event]) commitOpenedTargets(containerPid uint32, opened []opened
 	for _, inode := range attachedRealInodes {
 		existing[inode] = true
 	}
-	attachFailed := false
 	for _, ot := range opened {
-		realInodePtr, added, err := t.attachOneOpenFile(containerPid, ot.file, ot.label, ot.offsets, existing)
+		offsets := ot.symbol.forCommit(ot.file, ot.offsets)
+		realInodePtr, added, err := t.attachOneOpenFile(containerPid, ot.file, ot.label, offsets, existing)
 		if err != nil {
 			t.logger.Debugf("%s", err.Error())
 			attachFailed = true
+			lookupIncomplete = lookupIncomplete || errors.Is(err, errSymbolLookupIncomplete)
 			continue
 		}
 		if added {
@@ -993,7 +1018,7 @@ func (t *Tracer[Event]) commitOpenedTargets(containerPid uint32, opened []opened
 		}
 	}
 	t.containerPid2Inodes[containerPid] = attachedRealInodes
-	return attachFailed
+	return attachFailed, lookupIncomplete
 }
 
 // try attaching to a container, will update `containerPid2Inodes`.
@@ -1112,11 +1137,18 @@ func (t *Tracer[Event]) ReattachContainerPid(containerPid uint32) error {
 // logic stays correct across the create-time attach plus N re-attaches, no
 // matter how many distinct execPids fed into them.
 func (t *Tracer[Event]) ReattachContainerExecPid(containerPid, execPid uint32) error {
-	return t.reattachContainerExecPid(containerPid, execPid, 0)
+	err := t.reattachContainerExecPid(containerPid, execPid, 0)
+	if errors.Is(err, errSymbolLookupIncomplete) {
+		// The executable is not recorded as handled, so the next exec retries.
+		return nil
+	}
+	return err
 }
 
 // A nonzero expectedMntns pins startup reattachment to the namespace observed
 // before taking the descendant snapshot. Exec-event callers retain their path.
+// It returns errSymbolLookupIncomplete when a symbol lookup did not finish, so
+// the startup scan can retry.
 func (t *Tracer[Event]) reattachContainerExecPid(containerPid, execPid uint32, expectedMntns uint64) error {
 	// Phase 0 (lock): cheap guards + snapshot the inputs the lock-free resolve
 	// needs. The heavy resolve/open I/O below MUST NOT run under t.mu: an exec
@@ -1294,7 +1326,7 @@ func (t *Tracer[Event]) reattachContainerExecPid(containerPid, execPid uint32, e
 		closeOpened(opened)
 		return nil
 	}
-	attachFailed := t.commitOpenedTargets(containerPid, opened)
+	attachFailed, lookupIncomplete := t.commitOpenedTargets(containerPid, opened)
 
 	// Record the settled exe path+identity only after a clean pass (no open or
 	// attach failure) so the guard above does not permanently skip a pid whose
@@ -1339,6 +1371,9 @@ func (t *Tracer[Event]) reattachContainerExecPid(containerPid, execPid uint32, e
 	}
 	if evicted {
 		recordExeCacheEviction(progName)
+	}
+	if lookupIncomplete {
+		return fmt.Errorf("container %d pid %d: %w", containerPid, execPid, errSymbolLookupIncomplete)
 	}
 	return nil
 }
@@ -1402,9 +1437,10 @@ type mappedOpen struct {
 	file     *os.File
 	path     string
 	rangeKey string
-	// offsets mirrors openedTarget.offsets: resolved in the open phase, consumed
-	// in the commit phase.
+	// offsets and symbol mirror openedTarget: resolved in the open phase,
+	// consumed in the commit phase.
 	offsets []uint64
+	symbol  preparedSymbol
 }
 
 // discoverAndOpenMappedLibraries performs the I/O-heavy half of the map_files
@@ -1423,12 +1459,16 @@ type mappedOpen struct {
 // loop), containerPid's own address space never maps the target library. Only
 // the pid that actually executed can reveal it. Bookkeeping (the commit,
 // containerPid2Inodes, mappedLibAttached) stays credited to containerPid.
+//
+// Its only non-test caller, reattachMappedLibraries, holds t.mu, so the symbol
+// lookup never waits (lockedLookup).
 func (t *Tracer[Event]) discoverAndOpenMappedLibraries(containerPid, execPid uint32, pattern *regexp.Regexp) ([]mappedOpen, error) {
-	return t.discoverAndOpenMappedLibrariesInNamespace(containerPid, execPid, pattern, 0)
+	return t.discoverAndOpenMappedLibrariesInNamespace(lockedLookup, containerPid, execPid, pattern, 0)
 }
 
 // A nonzero snapshotMntns must survive discovery and map_files opening unchanged.
-func (t *Tracer[Event]) discoverAndOpenMappedLibrariesInNamespace(containerPid, execPid uint32, pattern *regexp.Regexp, snapshotMntns uint64) ([]mappedOpen, error) {
+// ctx bounds the wait in the symbol lookup.
+func (t *Tracer[Event]) discoverAndOpenMappedLibrariesInNamespace(ctx context.Context, containerPid, execPid uint32, pattern *regexp.Regexp, snapshotMntns uint64) ([]mappedOpen, error) {
 	// Capture the mount namespace BEFORE walking maps so we can pass it to
 	// openMapFile for the post-open PID-recycle validation.
 	expectedMntns, err := readProcMntns(execPid)
@@ -1493,7 +1533,8 @@ func (t *Tracer[Event]) discoverAndOpenMappedLibrariesInNamespace(containerPid, 
 		// attachOffsetsResolver (resolver.go:161-164). Passing execPid here would
 		// change only log/error text, and would make those diagnostics disagree with
 		// every other pid field on this attach.
-		opened = append(opened, mappedOpen{file: file, path: lib.path, rangeKey: lib.rangeKey, offsets: t.resolveAttachOffsets(file, containerPid)})
+		offsets, symbol := t.prepareSymbolOffsets(ctx, file, t.resolveAttachOffsets(file, containerPid))
+		opened = append(opened, mappedOpen{file: file, path: lib.path, rangeKey: lib.rangeKey, offsets: offsets, symbol: symbol})
 	}
 	return opened, nil
 }
@@ -1511,7 +1552,8 @@ func closeMappedOpen(opened []mappedOpen) {
 // bookkeeping (via attachOneOpenFile, which consumes/closes every file) and marking
 // mappedLibAttached to report coverage of at least one inode. Caller holds t.mu
 // and has re-validated that containerPid is still tracked.
-func (t *Tracer[Event]) commitMappedLibraries(containerPid uint32, opened []mappedOpen) {
+// commitMappedLibraries returns whether a symbol lookup did not finish.
+func (t *Tracer[Event]) commitMappedLibraries(containerPid uint32, opened []mappedOpen) (lookupIncomplete bool) {
 	attachedRealInodes := t.containerPid2Inodes[containerPid]
 	existing := make(map[uint64]bool, len(attachedRealInodes))
 	for _, inode := range attachedRealInodes {
@@ -1519,9 +1561,11 @@ func (t *Tracer[Event]) commitMappedLibraries(containerPid uint32, opened []mapp
 	}
 
 	for _, mo := range opened {
-		realInodePtr, added, err := t.attachOneOpenFile(containerPid, mo.file, mo.path, mo.offsets, existing)
+		offsets := mo.symbol.forCommit(mo.file, mo.offsets)
+		realInodePtr, added, err := t.attachOneOpenFile(containerPid, mo.file, mo.path, offsets, existing)
 		if err != nil {
 			t.logger.Debugf("uprobetracer: reattachMappedLibraries pid %d %q: attach failed: %v", containerPid, mo.path, err)
+			lookupIncomplete = lookupIncomplete || errors.Is(err, errSymbolLookupIncomplete)
 			continue
 		}
 		if added {
@@ -1537,6 +1581,7 @@ func (t *Tracer[Event]) commitMappedLibraries(containerPid uint32, opened []mapp
 	}
 
 	t.containerPid2Inodes[containerPid] = attachedRealInodes
+	return lookupIncomplete
 }
 
 // ReattachContainerMappedLibsPid is the public, lock-taking entry point to the
@@ -1554,10 +1599,16 @@ func (t *Tracer[Event]) commitMappedLibraries(containerPid uint32, opened []mapp
 // opened. They are equal for a container whose tracked process is the workload,
 // and diverge whenever the workload runs as a forked child.
 func (t *Tracer[Event]) ReattachContainerMappedLibsPid(containerPid, execPid uint32, pattern *regexp.Regexp) error {
-	return t.reattachContainerMappedLibsPid(containerPid, execPid, pattern, 0)
+	err := t.reattachContainerMappedLibsPid(containerPid, execPid, pattern, 0)
+	if errors.Is(err, errSymbolLookupIncomplete) {
+		// The library is not marked as attached, so the caller's retry runs.
+		return nil
+	}
+	return err
 }
 
 // Startup callers retain their snapshot namespace across both I/O and commit.
+// It returns errSymbolLookupIncomplete when a symbol lookup did not finish.
 func (t *Tracer[Event]) reattachContainerMappedLibsPid(containerPid, execPid uint32, pattern *regexp.Regexp, snapshotMntns uint64) error {
 	if pattern == nil {
 		return nil
@@ -1582,7 +1633,10 @@ func (t *Tracer[Event]) reattachContainerMappedLibsPid(containerPid, execPid uin
 	t.mu.Unlock()
 
 	// Phase 1 (NO lock): discover + open the map_files candidates.
-	opened, err := t.discoverAndOpenMappedLibrariesInNamespace(containerPid, execPid, pattern, snapshotMntns)
+	// Bounds the symbol lookup in the lock-free discovery; see attachIOTimeout.
+	ctx, cancel := context.WithTimeout(context.Background(), attachIOTimeout)
+	defer cancel()
+	opened, err := t.discoverAndOpenMappedLibrariesInNamespace(ctx, containerPid, execPid, pattern, snapshotMntns)
 	if err != nil {
 		closeMappedOpen(opened) // empty today (error precedes the open loop); defensive against future partial-result edits
 		return err
@@ -1604,7 +1658,9 @@ func (t *Tracer[Event]) reattachContainerMappedLibsPid(containerPid, execPid uin
 		closeMappedOpen(opened)
 		return nil
 	}
-	t.commitMappedLibraries(containerPid, opened)
+	if t.commitMappedLibraries(containerPid, opened) {
+		return fmt.Errorf("container %d pid %d: %w", containerPid, execPid, errSymbolLookupIncomplete)
+	}
 	return nil
 }
 
@@ -1669,7 +1725,7 @@ func (t *Tracer[Event]) AttachContainer(container *containercollection.Container
 	t.mu.Unlock()
 
 	if runInline {
-		t.attachContainerWork(job)
+		t.runAttachJob(job, nil)
 	} else {
 		// One goroutine per container; attachSem bounds how many run the heavy
 		// resolve/open concurrently. Under a burst the excess goroutines briefly
@@ -1677,20 +1733,59 @@ func (t *Tracer[Event]) AttachContainer(container *containercollection.Container
 		// on the container-start path. They bail fast on Close.
 		go func() {
 			defer t.attachWg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			t.attachContainerWork(job)
+			t.runAttachJob(job, sem)
 		}()
 	}
 	return nil
+}
+
+// incompleteLookupRetries bounds how often runAttachJob repeats a create-time
+// attach whose symbol lookup did not finish, and incompleteLookupRetryDelay
+// spaces the attempts. Tests shorten the delay.
+const incompleteLookupRetries = 3
+
+var incompleteLookupRetryDelay = time.Second
+
+// runAttachJob runs attachContainerWork, holding an attachSem slot only while
+// an attempt runs (a nil sem takes none). The create-time attach and the
+// startup scan are the only attempts an already-running process gets: no later
+// exec event comes. So when a symbol lookup did not finish because both Go
+// parse slots stayed busy, it retries a bounded number of times, without t.mu
+// and without a slot between attempts. Close ends a wait for the delay or for
+// a slot at once.
+func (t *Tracer[Event]) runAttachJob(job attachJob, sem chan struct{}) {
+	for attempt := 0; ; attempt++ {
+		if sem != nil {
+			select {
+			case sem <- struct{}{}:
+			case <-t.closing:
+				return
+			}
+		}
+		incomplete := t.attachContainerWork(job)
+		if sem != nil {
+			<-sem
+		}
+		if !incomplete || attempt == incompleteLookupRetries {
+			return
+		}
+		timer := time.NewTimer(incompleteLookupRetryDelay)
+		select {
+		case <-t.closing:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 // attachContainerWork performs the create-time attach off the container-start path,
 // reusing the optimistic resolve→open (no lock) then re-validate→commit (lock)
 // discipline. It bails if the tracer closed or the pid was detached during the
 // window (closing any opened files), so it can never install a uprobe link with no
-// DetachContainer to release it.
-func (t *Tracer[Event]) attachContainerWork(job attachJob) {
+// DetachContainer to release it. It returns whether a symbol lookup did not
+// finish, so runAttachJob can retry.
+func (t *Tracer[Event]) attachContainerWork(job attachJob) (lookupIncomplete bool) {
 	t.mu.Lock()
 	if t.closed || t.prog == nil {
 		t.mu.Unlock()
@@ -1728,7 +1823,7 @@ func (t *Tracer[Event]) attachContainerWork(job attachJob) {
 	paths = dedupPaths(append(paths, libPaths...))
 	if len(paths) == 0 {
 		if job.settled {
-			t.attachExistingProcesses(job.pid)
+			lookupIncomplete = t.attachExistingProcesses(job.pid)
 		}
 		t.logger.Infof("uprobetracer: %q NOT attached to container pid %d: no attach target for symbol %q", job.progName, job.pid, job.attachSymbol)
 		return
@@ -1746,16 +1841,17 @@ func (t *Tracer[Event]) attachContainerWork(job attachJob) {
 		closeOpened(opened)
 		return
 	}
-	t.commitOpenedTargets(job.pid, opened)
+	_, lookupIncomplete = t.commitOpenedTargets(job.pid, opened)
 	if inodes := t.containerPid2Inodes[job.pid]; len(inodes) > 0 {
 		t.logger.Infof("uprobetracer: attached %q to container pid %d at %v", job.progName, job.pid, paths)
 	} else {
 		t.logger.Infof("uprobetracer: %q NOT attached to container pid %d: resolved %v but bound 0 (symbol absent, or open/link failed)", job.progName, job.pid, paths)
 	}
 	t.mu.Unlock()
-	if job.settled {
-		t.attachExistingProcesses(job.pid)
+	if job.settled && t.attachExistingProcesses(job.pid) {
+		lookupIncomplete = true
 	}
+	return lookupIncomplete
 }
 
 func (t *Tracer[Event]) DetachContainer(container *containercollection.Container) error {
@@ -1812,6 +1908,9 @@ func (t *Tracer[Event]) Close() {
 		return
 	}
 	t.closed = true
+	if t.closing != nil {
+		close(t.closing)
+	}
 	t.mu.Unlock()
 
 	// Join in-flight background create-time attaches WITHOUT holding t.mu: their

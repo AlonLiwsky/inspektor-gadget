@@ -16,6 +16,7 @@ package uprobetracer
 
 import (
 	"container/list"
+	"context"
 	"debug/elf"
 	"errors"
 	"fmt"
@@ -29,7 +30,14 @@ import (
 
 // Keep only individual answers, never ELF symbol tables, executable objects or
 // descriptors. The bound covers successes and stable negative answers alike.
-var ordinarySymbols = newSymbolCache(2048)
+var ordinarySymbols = newSymbolCache(2048, parseOrdinaryContext)
+
+// goSymbols caches the stripped-Go fallback. One lookup reads all of
+// .gopclntab and builds a table of every function in the binary, tens of
+// megabytes for a large binary. Uncached, that work repeated on every attach
+// to every process of the binary, and a burst of new Go processes pushed the
+// agent past its memory limit.
+var goSymbols = newSymbolCache(2048, parseGoSymbol)
 
 type symbolVersion struct {
 	device, inode     uint64
@@ -44,6 +52,9 @@ type symbolKey struct {
 type symbolResult struct {
 	address, size uint64
 	found         bool
+	// reason explains a cached negative answer that is not a plain missing
+	// symbol, such as a Go binary layout the resolver cannot read.
+	reason string
 }
 type symbolEntry struct {
 	key    symbolKey
@@ -60,11 +71,41 @@ type symbolCache struct {
 	entries  map[symbolKey]*list.Element
 	recent   list.List
 	pending  map[symbolKey]*symbolFlight
-	parse    func(*os.File, string) (symbolResult, error)
+	parse    func(context.Context, *os.File, string) (symbolResult, error)
 }
 
-func newSymbolCache(capacity int) *symbolCache {
-	return &symbolCache{capacity: capacity, entries: make(map[symbolKey]*list.Element), pending: make(map[symbolKey]*symbolFlight), parse: parseOrdinarySymbol}
+func newSymbolCache(capacity int, parse func(context.Context, *os.File, string) (symbolResult, error)) *symbolCache {
+	return &symbolCache{capacity: capacity, entries: make(map[symbolKey]*list.Element), pending: make(map[symbolKey]*symbolFlight), parse: parse}
+}
+
+// parseOrdinaryContext adapts parseOrdinarySymbol to the cache. Ordinary
+// lookups stream bounded buffers and do not wait for a parse slot.
+func parseOrdinaryContext(_ context.Context, file *os.File, name string) (symbolResult, error) {
+	return parseOrdinarySymbol(file, name)
+}
+
+// parseGoSymbol adapts resolveGoSymbolContext to the cache. A missing function
+// and an unsupported layout (a recovered parse panic included) are cached
+// negative answers, and an unsupported layout keeps its reason for the attach
+// log. Every other error (a failed read, a canceled wait for a parse slot)
+// stays uncached, as for ordinary symbols.
+func parseGoSymbol(ctx context.Context, file *os.File, name string) (symbolResult, error) {
+	return goSymbolResult(resolveGoSymbolContext(ctx, file, name))
+}
+
+func goSymbolResult(address uint64, err error) (symbolResult, error) {
+	if errors.Is(err, errGoSymbolNotFound) {
+		return symbolResult{}, nil
+	}
+	if errors.Is(err, errGoSymbolUnsupported) {
+		return symbolResult{reason: err.Error()}, nil
+	}
+	if err != nil {
+		return symbolResult{}, err
+	}
+	// .gopclntab gives no ELF symbol size. A resolved function is never empty,
+	// so report a non-zero size for offset().
+	return symbolResult{address: address, size: 1, found: true}, nil
 }
 
 func fileSymbolVersion(file *os.File) (symbolVersion, error) {
@@ -81,6 +122,9 @@ func fileSymbolVersion(file *os.File) (symbolVersion, error) {
 
 func (r symbolResult) offset(name string) (uint64, error) {
 	if !r.found {
+		if r.reason != "" {
+			return 0, fmt.Errorf("symbol %s: %s: %w", name, r.reason, link.ErrNoSymbol)
+		}
 		return 0, fmt.Errorf("symbol %s: %w", name, link.ErrNoSymbol)
 	}
 	if r.address == 0 {
@@ -93,6 +137,13 @@ func (r symbolResult) offset(name string) (uint64, error) {
 }
 
 func (c *symbolCache) resolve(file *os.File, name string) (uint64, error) {
+	return c.resolveContext(context.Background(), file, name)
+}
+
+// resolveContext is resolve with a context that bounds the waits: for another
+// caller's parse of the same key, and for a parse slot. A done context never
+// waits; it still reads a cached answer and still parses when a slot is free.
+func (c *symbolCache) resolveContext(ctx context.Context, file *os.File, name string) (uint64, error) {
 	version, err := fileSymbolVersion(file)
 	if err != nil {
 		return 0, err
@@ -100,7 +151,7 @@ func (c *symbolCache) resolve(file *os.File, name string) (uint64, error) {
 	// Symbol names normally come from gadget configuration. Do not let an
 	// unbounded name turn the entry limit into an unbounded memory limit.
 	if len(name) > 1024 {
-		result, err := c.parse(file, name)
+		result, err := c.parse(ctx, file, name)
 		if err != nil {
 			return 0, err
 		}
@@ -123,8 +174,21 @@ func (c *symbolCache) resolve(file *os.File, name string) (uint64, error) {
 	}
 	if flight := c.pending[key]; flight != nil {
 		c.mu.Unlock()
-		<-flight.done
+		select {
+		case <-flight.done:
+		default:
+			select {
+			case <-flight.done:
+			case <-ctx.Done():
+				return 0, fmt.Errorf("waiting for symbol lookup: %w", ctx.Err())
+			}
+		}
 		if flight.err != nil {
+			if isWaitEnded(flight.err) && ctx.Err() == nil {
+				// The owner's wait ended, not this caller's: look again
+				// with this caller's own context.
+				return c.resolveContext(ctx, file, name)
+			}
 			return 0, flight.err
 		}
 		current, err := fileSymbolVersion(file)
@@ -141,7 +205,7 @@ func (c *symbolCache) resolve(file *os.File, name string) (uint64, error) {
 	flight := &symbolFlight{done: make(chan struct{})}
 	c.pending[key] = flight
 	c.mu.Unlock()
-	result, err := c.parse(file, name)
+	result, err := c.parse(ctx, file, name)
 	if err == nil {
 		current, statErr := fileSymbolVersion(file)
 		if statErr != nil {
@@ -201,23 +265,102 @@ func parseOrdinarySymbol(file *os.File, name string) (result symbolResult, err e
 	return scanner.result, nil
 }
 
+// lockedLookup is the context for symbol lookups under t.mu. It is already
+// done, so such a lookup never waits for a parse slot or for another caller's
+// parse. The attach paths resolve before they take t.mu (prepareSymbolOffsets),
+// so under t.mu the answer normally comes from the cache.
+var lockedLookup = func() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}()
+
+// resolveSymbolOffset resolves the attach symbol through the bounded caches.
+// ctx bounds only the stripped-Go fallback: ordinary lookups stream bounded
+// buffers and always run to the end.
+func (t *Tracer[Event]) resolveSymbolOffset(ctx context.Context, file *os.File) (uint64, error) {
+	offset, err := ordinarySymbols.resolve(file, t.attachSymbol)
+	if errors.Is(err, link.ErrNoSymbol) && t.progType == ProgUprobe {
+		// Keep the bounded ordinary-symbol cache, but retain upstream's
+		// fallback for stripped Go binaries. Go uretprobes are excluded
+		// because their return handling must account for moving stacks.
+		var goErr error
+		offset, goErr = goSymbols.resolveContext(ctx, file, t.attachSymbol)
+		if goErr != nil {
+			if isWaitEnded(goErr) {
+				// The wait for a parse slot, or for another caller's parse,
+				// ended first. That is not an answer: do not report it as a
+				// missing symbol, so the attach counts as failed and the next
+				// attach tries again.
+				return 0, fmt.Errorf("resolving symbol %q: %w: %w", t.attachSymbol, errSymbolLookupIncomplete, goErr)
+			}
+			return 0, fmt.Errorf("resolving symbol %q (ELF: %w; gopclntab: %w)", t.attachSymbol, err, goErr)
+		}
+		err = nil
+	}
+	return offset, err
+}
+
+// errSymbolLookupIncomplete marks a symbol lookup whose wait ended before an
+// answer. It is not a negative answer: the attach fails, and nothing records
+// the target as handled.
+var errSymbolLookupIncomplete = errors.New("symbol lookup did not finish")
+
+// isWaitEnded reports a lookup that ended on its context: the wait for a parse
+// slot, or for another caller's parse of the same key.
+func isWaitEnded(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// preparedSymbol records the file version that an open-phase symbol lookup
+// read. The zero value means the offsets did not come from that lookup.
+type preparedSymbol struct {
+	used    bool
+	version symbolVersion
+}
+
+// forCommit runs under t.mu. It returns the offsets to bind. When the file
+// changed after the open phase, it drops the open-phase answer, and the commit
+// resolves the symbol again.
+func (p preparedSymbol) forCommit(file *os.File, offsets []uint64) []uint64 {
+	if !p.used {
+		return offsets
+	}
+	if version, err := fileSymbolVersion(file); err != nil || version != p.version {
+		return nil
+	}
+	return offsets
+}
+
+// prepareSymbolOffsets runs in the open phase, without t.mu. When there are
+// no custom offsets, it resolves the attach symbol there, so the commit under
+// t.mu binds a known offset and does not parse. It returns the file version
+// the lookup read, for the commit to check. On any error it returns no
+// offsets, and the commit resolves again under t.mu without waiting
+// (lockedLookup): a stable negative answer comes from the cache, a free slot
+// still parses, and a busy one fails the attach so the next attach retries.
+func (t *Tracer[Event]) prepareSymbolOffsets(ctx context.Context, file *os.File, offsets []uint64) ([]uint64, preparedSymbol) {
+	if len(offsets) > 0 || t.progType == ProgUSDT {
+		return offsets, preparedSymbol{}
+	}
+	version, err := fileSymbolVersion(file)
+	if err != nil {
+		return nil, preparedSymbol{}
+	}
+	offset, err := t.resolveSymbolOffset(ctx, file)
+	if err != nil {
+		return nil, preparedSymbol{}
+	}
+	return []uint64{offset}, preparedSymbol{used: true, version: version}
+}
+
 // bindOrdinarySites keeps custom offsets intact and resolves ordinary names
 // before binding, so cilium receives a nonzero explicit address and never
 // materializes its full symbol map on this path. USDT bypasses this helper.
+// It runs under t.mu, so it resolves with lockedLookup.
 func (t *Tracer[Event]) bindOrdinarySites(file *os.File, offsets []uint64, bind func(*uint64) (link.Link, error)) ([]link.Link, error) {
 	if len(offsets) == 0 {
-		offset, err := ordinarySymbols.resolve(file, t.attachSymbol)
-		if errors.Is(err, link.ErrNoSymbol) && t.progType == ProgUprobe {
-			// Keep the bounded ordinary-symbol cache, but retain upstream's
-			// fallback for stripped Go binaries. Go uretprobes are excluded
-			// because their return handling must account for moving stacks.
-			var goErr error
-			offset, goErr = resolveGoSymbol(file, t.attachSymbol)
-			if goErr != nil {
-				return nil, fmt.Errorf("resolving symbol %q (ELF: %w; gopclntab: %w)", t.attachSymbol, err, goErr)
-			}
-			err = nil
-		}
+		offset, err := t.resolveSymbolOffset(lockedLookup, file)
 		if err != nil {
 			return nil, err
 		}

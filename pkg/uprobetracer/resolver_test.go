@@ -21,11 +21,13 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 )
@@ -455,5 +457,40 @@ func TestAttachOffsetResolverScopedToGadgetContext(t *testing.T) {
 
 	if _, ok := otherCtx.GetVar(AttachOffsetResolverVar); ok {
 		t.Error("resolver leaked into an unrelated gadget's context")
+	}
+}
+
+// When the lookup under t.mu does not finish, the attach error fails the
+// commit instead of a silent skip, so a caller's retry guard (the exec-path
+// exe cache) does not record the target as handled.
+func TestCommitFailsOnIncompleteLookupAtAttach(t *testing.T) {
+	tr, st, _ := newResolverTracer(t, ProgUprobe, "main.target")
+	st.currentInode = 505
+	st.attachErr = fmt.Errorf("resolving: %w", errSymbolLookupIncomplete)
+
+	f, err := tr.openInContainer(context.Background(), fakePid, "/app/server")
+	if err != nil {
+		t.Fatalf("opening candidate: %v", err)
+	}
+	tr.mu.Lock()
+	tr.containerPid2Inodes[fakePid] = nil
+	failed, incomplete := tr.commitOpenedTargets(fakePid, []openedTarget{{file: f, label: "/app/server"}})
+	tr.mu.Unlock()
+
+	if !failed || !incomplete {
+		t.Errorf("commit reported failed=%v incomplete=%v for an incomplete lookup at attach", failed, incomplete)
+	}
+
+	// A missing symbol stays a silent skip.
+	st.attachErr = fmt.Errorf("symbol: %w", link.ErrNoSymbol)
+	f, err = tr.openInContainer(context.Background(), fakePid, "/app/server")
+	if err != nil {
+		t.Fatalf("opening candidate: %v", err)
+	}
+	tr.mu.Lock()
+	failed, incomplete = tr.commitOpenedTargets(fakePid, []openedTarget{{file: f, label: "/app/server"}})
+	tr.mu.Unlock()
+	if failed || incomplete {
+		t.Errorf("commit reported failed=%v incomplete=%v for a missing symbol", failed, incomplete)
 	}
 }

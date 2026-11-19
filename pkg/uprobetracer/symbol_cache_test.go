@@ -16,9 +16,11 @@ package uprobetracer
 
 import (
 	"bytes"
+	"context"
 	"debug/elf"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +33,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/ebpf/link"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,9 +49,9 @@ func cacheTestFile(t *testing.T) *os.File {
 
 func TestSymbolCacheReuseEvictionAndErrors(t *testing.T) {
 	f := cacheTestFile(t)
-	c := newSymbolCache(2)
+	c := newSymbolCache(2, parseOrdinaryContext)
 	calls := 0
-	c.parse = func(*os.File, string) (symbolResult, error) { calls++; return symbolResult{}, nil }
+	c.parse = func(context.Context, *os.File, string) (symbolResult, error) { calls++; return symbolResult{}, nil }
 	for range 2 {
 		_, err := c.resolve(f, "absent")
 		require.ErrorIs(t, err, link.ErrNoSymbol)
@@ -59,7 +62,10 @@ func TestSymbolCacheReuseEvictionAndErrors(t *testing.T) {
 	_, _ = c.resolve(f, "three")
 	_, _ = c.resolve(f, "two")
 	require.Equal(t, 4, calls)
-	c.parse = func(*os.File, string) (symbolResult, error) { calls++; return symbolResult{}, os.ErrPermission }
+	c.parse = func(context.Context, *os.File, string) (symbolResult, error) {
+		calls++
+		return symbolResult{}, os.ErrPermission
+	}
 	for range 2 {
 		_, err := c.resolve(f, "error")
 		require.ErrorIs(t, err, os.ErrPermission)
@@ -69,10 +75,10 @@ func TestSymbolCacheReuseEvictionAndErrors(t *testing.T) {
 
 func TestSymbolCacheConcurrentMiss(t *testing.T) {
 	f := cacheTestFile(t)
-	c := newSymbolCache(2)
+	c := newSymbolCache(2, parseOrdinaryContext)
 	var calls atomic.Int32
 	started, release := make(chan struct{}), make(chan struct{})
-	c.parse = func(*os.File, string) (symbolResult, error) {
+	c.parse = func(context.Context, *os.File, string) (symbolResult, error) {
 		calls.Add(1)
 		close(started)
 		<-release
@@ -94,9 +100,9 @@ func TestSymbolCacheConcurrentMiss(t *testing.T) {
 
 func TestSymbolCacheFileChanges(t *testing.T) {
 	f := cacheTestFile(t)
-	c := newSymbolCache(2)
+	c := newSymbolCache(2, parseOrdinaryContext)
 	calls := 0
-	c.parse = func(*os.File, string) (symbolResult, error) { calls++; return symbolResult{}, nil }
+	c.parse = func(context.Context, *os.File, string) (symbolResult, error) { calls++; return symbolResult{}, nil }
 	_, _ = c.resolve(f, "target")
 	before, err := fileSymbolVersion(f)
 	require.NoError(t, err)
@@ -122,8 +128,8 @@ func TestSymbolCacheFileChanges(t *testing.T) {
 
 func TestSymbolCacheDoesNotCacheConcurrentRewrite(t *testing.T) {
 	f := cacheTestFile(t)
-	c := newSymbolCache(2)
-	c.parse = func(*os.File, string) (symbolResult, error) {
+	c := newSymbolCache(2, parseOrdinaryContext)
+	c.parse = func(context.Context, *os.File, string) (symbolResult, error) {
 		require.NoError(t, f.Truncate(100))
 		return symbolResult{found: true, address: 1, size: 1}, nil
 	}
@@ -149,8 +155,8 @@ func TestSymbolResultErrors(t *testing.T) {
 
 func TestSymbolCacheLongNames(t *testing.T) {
 	f := cacheTestFile(t)
-	c := newSymbolCache(2)
-	c.parse = func(*os.File, string) (symbolResult, error) { return symbolResult{}, nil }
+	c := newSymbolCache(2, parseOrdinaryContext)
+	c.parse = func(context.Context, *os.File, string) (symbolResult, error) { return symbolResult{}, nil }
 	_, err := c.resolve(f, strings.Repeat("x", 1025))
 	require.ErrorIs(t, err, link.ErrNoSymbol)
 	require.Empty(t, c.entries)
@@ -160,9 +166,9 @@ func TestSymbolCacheSymlinkAndDescriptorReuse(t *testing.T) {
 	first, second := cacheTestFile(t), cacheTestFile(t)
 	symlink := filepath.Join(t.TempDir(), "link")
 	require.NoError(t, os.Symlink(first.Name(), symlink))
-	c := newSymbolCache(4)
+	c := newSymbolCache(4, parseOrdinaryContext)
 	calls := 0
-	c.parse = func(*os.File, string) (symbolResult, error) { calls++; return symbolResult{}, nil }
+	c.parse = func(context.Context, *os.File, string) (symbolResult, error) { calls++; return symbolResult{}, nil }
 	opened, err := os.Open(symlink)
 	require.NoError(t, err)
 	_, _ = c.resolve(opened, "target")
@@ -365,7 +371,7 @@ func BenchmarkOrdinarySymbolAbsent(b *testing.B) {
 			name = "cache"
 		}
 		b.Run(name, func(b *testing.B) {
-			c := newSymbolCache(2048)
+			c := newSymbolCache(2048, parseOrdinaryContext)
 			_, _ = c.resolve(f, "absent_uprobe_symbol")
 			b.ReportAllocs()
 			for b.Loop() {
@@ -395,7 +401,7 @@ func TestParseOrdinarySymbolReadsDynamicErrors(t *testing.T) {
 	require.NoError(t, err)
 	_, err = parseOrdinarySymbol(f, "target")
 	require.Error(t, err)
-	c := newSymbolCache(2)
+	c := newSymbolCache(2, parseOrdinaryContext)
 	_, err = c.resolve(f, "target")
 	require.Error(t, err)
 	require.Empty(t, c.entries)
@@ -408,4 +414,238 @@ func TestParseOrdinarySymbolNonExecutableSegment(t *testing.T) {
 	result, err := parseOrdinarySymbol(f, "target")
 	require.NoError(t, err)
 	require.Equal(t, uint64(0x1020), result.address)
+}
+
+func buildStrippedGoTarget(t *testing.T) *os.File {
+	t.Helper()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "main.go")
+	require.NoError(t, os.WriteFile(source, []byte(`package main
+//go:noinline
+func target() { println("target") }
+func main() { target() }
+`), 0o600))
+	binary := filepath.Join(dir, "target")
+	output, err := exec.Command("go", "build", "-buildvcs=false", "-ldflags=-s -w", "-o", binary, source).CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	file, err := os.Open(binary)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
+func TestGoSymbolCacheParsesOncePerFile(t *testing.T) {
+	file := buildStrippedGoTarget(t)
+	want, err := resolveGoSymbol(file, "main.target")
+	require.NoError(t, err)
+
+	var parses atomic.Int32
+	c := newSymbolCache(8, func(ctx context.Context, file *os.File, name string) (symbolResult, error) {
+		parses.Add(1)
+		return parseGoSymbol(ctx, file, name)
+	})
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := c.resolve(file, "main.target")
+			assert.NoError(t, err)
+			assert.Equal(t, want, got)
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, int32(1), parses.Load())
+
+	// A missing function is a stable answer: parse once, then answer from the cache.
+	for range 3 {
+		_, err = c.resolve(file, "main.absent")
+		require.ErrorIs(t, err, link.ErrNoSymbol)
+	}
+	require.Equal(t, int32(2), parses.Load())
+}
+
+// takeAllGoParseSlots fills every parse slot and returns a function that frees
+// one. Cleanup frees the rest, so a failing test does not leave them taken.
+func takeAllGoParseSlots(t *testing.T) func() {
+	t.Helper()
+	taken := 0
+	t.Cleanup(func() {
+		for ; taken > 0; taken-- {
+			<-goParseSlots
+		}
+	})
+	for range cap(goParseSlots) {
+		goParseSlots <- struct{}{}
+		taken++
+	}
+	return func() {
+		<-goParseSlots
+		taken--
+	}
+}
+
+func TestParseGoSymbolWaitsForASlot(t *testing.T) {
+	file := buildStrippedGoTarget(t)
+	freeOne := takeAllGoParseSlots(t)
+	// A file without .gopclntab answers without a slot.
+	_, err := parseGoSymbol(context.Background(), symbolFixture(t, elf.ELFCLASS64, elf.ET_EXEC, nil, nil), "main.target")
+	require.Error(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = parseGoSymbol(context.Background(), file, "main.target")
+	}()
+	select {
+	case <-done:
+		t.Fatal("parse ran while every slot was taken")
+	case <-time.After(100 * time.Millisecond):
+	}
+	freeOne()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("parse did not run after a slot was freed")
+	}
+}
+
+// A lookup queued for a slot gives up when its context ends, and the failure is
+// not cached: the next lookup parses.
+func TestGoSymbolSlotWaitIsCancelable(t *testing.T) {
+	file := buildStrippedGoTarget(t)
+	want, err := resolveGoSymbol(file, "main.target")
+	require.NoError(t, err)
+	c := newSymbolCache(8, parseGoSymbol)
+
+	freeOne := takeAllGoParseSlots(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err = c.resolveContext(ctx, file, "main.target")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Empty(t, c.entries)
+
+	// A done context does not wait, but it still answers when a slot is free.
+	_, err = c.resolveContext(lockedLookup, file, "main.target")
+	require.ErrorIs(t, err, context.Canceled)
+	freeOne()
+	got, err := c.resolveContext(lockedLookup, file, "main.target")
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+// A lookup that waits for another caller's parse of the same key also gives up
+// when its context ends.
+func TestSymbolFlightWaitIsCancelable(t *testing.T) {
+	file := symbolFixture(t, elf.ELFCLASS64, elf.ET_EXEC, nil, nil)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	c := newSymbolCache(8, func(context.Context, *os.File, string) (symbolResult, error) {
+		close(started)
+		<-release
+		return symbolResult{}, nil
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = c.resolve(file, "target")
+	}()
+	<-started
+	_, err := c.resolveContext(lockedLookup, file, "target")
+	require.ErrorIs(t, err, context.Canceled)
+	close(release)
+	<-done
+}
+
+// An unsupported layout is cached as a negative answer that keeps its reason,
+// on the cold lookup and on the cached one.
+func TestGoSymbolUnsupportedReasonIsKept(t *testing.T) {
+	file := buildStrippedGoTarget(t)
+	var parses atomic.Int32
+	c := newSymbolCache(8, func(context.Context, *os.File, string) (symbolResult, error) {
+		parses.Add(1)
+		return goSymbolResult(0, fmt.Errorf("%w: .gopclntab too large", errGoSymbolUnsupported))
+	})
+	for range 2 {
+		_, err := c.resolve(file, "main.target")
+		require.ErrorIs(t, err, link.ErrNoSymbol)
+		require.ErrorContains(t, err, "unsupported Go binary: .gopclntab too large")
+	}
+	require.Equal(t, int32(1), parses.Load())
+}
+
+// The open phase resolves the symbol without t.mu. The commit under t.mu then
+// binds the prepared offset and parses nothing, even with every slot taken.
+func TestPrepareSymbolOffsetsResolvesOffLock(t *testing.T) {
+	file := buildStrippedGoTarget(t)
+	want, err := resolveGoSymbol(file, "main.target")
+	require.NoError(t, err)
+	tr := &Tracer[struct{}]{attachSymbol: "main.target", progType: ProgUprobe}
+
+	offsets, symbol := tr.prepareSymbolOffsets(context.Background(), file, nil)
+	require.Equal(t, []uint64{want}, offsets)
+	require.True(t, symbol.used)
+	// Custom offsets and USDT are left as they are.
+	custom, symbol := tr.prepareSymbolOffsets(context.Background(), file, []uint64{7})
+	require.Equal(t, []uint64{7}, custom)
+	require.False(t, symbol.used)
+	usdt := &Tracer[struct{}]{attachSymbol: "main.target", progType: ProgUSDT}
+	none, _ := usdt.prepareSymbolOffsets(context.Background(), file, nil)
+	require.Nil(t, none)
+
+	takeAllGoParseSlots(t)
+	var bound []uint64
+	_, err = tr.bindOrdinarySites(file, offsets, func(offset *uint64) (link.Link, error) {
+		bound = append(bound, *offset)
+		return nil, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []uint64{want}, bound)
+}
+
+// A canceled wait for a parse slot is not a missing symbol. The open phase
+// returns no offsets and leaves the lookup to the commit, and the lookup
+// error is marked incomplete, so a failed attach is not recorded as handled.
+func TestPrepareSymbolOffsetsLeavesIncompleteLookupToCommit(t *testing.T) {
+	file := buildStrippedGoTarget(t)
+	tr := &Tracer[struct{}]{attachSymbol: "main.target", progType: ProgUprobe}
+
+	release := takeAllGoParseSlots(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	offsets, symbol := tr.prepareSymbolOffsets(ctx, file, nil)
+	require.Nil(t, offsets)
+	require.False(t, symbol.used)
+	_, err := tr.resolveSymbolOffset(lockedLookup, file)
+	require.ErrorIs(t, err, errSymbolLookupIncomplete)
+	require.NotErrorIs(t, err, link.ErrNoSymbol)
+
+	release()
+	offsets, symbol = tr.prepareSymbolOffsets(context.Background(), file, nil)
+	require.Len(t, offsets, 1)
+	require.True(t, symbol.used)
+}
+
+// The commit binds an open-phase offset only while the file has the version
+// the lookup read. After an in-place rewrite it drops that offset.
+func TestPreparedSymbolForCommitChecksFileVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "target")
+	require.NoError(t, os.WriteFile(path, []byte("version one"), 0o644))
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { file.Close() })
+	version, err := fileSymbolVersion(file)
+	require.NoError(t, err)
+
+	require.Equal(t, []uint64{0x220}, preparedSymbol{used: true, version: version}.forCommit(file, []uint64{0x220}))
+	// Offsets that did not come from the open-phase lookup pass unchanged.
+	require.Equal(t, []uint64{7}, preparedSymbol{}.forCommit(file, []uint64{7}))
+
+	rewrite, err := os.OpenFile(path, os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = rewrite.WriteAt([]byte("version two, moved"), 0)
+	require.NoError(t, err)
+	require.NoError(t, rewrite.Close())
+
+	require.Nil(t, preparedSymbol{used: true, version: version}.forCommit(file, []uint64{0x220}))
 }
