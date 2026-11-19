@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -398,17 +400,16 @@ func runSharedAttachCanaryWith(ctx context.Context, receipts map[string]*operato
 			cmd = exec.CommandContext(canaryCtx, "/proc/self/exe")
 			cmd.Env = []string{sharedCanaryEnv + "=1"}
 		}
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("attach canary: exec: %w", err)
+		if err := runSharedAttachCanaryChild(ctx, canaryCtx, cmd, silent); err != nil {
+			return err
 		}
 		// task_free runs after the reaped child's RCU grace period.
 		t := time.NewTimer(50 * time.Millisecond)
 		select {
 		case <-canaryCtx.Done():
 			t.Stop()
-			if len(silent) > 0 && errors.Is(canaryCtx.Err(), context.DeadlineExceeded) {
-				sort.Strings(silent)
-				return fmt.Errorf("attach canary: attached but never ran during a fork+exec+exit: %s", strings.Join(silent, ", "))
+			if ctx.Err() == nil && errors.Is(canaryCtx.Err(), context.DeadlineExceeded) {
+				return sharedAttachCanaryDeadlineError(silent, nil)
 			}
 			return fmt.Errorf("attach canary: %w", canaryCtx.Err())
 		case <-t.C:
@@ -427,4 +428,57 @@ func runSharedAttachCanaryWith(ctx context.Context, receipts map[string]*operato
 			return nil
 		}
 	}
+}
+
+// A deadline can expire during the child or during the RCU wait. Keep the
+// last completed run-count sample in either case. An unrelated exec failure
+// must not masquerade as a measured silent hook, even near expiration.
+func runSharedAttachCanaryChild(parent, budget context.Context, cmd *exec.Cmd, silent []string) error {
+	localDeadline := func() bool {
+		return parent.Err() == nil && errors.Is(budget.Err(), context.DeadlineExceeded)
+	}
+	var interruptedForDeadline atomic.Bool
+	if cancel := cmd.Cancel; cancel != nil {
+		cmd.Cancel = func() error {
+			expired := localDeadline()
+			err := cancel()
+			if expired && err == nil {
+				interruptedForDeadline.Store(true)
+			}
+			return err
+		}
+	}
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	if err == context.DeadlineExceeded {
+		// The local budget can expire before Start, or Cancel can race
+		// a clean child exit. Go reports the same sentinel for both.
+		beforeStart := cmd.Process == nil && localDeadline()
+		cleanExitAfterCancel := interruptedForDeadline.Load() &&
+			cmd.ProcessState != nil && cmd.ProcessState.Success()
+		if beforeStart || cleanExitAfterCancel {
+			return sharedAttachCanaryDeadlineError(silent, nil)
+		}
+	}
+	var exit *exec.ExitError
+	if interruptedForDeadline.Load() && errors.As(err, &exit) {
+		if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() && status.Signal() == syscall.SIGKILL {
+			return sharedAttachCanaryDeadlineError(silent, err)
+		}
+	}
+	return fmt.Errorf("attach canary: exec: %w", err)
+}
+
+func sharedAttachCanaryDeadlineError(silent []string, childErr error) error {
+	cause := context.DeadlineExceeded
+	if childErr != nil {
+		cause = fmt.Errorf("%w: %w", cause, childErr)
+	}
+	if len(silent) == 0 {
+		return fmt.Errorf("attach canary: %w", cause)
+	}
+	sort.Strings(silent)
+	return fmt.Errorf("attach canary: attached but never ran during a fork+exec+exit: %s: %w", strings.Join(silent, ", "), cause)
 }
