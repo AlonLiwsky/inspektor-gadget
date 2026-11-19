@@ -452,7 +452,7 @@ func runSharedAttachCanaryChild(parent, budget context.Context, cmd *exec.Cmd, s
 	if err == nil {
 		return nil
 	}
-	if err == context.DeadlineExceeded {
+	if err == context.DeadlineExceeded { //nolint:errorlint // Match only the direct os/exec sentinel; wrapped errors are not attribution evidence.
 		// The local budget can expire before Start, or Cancel can race
 		// a clean child exit. Go reports the same sentinel for both.
 		beforeStart := cmd.Process == nil && localDeadline()
