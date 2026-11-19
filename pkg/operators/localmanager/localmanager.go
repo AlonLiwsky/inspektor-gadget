@@ -24,7 +24,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/containerd/containerd/pkg/cri/constants"
 	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/google/uuid"
 	"github.com/moby/sys/capability"
@@ -148,7 +147,7 @@ func (l *localManager) GlobalParamDescs() params.ParamDescs {
 		},
 		{
 			Key:          ContainerdNamespace,
-			DefaultValue: constants.K8sContainerdNamespace,
+			DefaultValue: runtimeclient.ContainerdDefaultNamespace,
 			Description:  "Containerd namespace to use",
 		},
 		{
@@ -398,8 +397,7 @@ type localManagerTrace struct {
 	mountnsmap      *ebpf.Map
 	enrichEvents    bool
 	subscriptionKey string
-	// tracerID is the id the tracer was registered under at the
-	// tracer-collection; it is needed to remove the tracer again.
+	// tracerID is the id the tracer was registered under at the tracer collection.
 	tracerID string
 
 	// Keep a map to attached containers, so we can clean up properly
@@ -441,7 +439,7 @@ func (l *localManagerTrace) handleGadgetInstance(log logger.Logger) error {
 	// If --host is set, we do not want to create the below map because we do not
 	// want any filtering.
 	if setter, ok := l.gadgetInstance.(MountNsMapSetter); ok {
-		if !host {
+		if !host && l.tracerID == "" {
 			if l.manager.containerCollection == nil {
 				return fmt.Errorf("container-collection isn't available")
 			}
@@ -458,13 +456,14 @@ func (l *localManagerTrace) handleGadgetInstance(log logger.Logger) error {
 				return fmt.Errorf("getting mount namespace map for tracer %q: %w", id, err)
 			}
 
-			log.Debugf("set mountnsmap for gadget")
-			setter.SetMountNsMap(mountnsmap)
-
-			l.mountnsmap = mountnsmap
 			l.tracerID = id
+			l.mountnsmap = mountnsmap
 		} else if l.manager.containerCollection == nil {
 			log.Warn("container-collection isn't available: container enrichment and filtering won't work")
+		}
+		if !host {
+			log.Debugf("set mountnsmap for gadget")
+			setter.SetMountNsMap(l.mountnsmap)
 		}
 	}
 
@@ -541,7 +540,7 @@ func (l *localManagerTrace) handleGadgetInstance(log logger.Logger) error {
 					case containercollection.EventTypePreCreateContainer:
 						// nothing to do
 					default:
-						log.Errorf("unknown event type, expected either %s, %s, %s or %s, got %s",
+						log.Errorf("unknown event type, expected either %v, %v, %v or %v, got %v",
 							containercollection.EventTypePreCreateContainer,
 							containercollection.EventTypeAddContainer,
 							containercollection.EventTypeRemoveContainer,
@@ -567,12 +566,15 @@ func (l *localManagerTrace) PostGadgetRun() error {
 	if l.tracerID != "" {
 		log.Debugf("calling RemoveTracer()")
 		l.manager.tracerCollection.RemoveTracer(l.tracerID)
+		l.tracerID = ""
+		l.mountnsmap = nil
 	}
 	if l.subscriptionKey != "" {
 		host := l.params.Get(Host).AsBool()
 
 		log.Debugf("calling Unsubscribe()")
 		l.manager.containerCollection.Unsubscribe(l.subscriptionKey)
+		l.subscriptionKey = ""
 
 		if l.attacher != nil {
 			// emit detach for all remaining containers
@@ -648,7 +650,8 @@ func (l *localManager) InstantiateDataOperator(gadgetCtx operators.GadgetContext
 		},
 	}
 
-	activate := false
+	// A gadget can consume lifecycle events without requesting enrichment maps.
+	activate := enableContainersDs
 
 	// Check, whether the gadget requested a map from us
 	if t, ok := gadgetCtx.GetVar(gadgets.MntNsFilterMapName); ok {
@@ -736,8 +739,8 @@ func (l *localManagerTraceWrapper) PreStart(gadgetCtx operators.GadgetContext) e
 		gadgetCtx.SetVar(gadgets.MntNsFilterMapName, mountnsmap)
 		gadgetCtx.SetVar(gadgets.FilterByMntNsName, true)
 
-		l.mountnsmap = mountnsmap
 		l.tracerID = id
+		l.mountnsmap = mountnsmap
 	} else if l.manager.containerCollection == nil {
 		log.Warn("container-collection isn't available: container enrichment and filtering won't work")
 	}
@@ -758,7 +761,7 @@ func (l *localManagerTraceWrapper) Start(gadgetCtx operators.GadgetContext) erro
 		extraContainers = append(extraContainers, l.manager.fakeContainer)
 	}
 
-	return l.containersPublisher.PublishContainers(false, extraContainers, containerSelector)
+	return l.containersPublisher.PublishContainers(false, extraContainers, containerSelector, false)
 }
 
 func (l *localManagerTraceWrapper) Stop(gadgetCtx operators.GadgetContext) error {

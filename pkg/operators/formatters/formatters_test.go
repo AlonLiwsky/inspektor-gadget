@@ -17,10 +17,12 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
@@ -30,6 +32,9 @@ import (
 )
 
 func TestGeneral(t *testing.T) {
+	const unknownErrno = ^uint32(0)
+	require.Empty(t, unix.ErrnoName(syscall.Errno(unknownErrno)), "unknown errno fixture must not have a symbolic name")
+
 	type testCaseDatum struct {
 		value      any
 		expected   any
@@ -187,8 +192,13 @@ func TestGeneral(t *testing.T) {
 					annotation: map[string]string{"formatters.errno.target": "timeout"},
 				},
 				{
-					value:    uint32(134),
-					expected: "error#134",
+					value:    uint32(unix.EFTYPE),
+					expected: "EFTYPE",
+					ok:       true,
+				},
+				{
+					value:    unknownErrno,
+					expected: "error#4294967295",
 					ok:       true,
 				},
 			},

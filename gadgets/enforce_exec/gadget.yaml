@@ -1,0 +1,16 @@
+name: enforce_exec
+behavior: mutator
+description: "Enforce immutable execution path rules for a live set of containers (BPF LSM)"
+annotations:
+  enable-containers-datasource: "true"
+  enforce-exec: "true"
+  enforce-exec-host-namespace: "true"
+datasources:
+  verdict:
+    fields:
+      path:
+        annotations:
+          description: resolved executable path
+  containers:
+    annotations:
+      cli.default-output-mode: none

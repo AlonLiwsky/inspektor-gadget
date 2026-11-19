@@ -980,12 +980,12 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// https://github.com/kubernetes/kubectl/blob/b5fe0f6e9c65ea95a2118746b7e04822255d76c2/pkg/cmd/wait/wait.go#L364
 	daemonSetInterface := k8sClient.AppsV1().DaemonSets(gadgetNamespace)
 	lw := &cache.ListWatch{
-		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+		ListWithContextFunc: func(_ context.Context, options metav1.ListOptions) (runtime.Object, error) {
 			options.LabelSelector = "k8s-app=gadget"
 
 			return daemonSetInterface.List(context.TODO(), options)
 		},
-		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+		WatchFuncWithContext: func(_ context.Context, options metav1.ListOptions) (watch.Interface, error) {
 			options.LabelSelector = "k8s-app=gadget"
 
 			return daemonSetInterface.Watch(context.TODO(), options)

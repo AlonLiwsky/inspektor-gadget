@@ -1,0 +1,40 @@
+# Diagnostic overlay of the shared-node candidate image metadata (G019
+# section 8 packaging). QUALIFICATION ONLY, never part of the product image.
+#
+# Diagnostic twins of the product object (the M3 object: recovery, live
+# bootstrap, route migration and reload diagnostics, built with
+# SE_PRODUCT_NO_POOL_REAPER) keep TC programs that the bootstrap publisher
+# TEST_RUNs from a second load of the same object. The twin's gadget.yaml is
+# gadget.yaml, ../bpf/opaque_real_owner_child_candidate.programs.yaml, this
+# file and ../bpf/opaque_real_owner_child_candidate.programs.diagnostic.yaml
+# merged in that order. This file disables every TC program of the twins:
+# loaded, never attached, never exposed as a command. The bootstrap
+# publisher's revision and second-route programs exist only in the M3 twin
+# (ROUTE_MIGRATION and RELOAD diagnostics).
+programs:
+  opaque_real_live_bootstrap_advance:
+    attach_to: gadget_program_disabled
+  opaque_real_live_bootstrap_second_route:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_second_policy_seed:
+    attach_to: gadget_program_disabled
+  opaque_real_live_bootstrap_control:
+    attach_to: gadget_program_disabled
+  opaque_real_live_reap_task:
+    attach_to: gadget_program_disabled
+  opaque_real_live_reap_work:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_policy_seed_diagnostic:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_terminal_race_complete:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_work_completion_probe:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_work_retry_probe:
+    attach_to: gadget_program_disabled
+  opaque_real_reuse_hold:
+    attach_to: gadget_program_disabled
+  se_rm_administrator:
+    attach_to: gadget_program_disabled
+  se_rm_guardian:
+    attach_to: gadget_program_disabled

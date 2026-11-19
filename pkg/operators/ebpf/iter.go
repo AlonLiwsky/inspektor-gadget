@@ -193,7 +193,9 @@ func (i *ebpfInstance) runIterators() error {
 
 							return appendBuf(buf)
 						})
-						if err != nil && !errors.Is(err, os.ErrNotExist) {
+						// A vanished container (ErrNotExist) is skipped, but a failed
+						// namespace restore is always reported.
+						if err != nil && (!errors.Is(err, os.ErrNotExist) || errors.Is(err, nsenter.ErrRestoreNamespace)) {
 							return fmt.Errorf("entering container %q's netns to run iterator %q: %w",
 								container.Runtime.ContainerName, pName, err)
 						}

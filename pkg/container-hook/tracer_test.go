@@ -124,27 +124,21 @@ func TestContainerHookEvent(t *testing.T) {
 
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			events := []ContainerEvent{}
-			eventCallback := func(event ContainerEvent) {
-				// normalize
-				event.ContainerName = ""
-				event.ContainerPID = 0
-				event.ContainerConfig = ""
-				event.Bundle = ""
+			events := newHookEventCollector()
 
-				events = append(events, event)
-			}
-
-			notifier, err := NewContainerNotifier(eventCallback)
+			notifier, err := NewContainerNotifier(events.add)
 			require.NoError(t, err)
 			require.NotNil(t, notifier, "Returned notifier was nil")
+			t.Cleanup(notifier.Close)
 
 			containerID := test.generateEvent(t)
 
-			// Give some time for the tracer to capture the events
-			time.Sleep(100 * time.Millisecond)
-
-			test.validateEvent(t, nil, containerID, events)
+			expected := ContainerEvent{Type: EventTypeAddContainer, ContainerID: containerID}
+			snapshot, matched := events.wait(expected, 100*time.Millisecond)
+			if !matched {
+				events.logMissing(t, expected, snapshot)
+			}
+			test.validateEvent(t, nil, containerID, snapshot)
 		})
 	}
 }

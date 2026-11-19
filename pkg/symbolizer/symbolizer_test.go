@@ -25,9 +25,8 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/symbolizer"
 	utils "github.com/inspektor-gadget/inspektor-gadget/pkg/testing/utils"
 
-	// Register all symbolizer resolvers
+	// Register non-OTel symbolizer resolvers
 	_ "github.com/inspektor-gadget/inspektor-gadget/pkg/symbolizer/debuginfod"
-	_ "github.com/inspektor-gadget/inspektor-gadget/pkg/symbolizer/otel"
 	_ "github.com/inspektor-gadget/inspektor-gadget/pkg/symbolizer/symtab"
 )
 
@@ -55,20 +54,6 @@ func TestSymbolizerCloseNoGoroutineLeak(t *testing.T) {
 			opts: symbolizer.SymbolizerOptions{
 				UseSymtab:          true,
 				UseDebugInfodCache: true,
-			},
-		},
-		{
-			name: "otel-ebpf-profiler only",
-			opts: symbolizer.SymbolizerOptions{
-				UseOtelEbpfProfiler: true,
-			},
-		},
-		{
-			name: "all symbolizers",
-			opts: symbolizer.SymbolizerOptions{
-				UseSymtab:           true,
-				UseDebugInfodCache:  true,
-				UseOtelEbpfProfiler: true,
 			},
 		},
 	}

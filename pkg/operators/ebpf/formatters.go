@@ -178,7 +178,14 @@ func getFormattersForEnums(enums []*enum, ds datasource.DataSource, btfSpec *btf
 }
 
 func (i *ebpfInstance) initStackConverter(gadgetCtx operators.GadgetContext) error {
-	lookupKernelSymbol := newKernelSymbolLookup(kallsyms.NewKAllSyms)
+	return i.initStackConverterWithDependencies(gadgetCtx, kallsyms.NewKAllSyms, func(key, valueOut interface{}) error {
+		// The map is assigned after formatter initialization, when the collection loads.
+		return i.kernelStackMap.Lookup(key, valueOut)
+	})
+}
+
+func (i *ebpfInstance) initStackConverterWithDependencies(gadgetCtx operators.GadgetContext, newKAllSyms func() (*kallsyms.KAllSyms, error), stackLookup func(interface{}, interface{}) error) error {
+	lookupKernelSymbol := newKernelSymbolLookup(newKAllSyms)
 	for _, ds := range gadgetCtx.GetDataSources() {
 		for _, in := range ds.GetFieldsWithTag("type:" + ebpftypes.KernelStackTypeName) {
 			if in == nil {
@@ -204,7 +211,7 @@ func (i *ebpfInstance) initStackConverter(gadgetCtx operators.GadgetContext) err
 			converter := func(ds datasource.DataSource, data datasource.Data) error {
 				inBytes := in.Get(data)
 				stackId := ds.ByteOrder().Uint32(inBytes)
-				outString, err := fetchAndFormatStackTrace(stackId, i.kernelStackMap.Lookup, lookupKernelSymbol)
+				outString, err := fetchAndFormatStackTrace(stackId, stackLookup, lookupKernelSymbol)
 				if err != nil {
 					i.logger.Warnf("stack with ID %d is lost: %s", stackId, err.Error())
 					out.Set(data, []byte{})

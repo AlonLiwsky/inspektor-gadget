@@ -28,6 +28,5 @@ func (m *Manager) AttachToGadgetInstance(gadgetInstanceID string, stream api.Gad
 		return fmt.Errorf("gadget %s not found", gadgetInstanceID)
 	}
 
-	<-gi.AddClient(stream)
-	return nil
+	return <-gi.AddClient(stream)
 }

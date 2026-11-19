@@ -71,6 +71,9 @@ type GadgetInstance struct {
 	cancel               func()
 	state                gadgetState
 	error                error
+	readyOnce            sync.Once
+	started              chan struct{}
+	stopped              chan struct{}
 	ready                chan struct{}
 }
 
@@ -81,13 +84,34 @@ func (p *GadgetInstance) GadgetInfo() (*api.GadgetInfo, error) {
 	return p.gadgetInfo, p.error
 }
 
+// ParamValues returns a snapshot of the request parameters, not the mutable backing map.
 func (p *GadgetInstance) ParamValues() api.ParamValues {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return maps.Clone(p.request.ParamValues)
 }
 
-func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) chan struct{} {
+// AddClient returns the attachment result after metadata delivery and streaming finish.
+// The result is buffered so asynchronous callers need not wait for it.
+func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) chan error {
+	done := make(chan error, 1)
+	ctx := client.Context()
+	var err error
+	select {
+	case <-ctx.Done():
+		err = ctx.Err()
+	case <-p.ready:
+		// Prefer cancellation if both readiness and the client deadline are ready.
+		err = ctx.Err()
+		if err == nil {
+			_, err = p.GadgetInfo()
+		}
+	}
+	if err != nil {
+		done <- err
+		close(done)
+		return done
+	}
 	log.Debugf("[%s] client connected", p.gadgetInfo.Id)
 	p.mu.Lock()
 	cl := NewGadgetInstanceClient(client)
@@ -108,13 +132,13 @@ func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) cha
 	cl.seq = uint32(len(replayBuf))
 	p.mu.Unlock()
 
-	done := make(chan struct{})
-	err := client.Send(p.gadgetInfoSerialized)
+	err = client.Send(p.gadgetInfoSerialized)
 	if err != nil {
 		p.mu.Lock()
 		delete(p.clients, cl)
 		p.mu.Unlock()
-		log.Debugf("[%s] client disconnected (failed to send gadget info): %c", p.gadgetInfo.Id, err)
+		log.Debugf("[%s] client disconnected (failed to send gadget info): %v", p.gadgetInfo.Id, err)
+		done <- err
 		close(done)
 		return done
 	}
@@ -129,6 +153,7 @@ func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) cha
 		p.mu.Lock()
 		delete(p.clients, cl)
 		p.mu.Unlock()
+		done <- err
 		close(done)
 	}()
 	return done
@@ -146,6 +171,7 @@ func (p *GadgetInstance) Run(
 	ctx context.Context,
 	runtime runtime.Runtime,
 	logger logger.Logger,
+	options ...gadgetcontext.Option,
 ) error {
 	if p.request.Version != api.VersionGadgetRunProtocol {
 		return fmt.Errorf("expected version to be %d, got %d", api.VersionGadgetRunProtocol, p.request.Version)
@@ -201,38 +227,55 @@ func (p *GadgetInstance) Run(
 			gi.Name = p.name
 
 			d, _ := proto.Marshal(gi)
+			p.mu.Lock()
 			p.gadgetInfoSerialized = &api.GadgetEvent{
 				Type:    api.EventTypeGadgetInfo,
 				Payload: d,
 			}
 			p.gadgetInfo = gi
-			close(p.ready)
+			p.mu.Unlock()
+			p.readyOnce.Do(func() { close(p.ready) })
+			if p.mgr.asyncGadgetRunCreation {
+				p.mgr.waitingRoom.Range(func(key, value any) bool {
+					if value.(string) == p.id {
+						p.AddClient(key.(api.GadgetManager_RunGadgetServer))
+						p.mgr.waitingRoom.Delete(key)
+					}
+					return true
+				})
+			}
 			return nil
 		}),
 	)
 
 	ops := make([]operators.DataOperator, 0)
-	for op := range p.mgr.GetOperatorMap() {
-		ops = append(ops, op)
+	if p.mgr.Service != nil {
+		for op := range p.mgr.GetOperatorMap() {
+			ops = append(ops, op)
+		}
 	}
 	ops = append(ops, svc)
 
-	gadgetCtx := gadgetcontext.New(
-		ctx,
-		p.request.ImageName,
+	opts := []gadgetcontext.Option{
 		gadgetcontext.WithLogger(logger),
 		gadgetcontext.WithDataOperators(ops...),
 		gadgetcontext.WithAsRemoteCall(true),
 		gadgetcontext.WithName(p.name),
 		gadgetcontext.WithID(p.id),
-	)
+	}
+	opts = append(opts, options...)
+	// Manager startup notification must not be replaced by caller options.
+	opts = append(opts, gadgetcontext.WithOnStarted(func() error {
+		p.mu.Lock()
+		p.state = stateRunning
+		p.mu.Unlock()
+		close(p.started)
+		return nil
+	}))
+	gadgetCtx := gadgetcontext.New(ctx, p.request.ImageName, opts...)
 
 	runtimeParams := runtime.ParamDescs().ToParams()
 	runtimeParams.CopyFromMap(p.request.ParamValues, "runtime.")
-
-	p.mu.Lock()
-	p.state = stateRunning
-	p.mu.Unlock()
 
 	return runtime.RunGadget(gadgetCtx, runtimeParams, p.request.ParamValues)
 }

@@ -1,0 +1,13 @@
+name: enforce_exec_owner
+behavior: mutator
+description: "Experimental persistent exec owner; requires trusted native lease, ABI2 lifecycle and proved kernel matrix"
+annotations:
+  enforce-exec-owner-abi: "2"
+  # Deliberately NOT the immutable enforce-exec-full capability. A compatible
+  # qualified native owner must establish all readiness prerequisites itself.
+datasources:
+  verdict:
+    fields:
+      path:
+        annotations:
+          description: resolved executable path

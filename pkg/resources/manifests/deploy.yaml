@@ -36,10 +36,13 @@ data:
       multi-tenancy-scope-resource: pods
       multi-tenancy-scope-verb: create
       operator:
+        ebpf:
+          policy: {}
         kubemanager:
           fallback-podinformer: true
           hook-mode: auto
         oci:
+          allow-enforcement: false
           allowed-gadgets: []
           disallow-pulling: false
           insecure-registries: []

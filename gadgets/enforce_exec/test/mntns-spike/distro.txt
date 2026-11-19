@@ -1,0 +1,70 @@
+Linux ig-mnt-spike-20261026 6.12.111+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.111-1 (2026-09-28) x86_64 GNU/Linux
+runc version 1.1.15+ds1
+commit: 1.1.15+ds1-2+b4
+spec: 1.2.0
+go: go1.24.4
+libseccomp: 2.6.0
+Client:
+ Version:           26.1.5+dfsg1
+ API version:       1.45
+ Go version:        go1.24.4
+ Git commit:        a72d7cd
+ Built:             Thu Aug 13 05:35:47 2026
+ OS/Arch:           linux/amd64
+ Context:           default
+
+Server:
+ Engine:
+  Version:          26.1.5+dfsg1
+  API version:      1.45 (minimum version 1.24)
+  Go version:       go1.24.4
+  Git commit:       411e817
+  Built:            Thu Aug 13 05:35:47 2026
+  OS/Arch:          linux/amd64
+  Experimental:     false
+ containerd:
+  Version:          1.7.24~ds1
+  GitCommit:        1.7.24~ds1-6+deb13u1
+ runc:
+  Version:          1.1.15+ds1
+  GitCommit:        1.1.15+ds1-2+b4
+ docker-init:
+  Version:          0.19.0
+  GitCommit:
+TARGET privileged=false pid=1575 cgroup=6599 mntns=4026532381 host_mntns=4026531841
+{"cgroup":6599,"denied":0,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/bin/busybox","path_result":13,"pid":1684}
+CASE privileged=false skip=0 path=/bin/true error=<nil> output=""
+{"cgroup":6599,"denied":1,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/tmp/busybox","path_result":13,"pid":1706}
+CASE privileged=false skip=0 path=/tmp/busybox error=exit status 1 output="exec /tmp/busybox: operation not permitted\n"
+{"cgroup":6599,"denied":1,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/runc","path_result":6,"pid":1731}
+CASE privileged=false skip=0 path=/runc error=exit status 1 output="exec /runc: operation not permitted\n"
+{"cgroup":6599,"denied":0,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/bin/busybox","path_result":13,"pid":1755}
+CASE privileged=false skip=1 path=/bin/true error=<nil> output=""
+{"cgroup":6599,"denied":1,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/tmp/busybox","path_result":13,"pid":1777}
+CASE privileged=false skip=1 path=/tmp/busybox error=exit status 1 output="exec /tmp/busybox: operation not permitted\n"
+{"cgroup":6599,"denied":1,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/runc","path_result":6,"pid":1801}
+CASE privileged=false skip=1 path=/runc error=exit status 1 output="exec /runc: operation not permitted\n"
+RELEASE false released
+2f7d560653de3cdf06c2748d665b106e02d5e2eef029634c41c5c9f52e5a1860
+TARGET privileged=true pid=1900 cgroup=6671 mntns=4026532381 host_mntns=4026531841
+{"cgroup":6671,"denied":0,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/bin/busybox","path_result":13,"pid":2041}
+CASE privileged=true skip=0 path=/bin/true error=<nil> output=""
+{"cgroup":6671,"denied":1,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/tmp/busybox","path_result":13,"pid":2065}
+CASE privileged=true skip=0 path=/tmp/busybox error=exit status 1 output="exec /tmp/busybox: operation not permitted\n"
+{"cgroup":6671,"denied":1,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/runc","path_result":6,"pid":2088}
+CASE privileged=true skip=0 path=/runc error=exit status 1 output="exec /runc: operation not permitted\n"
+{"cgroup":6671,"denied":0,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/bin/busybox","path_result":13,"pid":2112}
+CASE privileged=true skip=1 path=/bin/true error=<nil> output=""
+{"cgroup":6671,"denied":1,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/tmp/busybox","path_result":13,"pid":2136}
+CASE privileged=true skip=1 path=/tmp/busybox error=exit status 1 output="exec /tmp/busybox: operation not permitted\n"
+{"cgroup":6671,"denied":1,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/runc","path_result":6,"pid":2160}
+CASE privileged=true skip=1 path=/runc error=exit status 1 output="exec /runc: operation not permitted\n"
+{"cgroup":6671,"denied":0,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/usr/bin/unshare","path_result":17,"pid":2183}
+{"cgroup":6671,"denied":1,"expected":4026532381,"mismatch":1,"mntns":4026532444,"path":"/tmp/busybox","path_result":13,"pid":2183}
+UNSHARE skip=0 error=exit status 126 output="unshare: failed to execute /tmp/busybox: Operation not permitted\n"
+{"cgroup":6671,"denied":0,"expected":4026532381,"mismatch":0,"mntns":4026532381,"path":"/usr/bin/unshare","path_result":17,"pid":2206}
+{"cgroup":6671,"denied":0,"expected":4026532381,"mismatch":1,"mntns":4026532444,"path":"/tmp/busybox","path_result":13,"pid":2206}
+UNSHARE skip=1 error=<nil> output="namespace-bypass\n"
+RELEASE true released
+ef84d8ecd16d3700aa1ede843ecfd0a6221b7c67c8272c3cead36ccd8a110485
+PASS: ordinary workload remains enforced; privileged namespace change bypass reproduced

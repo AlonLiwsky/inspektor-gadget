@@ -14,7 +14,7 @@
  * TODO: Implement best-effort mechanism and add the remaining ones,
  * this requires an upstream support: https://github.com/cilium/ebpf/discussions/1470
  */
-#define FOR_EACH_LSM_HOOK(F)        \
+#define FOR_EACH_LSM_HOOK(F, EXEC)  \
 	F(binder_set_context_mgr)   \
 	F(binder_transaction)       \
 	F(binder_transfer_binder)   \
@@ -31,7 +31,7 @@
 	F(vm_enough_memory)         \
 	F(bprm_creds_for_exec)      \
 	F(bprm_creds_from_file)     \
-	F(bprm_check_security)      \
+	EXEC(bprm_check_security)   \
 	F(bprm_committing_creds)    \
 	F(bprm_committed_creds)     \
 	F(fs_context_dup)           \
@@ -165,7 +165,7 @@
 
 #define ENUM_ITEM(name) name,
 
-enum lsm_tracepoint { FOR_EACH_LSM_HOOK(ENUM_ITEM) };
+enum lsm_tracepoint { FOR_EACH_LSM_HOOK(ENUM_ITEM, ENUM_ITEM) };
 
 struct event {
 	gadget_timestamp timestamp_raw;
@@ -185,7 +185,7 @@ GADGET_TRACER(lsm, events, event);
 const volatile bool trace_all = true;
 GADGET_PARAM(trace_all);
 
-FOR_EACH_LSM_HOOK(DECLARE_LSM_PARAMETER)
+FOR_EACH_LSM_HOOK(DECLARE_LSM_PARAMETER, DECLARE_LSM_PARAMETER)
 
 #define TRACE_LSM(name)                                                \
 	SEC("lsm/" #name)                                              \
@@ -207,6 +207,25 @@ FOR_EACH_LSM_HOOK(DECLARE_LSM_PARAMETER)
 		return 0;                                              \
 	}
 
-FOR_EACH_LSM_HOOK(TRACE_LSM)
+// Preserve the preceding BPF LSM result for execution enforcement. Returning
+// zero here would undo an earlier enforce_exec denial, including when tracing
+// is disabled or this process is filtered out.
+#define TRACE_EXEC_LSM(name)                                                 \
+	SEC("lsm/" #name)                                                    \
+	long BPF_PROG(trace_lsm_##name, struct linux_binprm *bprm, long ret) \
+	{                                                                    \
+		struct event event;                                          \
+		if (!trace_##name && !trace_all)                             \
+			return ret;                                          \
+		if (gadget_should_discard_data_current())                    \
+			return ret;                                          \
+		gadget_process_populate(&event.proc);                        \
+		event.timestamp_raw = bpf_ktime_get_boot_ns();               \
+		event.tracepoint_raw = name;                                 \
+		bpf_ringbuf_output(&events, &event, sizeof(event), 0);       \
+		return ret;                                                  \
+	}
+
+FOR_EACH_LSM_HOOK(TRACE_LSM, TRACE_EXEC_LSM)
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

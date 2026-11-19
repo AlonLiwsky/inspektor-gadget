@@ -48,11 +48,19 @@ const (
 )
 
 func (i *ebpfInstance) attachProgram(gadgetCtx operators.GadgetContext, p *ebpf.ProgramSpec, prog *ebpf.Program) (link.Link, error) {
-	attachTo := p.AttachTo
-
-	if attachToCfg := i.config.GetString("programs." + p.Name + ".attach_to"); attachToCfg != "" {
-		i.logger.Debugf("Overriding attachTo with %q for program %q", attachToCfg, p.Name)
-		attachTo = attachToCfg
+	recovery, err := i.nativeRecoveryTestRunProgram(gadgetCtx, p)
+	if err != nil {
+		return nil, err
+	}
+	if recovery {
+		if !i.recoveryTestRunAdmitted {
+			return nil, fmt.Errorf("recovery TEST_RUN program not admitted")
+		}
+		return nil, nil
+	}
+	attachTo := i.programAttachTarget(p)
+	if attachTo != p.AttachTo {
+		i.logger.Debugf("Overriding attachTo with %q for program %q", attachTo, p.Name)
 	}
 
 	if attachTo == disabledProgram {
@@ -61,6 +69,10 @@ func (i *ebpfInstance) attachProgram(gadgetCtx operators.GadgetContext, p *ebpf.
 	}
 
 	switch p.Type {
+	case ebpf.Syscall:
+		// Native commands are explicitly test-run by their trusted data operator,
+		// never attached or invoked merely because an image contains them.
+		return nil, nil
 	case ebpf.Kprobe:
 		switch {
 		case strings.HasPrefix(p.SectionName, kprobePrefix):

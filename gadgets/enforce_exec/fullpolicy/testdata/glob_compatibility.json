@@ -1,0 +1,355 @@
+{
+  "Globs": [
+    {
+      "Pattern": "/bin/tool",
+      "Expression": "\\A(?s:/bin/tool)\\z",
+      "Error": "",
+      "Matches": [
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/bin/*",
+      "Expression": "\\A(?s:/bin/[^/]*)\\z",
+      "Error": "",
+      "Matches": [
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/bin/**",
+      "Expression": "\\A(?s:/bin/.*)\\z",
+      "Error": "",
+      "Matches": [
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/bin/?",
+      "Expression": "\\A(?s:/bin/[^/])\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/λ/界*",
+      "Expression": "\\A(?s:/λ/界[^/]*)\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/[abc]",
+      "Expression": "\\A(?s:/[\\x{61}-\\x{63}])\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/[a-c]",
+      "Expression": "\\A(?s:/[\\x{61}-\\x{63}])\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/[^a-c]",
+      "Expression": "\\A(?s:/[\\x{0}-\\x{60}\\x{64}-\\x{10ffff}])\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "Pattern": "/[α-ω]",
+      "Expression": "\\A(?s:/[\\x{3b1}-\\x{3c9}])\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "Pattern": "/[\\d]",
+      "Expression": "\\A(?s:/[\\x{64}-\\x{64}])\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/\\*",
+      "Expression": "\\A(?s:/\\*)\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/\\?",
+      "Expression": "\\A(?s:/\\?)\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/[\\-]",
+      "Expression": "\\A(?s:/[\\x{2d}-\\x{2d}])\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false
+      ]
+    },
+    {
+      "Pattern": "/[a]",
+      "Expression": "\\A(?s:/[\\x{61}-\\x{61}])\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/a",
+      "Expression": "\\A(?s:/a)\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/[a-a]",
+      "Expression": "\\A(?s:/[\\x{61}-\\x{61}])\\z",
+      "Error": "",
+      "Matches": [
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "Pattern": "/[",
+      "Expression": "",
+      "Error": "malformed glob \"/[\": syntax error in pattern",
+      "Matches": null
+    },
+    {
+      "Pattern": "/[]",
+      "Expression": "",
+      "Error": "malformed glob \"/[]\": syntax error in pattern",
+      "Matches": null
+    },
+    {
+      "Pattern": "/[z-a]",
+      "Expression": "",
+      "Error": "malformed glob \"/[z-a]\": error parsing regexp: invalid character class range: `\\x{7a}-\\x{61}`",
+      "Matches": null
+    },
+    {
+      "Pattern": "/trailing\\",
+      "Expression": "",
+      "Error": "malformed glob \"/trailing\\\\\": syntax error in pattern",
+      "Matches": null
+    }
+  ],
+  "Native": [
+    {
+      "Name": "vocabulary",
+      "ProgramHash": "3812d52edf82f84db221b6287817ef413b2e4c6ab1feb65477d5ee2a926bd653",
+      "EntryCount": 75,
+      "Digests": [
+        "9534f498a665c9c8cee0361cf928acbc670d2f75ae78fe33cf27042e8398fc2b",
+        "d7878abc51daf6d75bf4117be7de8200e1065e1a7f39f3cabf276f5c5c9afd34"
+      ],
+      "Classes": [
+        2,
+        2
+      ],
+      "Execution": {
+        "PolicyCount": 2,
+        "ExecutionClass": 2,
+        "RoleWriters": 1,
+        "RequiredKnown": 1
+      }
+    },
+    {
+      "Name": "patterns",
+      "ProgramHash": "d90696feec25c208379de03dd90725a857d47896618db9899b8797200888bf5d",
+      "EntryCount": 163,
+      "Digests": [
+        "0c3f047d63b37d3f4e5fabd85c239303d02a8bc836eba3641f1e5a225dc6ce66"
+      ],
+      "Classes": [
+        2
+      ],
+      "Execution": {
+        "PolicyCount": 1,
+        "ExecutionClass": 2,
+        "RoleWriters": 0,
+        "RequiredKnown": 0
+      }
+    },
+    {
+      "Name": "large-256",
+      "ProgramHash": "81892c85794f7c9c10a5ec35d6b7a015ac1c79ac4fce6bca632d184839771e4e",
+      "EntryCount": 6922,
+      "Digests": [
+        "1b5e71960082e01b5ae39a31cf4994bf3ca355e527642d7e1e93ab6c7a184db4"
+      ],
+      "Classes": [
+        2
+      ],
+      "Execution": {
+        "PolicyCount": 1,
+        "ExecutionClass": 2,
+        "RoleWriters": 0,
+        "RequiredKnown": 0
+      }
+    }
+  ]
+}

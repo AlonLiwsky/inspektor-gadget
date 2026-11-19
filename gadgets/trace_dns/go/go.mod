@@ -1,11 +1,11 @@
 module trace_dns
 
-go 1.26.0
+go 1.26.6
 
 require (
 	// Version doesn't matter because of the replace directive below.
 	github.com/inspektor-gadget/inspektor-gadget v0.0.0
-	golang.org/x/net v0.60.0
+	golang.org/x/net v0.62.0
 )
 
 // Only needed by in-tree gadgets

@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -131,12 +132,14 @@ int main() {
 
 	switch utils.CurrentTestComponent {
 	case utils.IgLocalTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithLocalReady(2*time.Minute))
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(
 			fmt.Sprintf("-r=%s", utils.Runtime),
 			"--collect-ustack=true",
 			"--audit-only=true",
 		))
 	case utils.KubectlGadgetTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithKubernetesReady(2*time.Minute))
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(
 			fmt.Sprintf("-n=%s", ns),
 			"--collect-ustack=true",

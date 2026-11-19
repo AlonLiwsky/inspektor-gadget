@@ -1,0 +1,3 @@
+# The AL2023 kernel headers of the pinned enforce_exec product objects
+# (bpftool btf dump of the pinned kernel BTF, xz-compressed): generated.
+gadgets/enforce_exec/fullruntime/testdata/al2023-vmlinux/** linguist-generated=true binary

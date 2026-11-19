@@ -56,6 +56,12 @@ const (
 	MapPrefix string = "map/"
 
 	MapSpecPrefix string = "mapspec/"
+
+	// ProgramPrefix exposes borrowed native command (BPF syscall) handles after
+	// load. Embedders must serialize invocation with teardown, must not close
+	// these handles, and must not use them after operator Close. Nothing invokes
+	// a command automatically or exposes it through the remote gadget API.
+	ProgramPrefix string = "program/"
 )
 
 type ImageOperator interface {
@@ -109,6 +115,13 @@ type DataOperatorInstance interface {
 type ExtraParams interface {
 	// ExtraParams can return dynamically created params
 	ExtraParams(gadgetCtx GadgetContext) api.Params
+}
+
+// Readiness validates startup after every operator has finished Start, before the
+// instance is published as running. Failure triggers normal operator cleanup.
+// Later failures belong to the active controller's runtime error handling.
+type Readiness interface {
+	Ready(gadgetCtx GadgetContext) error
 }
 
 type PreStart interface {

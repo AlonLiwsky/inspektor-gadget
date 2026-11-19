@@ -4,6 +4,8 @@ env:
   REGISTRY: ghcr.io
   CONTAINER_REPO: ${{ github.repository }}
   GO_VERSION: 1.26.10
+  # Pin an available scanner release instead of the action's unavailable v0.65.0 release.
+  TRIVY_VERSION: v0.76.1
   # controller-gen with go >1.21 panics, but we can't update controller-gen itself
   GO_VERSION_DOC_CHECK: 1.21.3
   HELM_VERSION: v3.18.4
@@ -157,6 +159,7 @@ jobs:
             exit 1
           fi
       - name: Detect changes for ebpf objects
+        id: ebpf_objects
         env:
           GADGET_BUILDER: ${{ needs.build-helper-images.outputs.gadget_builder_image }}
         run: |
@@ -166,6 +169,33 @@ jobs:
             >&2 echo "$changes"
             exit 1
           fi
+      - name: Capture generated eBPF object drift
+        if: ${{ failure() && steps.ebpf_objects.outcome == 'failure' }}
+        env:
+          GADGET_BUILDER: ${{ needs.build-helper-images.outputs.gadget_builder_image }}
+        run: |
+          evidence="$RUNNER_TEMP/ebpf-object-drift"
+          mkdir -p "$evidence"
+          # Only tracked generated package inputs; never archive the workspace.
+          paths=(':(glob)pkg/**/*_bpfel.go' ':(glob)pkg/**/*.o')
+          git diff --no-ext-diff --no-textconv --binary HEAD -- "${paths[@]}" > "$evidence/generated.patch"
+          git diff --no-ext-diff --no-textconv --stat HEAD -- "${paths[@]}" > "$evidence/diffstat.txt"
+          {
+            printf 'checkout_sha='; git rev-parse HEAD
+            printf 'run_id=%s\nrun_attempt=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'gadget_builder=%s\n' "$GADGET_BUILDER"
+            if ! docker image inspect --format 'image_id={{.Id}} repo_digests={{join .RepoDigests " "}}' "$GADGET_BUILDER"; then
+              echo 'gadget_builder_local_identity=unavailable'
+            fi
+          } > "$evidence/identity.txt"
+      - name: Upload generated eBPF object drift
+        if: ${{ failure() && steps.ebpf_objects.outcome == 'failure' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ebpf-object-drift-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ebpf-object-drift/
+          retention-days: 3
+          if-no-files-found: error
       - name: Check that testdata is updated
         env:
           GADGET_BUILDER: ${{ needs.build-helper-images.outputs.gadget_builder_image }}
@@ -956,6 +986,7 @@ jobs:
       - name: Scan gpu-ebpf-bridge ${{ matrix.os }} ${{ matrix.platform }} container image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: ${{ env.TRIVY_VERSION }}
           input: gpu-ebpf-bridge-container-image-${{ matrix.os }}-${{ matrix.platform }}.tar
           format: 'table'
           exit-code: 1
@@ -1136,6 +1167,7 @@ jobs:
       - name: Scan gadget ${{ matrix.os }} ${{ matrix.platform }} container image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: ${{ env.TRIVY_VERSION }}
           input: gadget-container-image-${{ matrix.os }}-${{ matrix.platform }}.tar
           format: 'table'
           exit-code: 1
@@ -1376,6 +1408,7 @@ jobs:
     - name: Scan ${{ matrix.image.name }} amd64 image for CVEs
       uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
+        version: ${{ env.TRIVY_VERSION }}
         input: /tmp/${{ matrix.image.name }}@${{ steps.prepare-scan-images.outputs.amd64 }}
         format: 'table'
         exit-code: 1
@@ -1387,6 +1420,7 @@ jobs:
       if: ${{ !cancelled() && steps.prepare-scan-images.outcome == 'success' }}
       uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
+        version: ${{ env.TRIVY_VERSION }}
         input: /tmp/${{ matrix.image.name }}@${{ steps.prepare-scan-images.outputs.arm64 }}
         format: 'table'
         exit-code: 1
@@ -1504,6 +1538,104 @@ jobs:
           go build "./$dir";
         done
 
+  test-enforce-exec-go:
+    name: Exec enforcement Go regressions
+    # These unprivileged tests need neither helper images nor a published ig binary.
+    # Keep the privileged unit and kernel jobs below as separate required evidence.
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    env:
+      GOWORK: 'off'
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - name: Setup go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: ${{ env.IS_RELEASE == 'false' }} # zizmor: ignore[cache-poisoning]
+    - name: Race tests and vet
+      run: |
+        packages=(
+          ./gadgets/enforce_exec/policy
+          ./gadgets/enforce_exec/fullpolicy
+          ./gadgets/enforce_exec/runtime
+          ./gadgets/enforce_exec/fullruntime
+          ./gadgets/enforce_exec/test/enterprise
+          ./gadgets/enforce_exec/test/al2023-native-kfunc-primitive/runner
+          ./gadgets/enforce_exec/test/al2023-route-pin-verifier/runner
+          ./gadgets/enforce_exec/test/al2023-trampoline-cap/runner
+          ./gadgets/enforce_exec/test/al2023-product-load/judge
+        )
+        go test -race -count=1 -timeout=20m "${packages[@]}"
+        go vet "${packages[@]}"
+    - name: Offline module structure regressions
+      run: python3 gadgets/enforce_exec/test/al2023-native-kfunc-primitive/test_module_structure.py
+
+  test-enforce-exec-product-objects:
+    name: Exec enforcement product objects match their pins
+    # Rebuilds g19pkg{64,128,256,512} (stage 1: one CO-RE object per profile
+    # for every kernel) with the pinned toolchain (Debian clang-21
+    # 1:21.1.8-3~bpo13+2 and libbpf-dev 1:1.5.0-3, every package from one
+    # snapshot.debian.org timestamp) and compares each sha256 with
+    # sharedProductObjects, then packages each object into the product
+    # gadget image of each pinned kernel (cmd/productimages) and compares the
+    # manifest and index digests with SharedProductImagePins. Build only:
+    # loading the objects on the AL2023 kernels stays a manual EC2 gate, and
+    # the images are never pushed (node-agent rebuilds them into tracers.tar).
+    runs-on: ubuntu-22.04
+    container: debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 # trixie
+    permissions:
+      contents: read
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      ENFORCE_EXEC_PRODUCT_CONTAINER: "1"
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - name: Cache the pinned toolchain packages
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /tmp/product-debs
+        key: enforce-exec-product-debs-${{ hashFiles('gadgets/enforce_exec/fullruntime/bpf/product-toolchain-debs.sha256') }}
+    - name: Install the pinned toolchain
+      run: gadgets/enforce_exec/fullruntime/bpf/install-product-toolchain.sh /tmp/product-debs
+    - name: Rebuild and compare with the pins
+      run: gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check /tmp/product-objects
+    # The bare Debian container has no CA bundle, so Go cannot fetch modules
+    # over TLS. Installed after the object check, so it cannot affect the
+    # pinned toolchain or the object bytes.
+    - name: Install CA certificates for Go module downloads
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends ca-certificates
+    - name: Setup go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: false
+    - name: Package the product images and compare with the pins
+      env:
+        CGO_ENABLED: "0"
+      # The OK/FAIL lines (built and pinned digests per image) also go into
+      # the artifact, so a failed run shows which digests differ.
+      run: |
+        set -o pipefail
+        mkdir -p /tmp/product-images
+        go run ./gadgets/enforce_exec/fullruntime/cmd/productimages \
+          -objects /tmp/product-objects -layout /tmp/product-images/layout \
+          -json /tmp/product-images/product-images.json 2>&1 | tee /tmp/product-images/check.log
+    - name: Upload the product image layout and the check output
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: enforce-exec-product-images
+        path: /tmp/product-images
+        if-no-files-found: ignore
+
   check-gadget-docs:
     name: Check gadget docs structure
     # level: 0
@@ -1563,6 +1695,37 @@ jobs:
       run: |
         tar zxvf /home/runner/work/inspektor-gadget/ig-linux-amd64.tar.gz
         sudo mv ig /usr/local/bin/ig
+    - name: Record unit-test runner kernel and exec tracepoint format
+      run: |
+        uname -srvm
+        if command -v docker >/dev/null 2>&1; then
+          if ! docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'; then
+            echo 'docker version unavailable'
+          fi
+        else
+          echo 'docker executable unavailable'
+        fi
+        if command -v runc >/dev/null 2>&1; then
+          if ! runc --version; then
+            echo 'runc version unavailable'
+          fi
+        else
+          echo 'runc executable unavailable'
+        fi
+        # Read the same existing tracepoint metadata accessible to the sudo tests.
+        # Do not mount tracefs/debugfs or change permissions to obtain it.
+        for format in \
+          /sys/kernel/tracing/events/syscalls/sys_enter_execve/format \
+          /sys/kernel/debug/tracing/events/syscalls/sys_enter_execve/format; do
+          echo "Tracepoint format: $format"
+          if sudo test -r "$format"; then
+            if ! sudo cat "$format"; then
+              echo 'tracepoint format read failed'
+            fi
+          else
+            echo 'missing or unreadable'
+          fi
+        done
     - name: Unit tests
       run: |
         sudo make test
@@ -2222,6 +2385,7 @@ jobs:
       - build-helper-images
       - build-and-push-gadgets
       - check-secrets
+    # Ubuntu 22.04 avoids the runner kernel syscall-tracing regression.
     runs-on: ubuntu-22.04
     services:
       registry:
@@ -2711,6 +2875,7 @@ jobs:
       - build-helper-images
       - build-and-push-gadgets
       - check-secrets
+    # Ubuntu 22.04 avoids the runner kernel syscall-tracing regression.
     runs-on: ubuntu-22.04
     services:
       registry:
@@ -2810,6 +2975,8 @@ jobs:
     name: Release
     # level: 5
     needs:
+      - test-enforce-exec-go
+      - test-integration-aks
       - ebpf-objects-checks
       - lint
       - semgrep

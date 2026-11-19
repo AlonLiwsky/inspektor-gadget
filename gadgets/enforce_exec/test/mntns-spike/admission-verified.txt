@@ -1,0 +1,151 @@
+Linux ig-admission-spike-20261026 6.12.111+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.111-1 (2026-09-28) x86_64 GNU/Linux
+runc version 1.5.2
+commit: v1.5.2-0-g29dd3dc
+spec: 1.3.0
+go: go1.26.8
+libseccomp: 2.6.1
+libpathrs: 0.2.6
+Client:
+ Version:           26.1.5+dfsg1
+ API version:       1.45
+ Go version:        go1.24.4
+ Git commit:        a72d7cd
+ Built:             Thu Aug 13 05:35:47 2026
+ OS/Arch:           linux/amd64
+ Context:           default
+
+Server:
+ Engine:
+  Version:          26.1.5+dfsg1
+  API version:      1.45 (minimum version 1.24)
+  Go version:       go1.24.4
+  Git commit:       411e817
+  Built:            Thu Aug 13 05:35:47 2026
+  OS/Arch:          linux/amd64
+  Experimental:     false
+ containerd:
+  Version:          1.7.24~ds1
+  GitCommit:        1.7.24~ds1-6+deb13u1
+ runc:
+  Version:          1.5.2
+  GitCommit:        v1.5.2-0-g29dd3dc
+ docker-init:
+  Version:          0.19.0
+  GitCommit:
+ADMISSION host_mntns=4026531841 host_userns=4026531837 seccomp=unconfined apparmor=unconfined
+PROFILE default-caps-fd cgroup=11927 mntns=4026532382 userns=4026531837
+CapInh:	0000000000000000
+CapPrm:	00000000a80425fb
+CapEff:	00000000a80425fb
+CapBnd:	00000000a80425fb
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+{"cgroup":11927,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":16204,"userns":4026531837}
+{"cgroup":11927,"denied":1,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/tmp/busybox","path_result":13,"pid":16209,"userns":4026531837}
+{"cgroup":11927,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":16232,"userns":4026531837}
+{"cgroup":11927,"denied":0,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/usr/bin/capability-helper","path_result":27,"pid":16235,"userns":4026531837}
+ATTEMPT default-caps-fd error=exit status 1 output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_FAILED errno=1 Operation not permitted\n"
+PASS PROFILE default-caps-fd
+PROFILE no-admin-hostpid cgroup=11999 mntns=4026532382 userns=4026531837
+CapInh:	0000000000000000
+CapPrm:	0000000000040000
+CapEff:	0000000000040000
+CapBnd:	0000000000040000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+{"cgroup":11999,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":16395,"userns":4026531837}
+{"cgroup":11999,"denied":1,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/tmp/busybox","path_result":13,"pid":16399,"userns":4026531837}
+{"cgroup":11999,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":16423,"userns":4026531837}
+{"cgroup":11999,"denied":0,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/usr/bin/nsenter","path_result":17,"pid":16427,"userns":4026531837}
+ATTEMPT no-admin-hostpid error=exit status 1 output="nsenter: cannot open /proc/1/ns/mnt: Permission denied\n"
+PASS PROFILE no-admin-hostpid
+PROFILE no-admin-fd cgroup=12071 mntns=4026532382 userns=4026531837
+CapInh:	0000000000000000
+CapPrm:	0000000000040000
+CapEff:	0000000000040000
+CapBnd:	0000000000040000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+{"cgroup":12071,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":16597,"userns":4026531837}
+{"cgroup":12071,"denied":1,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/tmp/busybox","path_result":13,"pid":16599,"userns":4026531837}
+{"cgroup":12071,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":16620,"userns":4026531837}
+{"cgroup":12071,"denied":0,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/usr/bin/capability-helper","path_result":27,"pid":16625,"userns":4026531837}
+ATTEMPT no-admin-fd error=exit status 1 output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_FAILED errno=1 Operation not permitted\n"
+PASS PROFILE no-admin-fd
+PROFILE admin-hostpid-ptrace cgroup=12143 mntns=4026532382 userns=4026531837
+CapInh:	0000000000000000
+CapPrm:	00000000002c0000
+CapEff:	00000000002c0000
+CapBnd:	00000000002c0000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+{"cgroup":12143,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":16791,"userns":4026531837}
+{"cgroup":12143,"denied":1,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/tmp/busybox","path_result":13,"pid":16793,"userns":4026531837}
+{"cgroup":12143,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":16813,"userns":4026531837}
+{"cgroup":12143,"denied":0,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/usr/bin/nsenter","path_result":17,"pid":16818,"userns":4026531837}
+{"cgroup":12143,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/tmp/busybox","path_result":13,"pid":16818,"userns":4026531837}
+ATTEMPT admin-hostpid-ptrace error=<nil> output="host-entered\n"
+PASS PROFILE admin-hostpid-ptrace
+PROFILE admin-fd cgroup=12215 mntns=4026532382 userns=4026531837
+CapInh:	0000000000000000
+CapPrm:	0000000000240000
+CapEff:	0000000000240000
+CapBnd:	0000000000240000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+{"cgroup":12215,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":16989,"userns":4026531837}
+{"cgroup":12215,"denied":1,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/tmp/busybox","path_result":13,"pid":16991,"userns":4026531837}
+{"cgroup":12215,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":17014,"userns":4026531837}
+{"cgroup":12215,"denied":0,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/usr/bin/capability-helper","path_result":27,"pid":17016,"userns":4026531837}
+{"cgroup":12215,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/tmp/busybox","path_result":13,"pid":17016,"userns":4026531837}
+ATTEMPT admin-fd error=<nil> output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_SUCCEEDED\nhost-entered\n"
+PASS PROFILE admin-fd
+PROFILE effective-only cgroup=12287 mntns=4026532382 userns=4026531837
+CapInh:	0000000000000000
+CapPrm:	0000000000240000
+CapEff:	0000000000240000
+CapBnd:	0000000000240000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+{"cgroup":12287,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":17185,"userns":4026531837}
+{"cgroup":12287,"denied":1,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/tmp/busybox","path_result":13,"pid":17187,"userns":4026531837}
+{"cgroup":12287,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":17211,"userns":4026531837}
+{"cgroup":12287,"denied":0,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/usr/bin/capability-helper","path_result":27,"pid":17213,"userns":4026531837}
+{"cgroup":12287,"denied":0,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/usr/bin/capability-helper","path_result":27,"pid":17213,"userns":4026531837}
+{"cgroup":12287,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/tmp/busybox","path_result":13,"pid":17213,"userns":4026531837}
+ATTEMPT effective-only error=<nil> output="CLEARED_EFFECTIVE; permitted and bounding unchanged\nRECEIVED_HOST_NAMESPACE_FD\nSETNS_SUCCEEDED\nhost-entered\n"
+PASS PROFILE effective-only
+PROFILE privileged-exec cgroup=12359 mntns=4026532382 userns=4026531837
+CapInh:	0000000000000000
+CapPrm:	0000000000040000
+CapEff:	0000000000040000
+CapBnd:	0000000000040000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+{"cgroup":12359,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":17378,"userns":4026531837}
+{"cgroup":12359,"denied":1,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/tmp/busybox","path_result":13,"pid":17380,"userns":4026531837}
+{"cgroup":12359,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":17402,"userns":4026531837}
+{"cgroup":12359,"denied":0,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/usr/bin/capability-helper","path_result":27,"pid":17405,"userns":4026531837}
+{"cgroup":12359,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/tmp/busybox","path_result":13,"pid":17405,"userns":4026531837}
+ATTEMPT privileged-exec error=<nil> output="RECEIVED_HOST_NAMESPACE_FD\nSETNS_SUCCEEDED\nhost-entered\n"
+PRIVILEGED-EXEC: runtime granted host entry despite restricted init
+PASS PROFILE privileged-exec
+PROFILE child-userns cgroup=12431 mntns=4026532382 userns=4026531837
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000040000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+{"cgroup":12431,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":17570,"userns":4026531837}
+{"cgroup":12431,"denied":1,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/tmp/busybox","path_result":13,"pid":17572,"userns":4026531837}
+{"cgroup":12431,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":17595,"userns":4026531837}
+{"cgroup":12431,"denied":0,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/usr/bin/unshare","path_result":17,"pid":17598,"userns":4026531837}
+{"cgroup":12431,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026532446,"path":"/usr/bin/capability-helper","path_result":27,"pid":17598,"userns":4026532445}
+ATTEMPT child-userns error=exit status 1 output="SETNS_FAILED errno=1 Operation not permitted\nRECEIVED_HOST_NAMESPACE_FD\n"
+{"cgroup":12431,"denied":0,"expected":4026532382,"mismatch":1,"mntns":4026531841,"path":"/runc","path_result":6,"pid":17620,"userns":4026531837}
+{"cgroup":12431,"denied":0,"expected":4026532382,"mismatch":0,"mntns":4026532382,"path":"/usr/bin/unshare","path_result":17,"pid":17623,"userns":4026531837}
+{"cgroup":12431,"denied":1,"expected":4026532382,"mismatch":1,"mntns":4026532446,"path":"/tmp/busybox","path_result":13,"pid":17623,"userns":4026532445}
+CHILD-EXEC error=exit status 126 output="unshare: failed to execute /tmp/busybox: Operation not permitted\n"
+PASS PROFILE child-userns
+PASS ADMISSION: capability-boundary matrix completed

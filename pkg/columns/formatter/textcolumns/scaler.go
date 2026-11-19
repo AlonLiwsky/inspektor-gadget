@@ -256,13 +256,13 @@ func (tf *TextColumnsFormatter[T]) AdjustWidthsToContent(entries []*T, considerH
 				reflect.Int16,
 				reflect.Int32,
 				reflect.Int64:
-				flen = len([]rune((strconv.FormatInt(field.Int(), 10))))
+				flen = len([]rune(strconv.FormatInt(field.Int(), 10)))
 			case reflect.Uint,
 				reflect.Uint8,
 				reflect.Uint16,
 				reflect.Uint32,
 				reflect.Uint64:
-				flen = len([]rune((strconv.FormatUint(field.Uint(), 10))))
+				flen = len([]rune(strconv.FormatUint(field.Uint(), 10)))
 			case reflect.Float32,
 				reflect.Float64:
 				flen = len([]rune(strconv.FormatFloat(field.Float(), 'f', column.col.Precision, 64)))

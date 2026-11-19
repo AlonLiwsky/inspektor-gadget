@@ -1,0 +1,129 @@
+# Shared-node candidate image metadata (G019 M2). The image builder
+# (BuildSharedCandidateImage) is qualification-tag only. A qualification
+# binary (enforce_exec_shared_qualification tag, WithSharedNodeQualification)
+# admits it and that node never reports Ready. A product binary
+# (WithSharedNodeHost) admits the product image built from this metadata only
+# on a pinned kernel build (sharedProductPins: BTF, build-id, release), with
+# the pin's failure-frame attach_to symbols and a pinned product object
+# sha256; see ../README.md "Shared engine: supported kernels".
+#
+# This is the PRODUCT image metadata (G019 section 8 packaging). The image's
+# gadget.yaml is this file merged with
+# ../bpf/opaque_real_owner_child_candidate.programs.yaml (the trampoline attach
+# declaration). The product object has no TC program, so nothing here
+# disables one; the merged metadata leaves exactly the qualified loader's
+# steady state enabled: the pinned 8 trampoline links (task_free 2) plus 8 link-based
+# kprobe/raw_tp/tp_btf probes, and exactly one syscall command,
+# opaque_real_reap (the product reaper's TEST_RUN; it has no entry here, it
+# is never attached and must never be disabled). The protocol command
+# se_command is disabled (TestSharedCandidateMergedMetadata*).
+#
+# Diagnostic twins (recovery, live bootstrap: the M3 object) merge in
+# addition gadget.diagnostic.yaml and
+# ../bpf/opaque_real_owner_child_candidate.programs.diagnostic.yaml.
+name: enforce-exec-shared-candidate
+description: shared-node exec enforcement candidate (qualification only)
+annotations:
+  enforce-exec-owner-abi: "3"
+  enforce-exec-owner-development: "true"
+  enforce-exec-shared-profile: "1"
+  # Geometry of sharedCandidateQualificationProfile: the product objects'
+  # q(128,32) build, 2 bindings x 128 TASK / 32 WORK = 256 TASK / 64 WORK
+  # node-wide (checked against the loaded map sizes at admission). 32 WORK
+  # per binding: burst capacity (W-1)/2 = 15 >= the 8 zero-gated streams
+  # (the WORK quota must be a power of two; 16 gave 7).
+  # G020 image index: 128 lower-layer roots per binding, Images = Bindings
+  # x 128 (se_image_keys, preallocated; product admission requires it).
+  enforce-exec-shared-images: "256"
+  enforce-exec-shared-image-quota: "128"
+  enforce-exec-shared-inode-facts: "2"
+  enforce-exec-shared-inode-quota: "1"
+  enforce-exec-shared-tasks: "256"
+  enforce-exec-shared-scratch: "64"
+  enforce-exec-shared-accepted-uids: "8"
+  enforce-exec-shared-task-quota: "128"
+  enforce-exec-shared-scratch-quota: "32"
+  enforce-exec-shared-bindings: "2"
+  # Burst-sized credit-at-exit tombstone table (SE_PROFILE_EXIT_TOMBSTONES):
+  # sized for the exit burst, never by TASK count.
+  enforce-exec-shared-exit-tombstones: "8192"
+  # G020 verdict events: the node-wide ring opaque_real_verdict_events
+  # (SE_PROFILE_VERDICT_RING; default max(1 MiB, Bindings x 256 KiB), a
+  # power of two) and the event ABI the "verdict" datasource carries.
+  enforce-exec-shared-verdict-ring: "1048576"
+  enforce-exec-shared-event-abi: "1"
+  # Four 256-cell policy objects for two bindings (2 x Bindings, the PoC
+  # default): revision is make-before-break (the new policy is staged into a
+  # FREE object before the old one is released), so one object must stay
+  # spare (product control admission refuses objects <= bindings), and with
+  # 2 x Bindings one binding's long-held RETIRING record never starves the
+  # other binding's revision.
+  enforce-exec-shared-slots-256: "4"
+  enforce-exec-shared-slots-1024: "0"
+  enforce-exec-shared-slots-4096: "0"
+  enforce-exec-shared-slots-16384: "0"
+# G020: one event per evaluated exec pass and per fail-closed fault
+# (full/shared_verdict_event.h). The prefix up to error is the legacy
+# enforce_exec_full verdict event (full/gadget.yaml); the rest is additive.
+datasources:
+  verdict:
+    fields:
+      path:
+        annotations:
+          description: resolved executable path
+      exec_class:
+        annotations:
+          description: binding execution class (1 Audit, 2 Strict)
+      scope:
+        annotations:
+          description: binding scope cookie of the exec
+      exec_id:
+        annotations:
+          description: exec sequence of the task, equal across the passes of one exec; key execs on (load_epoch, task_cookie, exec_id)
+      pass:
+        annotations:
+          description: evaluated pass of the exec (0 first, 1.. interpreter), 4294967295 for a fault
+      error:
+        annotations:
+          description: 0 for a decision (an AUDIT_UNKNOWN decision reports error 0 with uncertain 1), 1..3 for the fail-closed class (FE_INVALID, FE_UNKNOWN, FE_ROLE_CONFLICT), 1 for a fault
+      uncertain:
+        annotations:
+          description: the verdict rests on an unknown fact (AUDIT_UNKNOWN reports error 0 and uncertain 1)
+      facts_unknown:
+        annotations:
+          description: bitmask of unknown facts (target path, uid, ancestors, fs, argv, stdin, actor path, image)
+      task_cookie:
+        annotations:
+          description: identity cookie of the exec'ing task (node-unique within one collection load; restarts on reload); (load_epoch, task_cookie, exec_id) identifies one exec, host_pid is informational
+      load_epoch:
+        annotations:
+          description: random nonzero epoch of the collection load that emitted the event; qualifies task_cookie across reloads
+# The product object's tail-call slots (sharedProductTailCalls, pinned at
+# admission). The eBPF operator installs each target in its PROG_ARRAY at
+# load, before any hook attaches, and freezes the arrays: the birth
+# constructor (task_alloc), the ten exec verdict graph stages and (G019 gap
+# 4) the two static-class interpreter continuation entries. Every
+# target is also disabled below (opaque_real_owner_child_candidate.programs.yaml):
+# a tail-call target is never attached.
+tail_calls:
+  - {map: opaque_real_owner_child_targets, index: 0, program: opaque_real_owner_child_target_candidate}
+  - {map: opaque_real_prepare_strict, index: 0, program: opaque_real_owner_prepare_strict}
+  - {map: opaque_real_prepare_audit, index: 0, program: opaque_real_owner_prepare_audit}
+  - {map: opaque_real_stage_strict, index: 0, program: opaque_real_owner_stage_strict}
+  - {map: opaque_real_stage_audit, index: 0, program: opaque_real_owner_stage_audit}
+  - {map: opaque_real_rule_strict, index: 0, program: opaque_real_owner_rule_strict}
+  - {map: opaque_real_rule_audit, index: 0, program: opaque_real_owner_rule_audit}
+  - {map: opaque_real_policy_strict, index: 0, program: opaque_real_owner_policy_strict}
+  - {map: opaque_real_policy_audit, index: 0, program: opaque_real_owner_policy_audit}
+  - {map: opaque_real_finish_strict, index: 0, program: opaque_real_owner_finish_strict}
+  - {map: opaque_real_finish_audit, index: 0, program: opaque_real_owner_finish_audit}
+  - {map: opaque_real_continue_strict, index: 0, program: opaque_real_owner_continue_strict}
+  - {map: opaque_real_continue_audit, index: 0, program: opaque_real_owner_continue_audit}
+programs:
+  # D1 (LSM-only prototype): the exec frame is lsm/bprm_creds_for_exec ..
+  # tp_btf/sys_exit on every kernel (sharedCandidateProbeSet); no program
+  # takes a per-kernel attach_to symbol.
+  # The protocol command (a syscall program in the product object, TC in
+  # recovery twins): never exposed by the candidate.
+  se_command:
+    attach_to: gadget_program_disabled

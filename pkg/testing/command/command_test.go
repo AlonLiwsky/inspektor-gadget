@@ -132,3 +132,40 @@ func TestTrackExit_CleanSelfExitNotAnError(t *testing.T) {
 	assert.NoError(t, c.ExitErr())
 	assert.NoError(t, c.kill())
 }
+
+func TestObservedCommandRetainsOutputAndReaps(t *testing.T) {
+	var observed bytes.Buffer
+	c := &Command{Name: "observed", Cmd: exec.Command("sh", "-c", "printf 'out'; printf 'err' >&2"), StdErrWriter: &observed, ObserveExit: true}
+	c.Start(t)
+	select {
+	case <-c.Exited():
+	case <-time.After(time.Second):
+		t.Fatal("exit not observed")
+	}
+	require.NoError(t, c.ExitError())
+	require.Equal(t, "out", c.stdout.String())
+	require.Equal(t, "err", c.stderr.String())
+	require.Equal(t, "err", observed.String())
+	c.Stop(t)
+	require.False(t, c.Running())
+}
+
+func TestObservedCommandStop(t *testing.T) {
+	c := &Command{Name: "observed", Cmd: exec.Command("sleep", "60"), ObserveExit: true}
+	c.Start(t)
+	c.Stop(t)
+	select {
+	case <-c.Exited():
+	default:
+		t.Fatal("process not reaped")
+	}
+	require.False(t, c.Running())
+}
+
+func TestObservedCommandError(t *testing.T) {
+	c := &Command{Name: "observed", Cmd: exec.Command("sh", "-c", "exit 7"), ObserveExit: true}
+	c.Start(t)
+	<-c.Exited()
+	require.ErrorContains(t, c.ExitError(), "exit status 7")
+	require.ErrorContains(t, c.kill(), "exit status 7")
+}

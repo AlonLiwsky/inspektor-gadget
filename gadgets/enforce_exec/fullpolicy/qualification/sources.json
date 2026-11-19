@@ -1,0 +1,17 @@
+{
+  "regexp/syntax/parse.go": "f93b85f4b63a6f6ecb5c1452a6c0ded1fef5953f9c73e5d814dfc08207e7d1b6",
+  "regexp/syntax/simplify.go": "d22b48ecde668bc22cd8998492c752ec088da5d027d61b7f04f7a9298796eec0",
+  "regexp/syntax/compile.go": "2e1f753be77bf1fa54aed2a7f98932394324b82c91109e19d93283f482f7ee01",
+  "regexp/syntax/regexp.go": "72fad4645d96cf8b0ef0ea4a9dae21f09e7bea090d1bdd500732d811982b2192",
+  "regexp/syntax/prog.go": "7a24ebd22eec504ceaeffbd33641ae330d3ca666d54f6a29ce6d96fc127e6c64",
+  "runtime/slice.go": "ac595f1a822620fdc52271ef84f06b19c1f0abc0e53c0eb049dbad90b86abdbd",
+  "runtime/msize.go": "0164d15295726608812842b429e241f553a314985a7c6aa48cb1ad24346a52dd",
+  "internal/runtime/gc/sizeclasses.go": "7626b00bbb416c25c5279b29aa73a072d74ace3444e58b178a6ff855a2deec2c",
+  "internal/runtime/gc/malloc.go": "889e4ee48345fd246b261a9352a0f8b9deb2c595ab59629c0ca70f7eaf06462c",
+  "sort/sort.go": "100e49103d23dd6b8335a50b17ae6e9db2b056cb1217d964dcf58852c3c6f8a1",
+  "sort/zsortinterface.go": "8978a49cc4174b0c35a84a2ddf73175d41254eb340ebeda29f21d3e546088a3b",
+  "internal/buildcfg/exp.go": "5825d40b47471bca28a00c0c19215930efef22b758120b6d972da1a955f21fa0",
+  "internal/buildcfg/cfg.go": "f22eb5691bd1299ec46246380917693244239e459021bae776c58aba8f523db6",
+  "internal/goexperiment/exp_greenteagc_on.go": "e25ab84a07cb748d87a516437cfd0b9da727c0690c74e7c63c958d146b7f1417",
+  "cmd/go/internal/cfg/cfg.go": "8eb038ac6df168fe5af971cd768d99dd3c64224273072a4160dcc5f51eacae9d"
+}

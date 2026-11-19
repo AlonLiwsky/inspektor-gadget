@@ -1,0 +1,21 @@
+version: 1
+binding:
+  container:
+    runtime: containerd
+    id: replace-with-full-container-id
+policy:
+  mode: audit
+  exec:
+    default: deny
+    rules:
+      - name: approved-executables
+        target:
+          path: ["/usr/bin/**", "/opt/app/bin/**"]
+        action: allow
+        origin: example/approved-executables
+      - name: no-default-shell
+        target:
+          # Example for a container where readlink -f /usr/bin/sh returns /usr/bin/dash.
+          # Replace with the resolved path from your target container.
+          path: ["/usr/bin/dash"]
+        action: deny

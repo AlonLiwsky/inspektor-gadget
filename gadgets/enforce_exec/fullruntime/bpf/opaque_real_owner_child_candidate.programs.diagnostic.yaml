@@ -1,0 +1,12 @@
+# Diagnostic attach-set packaging of the exec verdict candidate: the
+# trampoline programs only diagnostic twins contain (built with
+# ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC, the M3 object).
+# Merged after opaque_real_owner_child_candidate.programs.yaml for those
+# twins only; the product object has none of these programs.
+programs:
+  # Bootstrap only: the owner attaches these transiently and closes them
+  # before steady state; the generic attach must never keep them.
+  opaque_real_live_bootstrap_qualify:
+    attach_to: gadget_program_disabled
+  opaque_real_live_bootstrap_birth:
+    attach_to: gadget_program_disabled

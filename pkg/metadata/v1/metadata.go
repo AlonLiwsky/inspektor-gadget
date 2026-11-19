@@ -49,6 +49,8 @@ type DataSource struct {
 }
 
 type GadgetMetadata struct {
+	// Behavior declares observer, generator, or mutator behavior. Empty preserves legacy admission.
+	Behavior string `yaml:"behavior,omitempty"`
 	// Gadget name
 	Name string `yaml:"name"`
 	// Gadget description

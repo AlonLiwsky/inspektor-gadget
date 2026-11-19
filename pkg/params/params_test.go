@@ -15,7 +15,11 @@
 package params
 
 import (
+	"bytes"
+	"compress/zlib"
+	"encoding/base64"
 	"errors"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -457,15 +461,29 @@ func TestBytesHandling(t *testing.T) {
 	}
 
 	// Compress
-	params[0].Set(testString)
+	require.NoError(t, params[0].Set(testString))
 	testMap := map[string]string{}
 	params.CopyToMap(testMap, "")
-	require.Equal(t, testStringCompressed, testMap["bytes"], "compression + B64 encoding failed")
+	// The compressed bytes can change between Go releases; the wire format is
+	// base64-encoded zlib, and its decoded contents must stay unchanged.
+	compressed, err := base64.StdEncoding.DecodeString(testMap["bytes"])
+	require.NoError(t, err)
+	reader, err := zlib.NewReader(bytes.NewReader(compressed))
+	require.NoError(t, err)
+	decoded, err := io.ReadAll(reader)
+	require.NoError(t, reader.Close())
+	require.NoError(t, err)
+	require.Equal(t, testString, string(decoded), "compression + B64 encoding failed")
 
 	// Decompress
 	params[0].Set("")
 	params.CopyFromMap(testMap, "")
 	require.Equal(t, testString, string(params[0].AsBytes()), "decompression + B64 decoding failed")
+
+	// Values produced by earlier Go versions must remain readable.
+	require.NoError(t, params[0].Set(""))
+	params.CopyFromMap(map[string]string{"bytes": testStringCompressed}, "")
+	require.Equal(t, testString, string(params[0].AsBytes()), "legacy decompression failed")
 }
 
 func TestStringSlice(t *testing.T) {

@@ -47,6 +47,14 @@ func WithDataOperators(ops ...operators.DataOperator) Option {
 	}
 }
 
+// WithAdditionalDataOperators appends per-instance operators to those already
+// configured on the context. Options are applied in order.
+func WithAdditionalDataOperators(ops ...operators.DataOperator) Option {
+	return func(gadgetCtx *GadgetContext) {
+		gadgetCtx.dataOperators = append(gadgetCtx.dataOperators, ops...)
+	}
+}
+
 func WithTimeout(timeout time.Duration) Option {
 	return func(gadgetCtx *GadgetContext) {
 		gadgetCtx.timeout = timeout
@@ -96,5 +104,15 @@ func WithID(id string) Option {
 func WithName(name string) Option {
 	return func(gadgetCtx *GadgetContext) {
 		gadgetCtx.name = name
+	}
+}
+
+// WithOnStarted registers a synchronous callback invoked by Run after all
+// operators have started. It is not invoked by PrepareGadgetInfo. If startup is
+// canceled, the callback is skipped. Returning
+// an error stops the gadget through its normal shutdown lifecycle.
+func WithOnStarted(callback func() error) Option {
+	return func(gadgetCtx *GadgetContext) {
+		gadgetCtx.onStarted = callback
 	}
 }

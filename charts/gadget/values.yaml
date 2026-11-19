@@ -33,6 +33,9 @@ config:
 
   # -- Operator configuration, this will only be used if deprecated values are not set.
   operator:
+    ebpf:
+      # -- Host BPF admission: helpers/programTypes/kfuncs accept add/drop lists. Empty preserves compatibility.
+      policy: {}
     kubemanager:
       # -- Whether to use the fallback to pod informer
       fallback-podinformer: true
@@ -40,6 +43,8 @@ config:
       hook-mode: "auto"
     oci:
       verify-image: true
+      # -- Allow administrator-approved gadgets declaring generator or mutator behavior.
+      allow-enforcement: false
       public-keys:
         - |
           -----BEGIN PUBLIC KEY-----

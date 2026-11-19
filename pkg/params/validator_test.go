@@ -98,7 +98,7 @@ func TestValidateIntUint(t *testing.T) {
 		tests = append(tests, test{
 			name:          fmt.Sprintf("uint%d_max", bitSize),
 			bitSize:       bitSize,
-			value:         strconv.FormatUint(1<<(bitSize)-1, 10),
+			value:         strconv.FormatUint(1<<bitSize-1, 10),
 			expectedError: false,
 			validateFn:    ValidateUint,
 		})
@@ -119,7 +119,7 @@ func TestValidateIntUint(t *testing.T) {
 		tests = append(tests, test{
 			name:          fmt.Sprintf("uint%d_max+1", bitSize),
 			bitSize:       bitSize,
-			value:         strconv.FormatUint(1<<(bitSize), 10),
+			value:         strconv.FormatUint(1<<bitSize, 10),
 			expectedError: true,
 			validateFn:    ValidateUint,
 		})

@@ -43,6 +43,11 @@ type Command struct {
 	// It's used in situations where we want to process the output on-line without saving it.
 	StdOutWriter io.Writer
 
+	// StdErrWriter observes stderr while captured output is retained.
+	StdErrWriter io.Writer
+	// ObserveExit is the compatibility option for TrackExit.
+	ObserveExit bool
+
 	// StdErrLineObserver, if set, is invoked with each complete line of the command's
 	// standard error as it is produced. It allows callers to react to output while the
 	// command is still running (e.g. to detect a readiness marker).
@@ -104,6 +109,12 @@ func (c *Command) ExitErr() error {
 	return c.exitErr
 }
 
+// Exited is the compatibility name for ExitCh.
+func (c *Command) Exited() <-chan struct{} { return c.ExitCh() }
+
+// ExitError is the compatibility name for ExitErr.
+func (c *Command) ExitError() error { return c.ExitErr() }
+
 func (c *Command) IsStartAndStop() bool {
 	return c.StartAndStop
 }
@@ -132,6 +143,9 @@ func (c *Command) initExecCmd() {
 			store:    &c.stderr,
 		}
 		c.Cmd.Stderr = c.stderrProc
+	}
+	if c.StdErrWriter != nil {
+		c.Cmd.Stderr = io.MultiWriter(c.Cmd.Stderr, c.StdErrWriter)
 	}
 
 	// To be able to kill the process of /bin/sh and its child (the process of
@@ -205,7 +219,7 @@ func (c *Command) Start(t *testing.T) {
 	// command's exit (e.g. a gadget that fails to load) can be observed via ExitCh() while the
 	// test is still waiting for it to become ready. kill() then reaps through this goroutine
 	// instead of calling Cmd.Wait() a second time.
-	if c.trackExit {
+	if c.trackExit || c.ObserveExit {
 		c.exitCh = make(chan struct{})
 		go func() {
 			c.exitErr = c.Cmd.Wait()

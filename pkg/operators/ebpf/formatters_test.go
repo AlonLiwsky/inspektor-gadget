@@ -15,14 +15,19 @@
 package ebpfoperator
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"github.com/stretchr/testify/require"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/kallsyms"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/logger"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 	ebpftypes "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf/types"
 )
 
@@ -371,6 +376,114 @@ func constructNValuedEnum(keys []string, memberName string, isBitField bool) *en
 	}
 }
 
+// Embed the unused context methods: initialization only needs data sources.
+type stackFormatterContext struct {
+	operators.GadgetContext
+	ds datasource.DataSource
+}
+
+func (c stackFormatterContext) GetDataSources() map[string]datasource.DataSource {
+	return map[string]datasource.DataSource{"stacks": c.ds}
+}
+
+func TestInitStackConverter(t *testing.T) {
+	constructorErr := errors.New("cannot read kernel symbols")
+	for _, tc := range []struct {
+		name           string
+		tagged         bool
+		constructorErr error
+	}{
+		{name: "symbolizes installed converters", tagged: true},
+		{name: "untagged fields need no resolver"},
+		{name: "constructor error is cached after first nonempty stack", tagged: true, constructorErr: constructorErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds, err := datasource.New(datasource.TypeSingle, "stacks")
+			require.NoError(t, err)
+			for _, name := range []string{"first_raw", "second_raw"} {
+				in, err := ds.AddField(name, api.Kind_Uint32)
+				require.NoError(t, err)
+				if tc.tagged {
+					in.AddTags("type:" + ebpftypes.KernelStackTypeName)
+				}
+			}
+			i := &ebpfInstance{
+				logger:         logger.DefaultLogger(),
+				collectionSpec: &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{ebpftypes.KernelStackMapName: {}}},
+				formatters:     make(map[datasource.DataSource][]func(datasource.DataSource, datasource.Data) error),
+			}
+			constructorCalls, lookupCalls := 0, 0
+			err = i.initStackConverterWithDependencies(stackFormatterContext{ds: ds}, func() (*kallsyms.KAllSyms, error) {
+				constructorCalls++
+				if tc.constructorErr != nil {
+					return nil, tc.constructorErr
+				}
+				return kallsyms.NewKAllSymsFromReader(strings.NewReader("0000000000001000 T first_symbol\n0000000000002000 T second_symbol\n"))
+			}, func(key, valueOut interface{}) error {
+				lookupCalls++
+				require.Equal(t, uint32(42), key)
+				*valueOut.(*[ebpftypes.KernelPerfMaxStackDepth]uint64) = [ebpftypes.KernelPerfMaxStackDepth]uint64{0x1004, 0x2008}
+				return nil
+			})
+			require.NoError(t, err)
+			if !tc.tagged {
+				require.Zero(t, constructorCalls)
+				require.Empty(t, i.formatters)
+				require.Zero(t, lookupCalls)
+				return
+			}
+			require.Len(t, i.formatters[ds], 2)
+			require.Zero(t, constructorCalls, "symbol loading must be deferred until a stack is formatted")
+			data, err := ds.NewPacketSingle()
+			require.NoError(t, err)
+			for _, name := range []string{"first_raw", "second_raw"} {
+				ds.GetField(name).PutUint32(data, 42)
+			}
+			for _, converter := range i.formatters[ds] {
+				require.NoError(t, converter(ds, data))
+			}
+			for _, name := range []string{"first", "second"} {
+				result, err := ds.GetField(name).String(data)
+				require.NoError(t, err)
+				if tc.constructorErr != nil {
+					require.Empty(t, result, "failed symbol resolution clears the formatted field")
+				} else {
+					require.Equal(t, "first_symbol; second_symbol; ", result)
+				}
+			}
+			require.Equal(t, 1, constructorCalls, "resolver is shared across stack fields")
+			require.Equal(t, 2, lookupCalls)
+		})
+	}
+}
+
+func TestInitStackConverterUsesMapAssignedAfterInitialization(t *testing.T) {
+	ds, err := datasource.New(datasource.TypeSingle, "stacks")
+	require.NoError(t, err)
+	in, err := ds.AddField("stack_raw", api.Kind_Uint32, datasource.WithTags("type:"+ebpftypes.KernelStackTypeName))
+	require.NoError(t, err)
+	i := &ebpfInstance{
+		logger:         logger.DefaultLogger(),
+		collectionSpec: &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{ebpftypes.KernelStackMapName: {}}},
+		formatters:     make(map[datasource.DataSource][]func(datasource.DataSource, datasource.Data) error),
+	}
+	// Production initializes formatters before loading and assigning the map.
+	require.NoError(t, i.initStackConverter(stackFormatterContext{ds: ds}))
+	require.Len(t, i.formatters[ds], 1)
+	i.kernelStackMap = &ebpf.Map{}
+	// A zero-value map rejects this key before making a syscall. This tests
+	// late binding without requiring BPF privileges; symbolization is covered
+	// separately with nonempty stacks in TestInitStackConverter.
+	stack := [ebpftypes.KernelPerfMaxStackDepth]uint64{}
+	require.ErrorContains(t, i.kernelStackMap.Lookup(uint32(42), &stack), "marshal key")
+	data, err := ds.NewPacketSingle()
+	require.NoError(t, err)
+	in.PutUint32(data, 42)
+	require.NotPanics(t, func() {
+		require.NoError(t, i.formatters[ds][0](ds, data))
+	})
+}
+
 func TestInitEnumFormatterLoadsKernelBTFOnlyForEnums(t *testing.T) {
 	loads := 0
 	orig := loadKernelSpec
@@ -403,4 +516,52 @@ func TestInitEnumFormatterLoadsKernelBTFOnlyForEnums(t *testing.T) {
 	require.NoError(t, withEnum.initEnumFormatter(ctx))
 	require.Equal(t, 1, loads)
 	require.Len(t, withEnum.formatters[ds], 1, "the gadget's own enum is still formatted without kernel BTF")
+}
+
+func TestStopDetachesRawProgramsOnceAfterFailedStart(t *testing.T) {
+	ctx := newResolverGadgetCtx(t, nil)
+	defer ctx.Cancel()
+	calls := 0
+	instance := &ebpfInstance{
+		done:   make(chan struct{}),
+		logger: logger.DefaultLogger(),
+		rawDetachers: []func() error{func() error {
+			calls++
+			return errors.New("already detached")
+		}},
+	}
+	// Stop may run without PreStop after a failed Start, then again during Close.
+	require.NoError(t, instance.Stop(ctx))
+	require.NoError(t, instance.Stop(ctx))
+	require.NoError(t, instance.Close(ctx))
+	require.Equal(t, 1, calls)
+	require.Empty(t, instance.rawDetachers)
+	select {
+	case <-instance.done:
+	default:
+		t.Fatal("Stop did not signal readers")
+	}
+}
+
+func TestStartWithoutOperatorStillValidatesBeforeAllocation(t *testing.T) {
+	ctx := newResolverGadgetCtx(t, nil)
+	defer ctx.Cancel()
+	want := errors.New("native resource budget exceeded")
+	validated := false
+	ctx.SetVar(operators.NativeResourceValidatorKey, func(resources *operators.NativeResources) error {
+		validated = true
+		require.Equal(t, uint32(1<<25), resources.Maps["state"].MaxEntries)
+		return want
+	})
+	instance := &ebpfInstance{
+		logger:      ctx.Logger(),
+		params:      map[string]*param{ParamTraceKernel: {Param: &api.Param{Key: ParamTraceKernel, TypeHint: api.TypeBool, DefaultValue: "false"}}},
+		paramValues: api.ParamValues{},
+		collectionSpec: &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{
+			"state": {Name: "state", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1 << 25},
+		}},
+	}
+	require.ErrorIs(t, instance.Start(ctx), want)
+	require.True(t, validated)
+	require.Nil(t, instance.collection, "validation must precede BPF allocation")
 }

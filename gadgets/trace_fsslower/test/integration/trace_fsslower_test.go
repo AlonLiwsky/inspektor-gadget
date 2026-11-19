@@ -107,22 +107,22 @@ func TestTraceFSSlower(t *testing.T) {
 				Delta:     &delta,
 			}
 
-			normalize := func(e *traceFSSlowerEvent) {
-				utils.NormalizeCommonData(&e.CommonData)
-				utils.NormalizeString(&e.Timestamp)
-				utils.NormalizeProc(&e.Proc)
-				// Sub-microsecond operations round down to zero with --min=0.
-				// Preserve nil so a missing or null duration still fails to match.
-				if e.Delta != nil {
-					*e.Delta = utils.NormalizedInt
-				}
-			}
-
-			match.MatchEntries(t, match.JSONMultiObjectMode, output, normalize, expectedEntry)
+			match.MatchEntries(t, match.JSONMultiObjectMode, output, normalizeTraceFSSlowerEvent, expectedEntry)
 		},
 	))
 
 	traceFSSlowerCmd := igrunner.New("trace_fsslower", runnerOpts...)
 
 	igtesting.RunTestSteps([]igtesting.TestStep{traceFSSlowerCmd}, t, testingOpts...)
+}
+
+func normalizeTraceFSSlowerEvent(e *traceFSSlowerEvent) {
+	utils.NormalizeCommonData(&e.CommonData)
+	utils.NormalizeString(&e.Timestamp)
+	utils.NormalizeProc(&e.Proc)
+	// With --min=0, sub-microsecond durations legitimately round down to zero.
+	// Preserve nil so a missing delta_us field still fails the presence check.
+	if e.Delta != nil {
+		*e.Delta = utils.NormalizedInt
+	}
 }

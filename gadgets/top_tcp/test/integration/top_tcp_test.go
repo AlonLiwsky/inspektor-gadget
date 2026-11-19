@@ -17,6 +17,7 @@ package tests
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -86,6 +87,7 @@ func TestTopTcp(t *testing.T) {
 
 	switch utils.CurrentTestComponent {
 	case utils.IgLocalTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithLocalReady(2*time.Minute))
 		runnerOpts = append(runnerOpts,
 			igrunner.WithFlags(
 				fmt.Sprintf("-r=%s", utils.Runtime),
@@ -93,6 +95,7 @@ func TestTopTcp(t *testing.T) {
 			),
 		)
 	case utils.KubectlGadgetTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithKubernetesReady(2*time.Minute))
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-n=%s", ns)))
 		testingOpts = append(testingOpts, igtesting.WithCbBeforeCleanup(utils.PrintLogsFn(ns)))
 		commonDataOpts = append(commonDataOpts, utils.WithK8sNamespace(ns))

@@ -20,3 +20,12 @@ clean:
 	for ARTIFACT in $(TEST_ARTIFACTS); do \
 		sudo rm $$ARTIFACT.tar; \
 	done
+
+# Compiled admission fixtures include linked functions, callbacks, and kfuncs.
+# Keep objects checked in so pure policy tests require neither clang nor root.
+CLANG ?= clang
+.PHONY: policy-fixtures
+policy-fixtures: policy.bpf.o policy-kfunc.bpf.o policy-callback.bpf.o
+
+%.bpf.o: %/program.bpf.c
+	$(CLANG) -target bpfel -O2 -g -Wall -Werror -ffile-prefix-map=$(CURDIR)=. -c $< -o $@
