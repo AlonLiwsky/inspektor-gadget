@@ -20,6 +20,10 @@ programs that deny these operations for a covered task:
 A 32-bit (compat) task uses other syscall numbers. For such a task, the
 barrier denies every `CAP_SYS_ADMIN` use.
 
+The barrier needs every hook, so it needs Linux 6.1 or later
+(`userns_create`). It also needs BPF LSM in the active LSM list and
+`kernel.ftrace_enabled=1`.
+
 ## Using the barrier
 
 The gadget defines `ROOT_BARRIER_COVERED(task)` and includes the header.
@@ -58,9 +62,14 @@ The `gadgets/common/rootbarrier` package proves that the barrier works before
 the gadget reports Ready:
 
 - `Verify` (or `VerifyMaps` for the maps of an instance) checks that every
-  barrier program has a live LSM link and that BPF LSM is active, then runs a
-  self-test that sees the barrier deny real operations. An error must refuse
-  activation.
+  barrier program has a live LSM link, that BPF LSM is active and that ftrace
+  is enabled, then runs a self-test that sees the barrier deny real
+  operations. An error must refuse activation, and the gadget reports it as
+  not ready, never only as degraded. The hook-signature check is not a kernel
+  support claim: call `Verify` only after the gadget's own kernel check
+  admitted the kernel.
+- `Attest` repeats the link, BPF LSM and ftrace checks without the self-test,
+  so a gadget can call it on each status read.
 - `Hooks` lists the programs. `WithProgram` names the gadget's own program for
   a hook (a kernel name of at most 15 characters). `WithProgramID` matches it
   by kernel program ID, for a program whose name is longer than 15 characters

@@ -23,7 +23,8 @@ import (
 
 // Attest proves that each program of hooks (Hooks, or a copy from
 // WithProgram) of the instance that owns counters has a live LSM link to its
-// hook, and that the kernel runs BPF LSM programs. A program belongs to the
+// hook, and that the kernel runs BPF LSM programs (BPF LSM active and ftrace
+// enabled). A program belongs to the
 // instance when it uses the instance's counter map. Attest only reads, so a
 // gadget can run it again at any time.
 func Attest(counters *ebpf.Map, hooks []Hook) error {
@@ -31,6 +32,9 @@ func Attest(counters *ebpf.Map, hooks []Hook) error {
 		return err
 	}
 	if err := bpfLSMActive(); err != nil {
+		return err
+	}
+	if err := ftraceOn(); err != nil {
 		return err
 	}
 	info, err := counters.Info()
@@ -170,6 +174,21 @@ func barrierHook(id ebpf.ProgramID, mapID ebpf.MapID, hooks []Hook, lsm string) 
 
 // bpfLSMActive checks the kernel's active LSM list. A BPF LSM program attaches
 // even when "bpf" is not in that list, and then never runs.
+// ftraceOn checks kernel.ftrace_enabled. Root can set it to 0 while the
+// links stay live, and then a BPF LSM deny was measured to be skipped on the
+// AL2023 kernels. Attest reads it on every call, so the gadget reports the
+// barrier as not attested until ftrace is enabled again.
+func ftraceOn() error {
+	data, err := os.ReadFile("/proc/sys/kernel/ftrace_enabled")
+	if err != nil {
+		return fmt.Errorf("root barrier: reading kernel.ftrace_enabled: %w", err)
+	}
+	if !ftraceEnabled(string(data)) {
+		return fmt.Errorf("root barrier: ftrace is not enabled (kernel.ftrace_enabled=%s)", strings.TrimSpace(string(data)))
+	}
+	return nil
+}
+
 func bpfLSMActive() error {
 	var data []byte
 	var err error
