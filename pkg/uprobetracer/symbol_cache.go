@@ -85,10 +85,10 @@ func parseOrdinaryContext(_ context.Context, file *os.File, name string) (symbol
 }
 
 // parseGoSymbol adapts resolveGoSymbolContext to the cache. A missing function
-// and an unsupported layout are cached negative answers, and an unsupported
-// layout keeps its reason for the attach log. Every other error (I/O, a
-// recovered panic, a canceled wait for a parse slot) stays uncached, as for
-// ordinary symbols.
+// and an unsupported layout (a recovered parse panic included) are cached
+// negative answers, and an unsupported layout keeps its reason for the attach
+// log. Every other error (a failed read, a canceled wait for a parse slot)
+// stays uncached, as for ordinary symbols.
 func parseGoSymbol(ctx context.Context, file *os.File, name string) (symbolResult, error) {
 	return goSymbolResult(resolveGoSymbolContext(ctx, file, name))
 }

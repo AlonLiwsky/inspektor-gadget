@@ -474,11 +474,11 @@ func TestCommitFailsOnIncompleteLookupAtAttach(t *testing.T) {
 	}
 	tr.mu.Lock()
 	tr.containerPid2Inodes[fakePid] = nil
-	failed := tr.commitOpenedTargets(fakePid, []openedTarget{{file: f, label: "/app/server"}})
+	failed, incomplete := tr.commitOpenedTargets(fakePid, []openedTarget{{file: f, label: "/app/server"}})
 	tr.mu.Unlock()
 
-	if !failed {
-		t.Error("commit reported success for an incomplete lookup at attach")
+	if !failed || !incomplete {
+		t.Errorf("commit reported failed=%v incomplete=%v for an incomplete lookup at attach", failed, incomplete)
 	}
 
 	// A missing symbol stays a silent skip.
@@ -488,9 +488,9 @@ func TestCommitFailsOnIncompleteLookupAtAttach(t *testing.T) {
 		t.Fatalf("opening candidate: %v", err)
 	}
 	tr.mu.Lock()
-	failed = tr.commitOpenedTargets(fakePid, []openedTarget{{file: f, label: "/app/server"}})
+	failed, incomplete = tr.commitOpenedTargets(fakePid, []openedTarget{{file: f, label: "/app/server"}})
 	tr.mu.Unlock()
-	if failed {
-		t.Error("commit reported a failure for a missing symbol")
+	if failed || incomplete {
+		t.Errorf("commit reported failed=%v incomplete=%v for a missing symbol", failed, incomplete)
 	}
 }

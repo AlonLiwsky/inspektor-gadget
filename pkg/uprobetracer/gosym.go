@@ -59,7 +59,7 @@ func goModuleTextStart(f *safeelf.File) (textStart uint64, found bool, err error
 		return 0, false, nil
 	}
 	if moduleSection.Size > maxGoSectionSize {
-		return 0, true, fmt.Errorf(".go.module too large (%d bytes, max %d)", moduleSection.Size, maxGoSectionSize)
+		return 0, true, fmt.Errorf("%w: .go.module too large (%d bytes, max %d)", errGoSymbolUnsupported, moduleSection.Size, maxGoSectionSize)
 	}
 
 	data, err := moduleSection.Data()
@@ -71,11 +71,11 @@ func goModuleTextStart(f *safeelf.File) (textStart uint64, found bool, err error
 	if f.Class == elf.ELFCLASS64 {
 		ptrSize = 8
 	} else if f.Class != elf.ELFCLASS32 {
-		return 0, true, fmt.Errorf("unsupported ELF class for .go.module: %v", f.Class)
+		return 0, true, fmt.Errorf("%w: unsupported ELF class for .go.module: %v", errGoSymbolUnsupported, f.Class)
 	}
 	offset := moduledataTextOffset * ptrSize
 	if len(data) < offset+ptrSize {
-		return 0, true, fmt.Errorf(".go.module too small for moduledata.text: %d bytes", len(data))
+		return 0, true, fmt.Errorf("%w: .go.module too small for moduledata.text: %d bytes", errGoSymbolUnsupported, len(data))
 	}
 
 	if ptrSize == 4 {
@@ -157,14 +157,14 @@ func goTextStart(f *safeelf.File, textSection *elf.Section, pclntabData []byte) 
 			return 0, err
 		}
 		if textStart == 0 {
-			return 0, fmt.Errorf(".go.module contains an empty moduledata.text")
+			return 0, fmt.Errorf("%w: .go.module contains an empty moduledata.text", errGoSymbolUnsupported)
 		}
 		return textStart, nil
 	}
 
 	textStart, err := pclntabTextStart(pclntabData, f.ByteOrder)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %w", errGoSymbolUnsupported, err)
 	}
 	if textStart != 0 {
 		return textStart, nil
@@ -220,7 +220,9 @@ var errGoSymbolNotFound = errors.New("not found in .gopclntab")
 
 // errGoSymbolUnsupported reports a binary layout this resolver cannot read.
 // It depends only on the file version, so goSymbols caches it as a negative
-// answer instead of reading .gopclntab again on every attach.
+// answer instead of reading .gopclntab again on every attach. Each layout
+// check marks its own error; a failed read is not marked, so it stays
+// uncached and a later attach reads the file again.
 var errGoSymbolUnsupported = errors.New("unsupported Go binary")
 
 // goParseSlots bounds concurrent .gopclntab reads, so their peaks do not
@@ -340,7 +342,7 @@ func resolveGoSymbolContext(ctx context.Context, file *os.File, symbol string) (
 	}
 	textStart, err := goTextStart(f, textSection, pclntabData)
 	if err != nil {
-		return 0, fmt.Errorf("%w: reading Go text start: %w", errGoSymbolUnsupported, err)
+		return 0, fmt.Errorf("reading Go text start: %w", err)
 	}
 
 	// debug/gosym allocates one Func and one Sym per function upfront, from

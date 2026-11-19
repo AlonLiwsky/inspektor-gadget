@@ -17,6 +17,7 @@ package uprobetracer
 import (
 	"context"
 	"debug/elf"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,7 +107,7 @@ func newGoAttachTracer(t *testing.T, path string) (*Tracer[any], *testState, *[]
 	return tr, st, &bound
 }
 
-// Matthias's first finding on the exec path: while both Go parse slots are
+// On the exec path, while both Go parse slots are
 // busy, the open-phase lookup times out. The exec must not be recorded as
 // handled, so the next exec of the same binary attaches once a slot is free.
 func TestExecRetriesAfterGoParseSlotTimeout(t *testing.T) {
@@ -139,7 +140,7 @@ func TestExecRetriesAfterGoParseSlotTimeout(t *testing.T) {
 	require.Equal(t, 1, st.attachCount)
 }
 
-// Matthias's second finding: the binary is rewritten in place between the
+// The binary is rewritten in place between the
 // open phase and the commit, and the symbol moves. The commit must bind the
 // new offset, not the one the open phase found.
 func TestCommitRebindsAfterInPlaceRewrite(t *testing.T) {
@@ -173,7 +174,7 @@ func TestCommitRebindsAfterInPlaceRewrite(t *testing.T) {
 	require.NoError(t, rewrite.Close())
 
 	tr.mu.Lock()
-	failed := tr.commitOpenedTargets(fakePid, opened)
+	failed, _ := tr.commitOpenedTargets(fakePid, opened)
 	tr.mu.Unlock()
 	require.False(t, failed)
 	require.Equal(t, []uint64{newOffset}, *bound)
@@ -192,7 +193,7 @@ func TestCommitBindsPreparedOffsetWithoutParse(t *testing.T) {
 	require.Len(t, opened, 1)
 	takeAllGoParseSlots(t)
 	tr.mu.Lock()
-	failed := tr.commitOpenedTargets(fakePid, opened)
+	failed, _ := tr.commitOpenedTargets(fakePid, opened)
 	tr.mu.Unlock()
 	require.False(t, failed)
 	require.Equal(t, []uint64{want}, *bound)
@@ -217,7 +218,7 @@ func TestCommitRetriesLookupAfterOpenPhaseTimeout(t *testing.T) {
 
 	release()
 	tr.mu.Lock()
-	failed := tr.commitOpenedTargets(fakePid, opened)
+	failed, _ := tr.commitOpenedTargets(fakePid, opened)
 	tr.mu.Unlock()
 	require.False(t, failed)
 	require.Equal(t, []uint64{want}, *bound)
@@ -303,4 +304,225 @@ func TestGoLayoutErrorAfterSlotIsCached(t *testing.T) {
 		require.ErrorContains(t, err, "reading Go text start")
 	}
 	require.Equal(t, int32(1), parses.Load())
+}
+
+// moveSectionPastEOF points a section's file offset past the end of the file,
+// so reading the section fails while the ELF headers still parse.
+func moveSectionPastEOF(t *testing.T, path, section string) {
+	t.Helper()
+	ef, err := elf.Open(path)
+	require.NoError(t, err)
+	index := -1
+	for i, s := range ef.Sections {
+		if s.Name == section {
+			index = i
+		}
+	}
+	class, order := ef.Class, ef.ByteOrder
+	ef.Close()
+	if index < 0 {
+		t.Skipf("toolchain does not emit %s", section)
+	}
+	require.Equal(t, elf.ELFCLASS64, class)
+
+	content, err := os.ReadFile(path)
+	require.NoError(t, err)
+	shoff := order.Uint64(content[0x28:])
+	shentsize := uint64(order.Uint16(content[0x3a:]))
+	// Elf64_Shdr.sh_offset is at byte 0x18 of the section header.
+	at := shoff + uint64(index)*shentsize + 0x18
+	order.PutUint64(content[at:], uint64(len(content))+0x1000)
+	require.NoError(t, os.WriteFile(path, content, 0o755))
+}
+
+// A failed read is not a layout answer. It
+// must stay uncached, so the next lookup reads the file again.
+func TestGoSectionReadErrorIsNotCached(t *testing.T) {
+	src := buildStrippedGoBinary(t, goTargetSource)
+	path := filepath.Join(t.TempDir(), "server")
+	content, err := os.ReadFile(src)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, content, 0o755))
+	moveSectionPastEOF(t, path, ".go.module")
+
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	defer file.Close()
+
+	_, err = resolveGoSymbol(file, "main.target")
+	require.ErrorContains(t, err, "reading .go.module")
+	require.NotErrorIs(t, err, errGoSymbolUnsupported)
+
+	var parses atomic.Int32
+	c := newSymbolCache(8, func(ctx context.Context, f *os.File, name string) (symbolResult, error) {
+		parses.Add(1)
+		return parseGoSymbol(ctx, f, name)
+	})
+	for range 3 {
+		_, err = c.resolve(file, "main.target")
+		require.ErrorContains(t, err, "reading .go.module")
+		require.NotErrorIs(t, err, link.ErrNoSymbol)
+	}
+	require.Equal(t, int32(3), parses.Load())
+}
+
+func withShortRetryDelay(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := incompleteLookupRetryDelay
+	incompleteLookupRetryDelay = d
+	t.Cleanup(func() { incompleteLookupRetryDelay = orig })
+}
+
+// countIncompleteBinds wraps the tracer's attach and calls onIncomplete on
+// every commit whose symbol lookup did not finish.
+func countIncompleteBinds(tr *Tracer[any], onIncomplete func(n int)) {
+	attach := tr.attachToFile
+	n := 0
+	tr.attachToFile = func(file *os.File, offsets []uint64) ([]link.Link, error) {
+		links, err := attach(file, offsets)
+		if errors.Is(err, errSymbolLookupIncomplete) {
+			n++
+			onIncomplete(n)
+		}
+		return links, err
+	}
+}
+
+// An already-running service gets one
+// create-time attach and no exec event. When both parse slots stay busy
+// through that attach, a bounded retry binds once a slot is free.
+func TestCreateTimeAttachRetriesIncompleteLookup(t *testing.T) {
+	withShortAttachIOTimeout(t, 50*time.Millisecond)
+	withShortRetryDelay(t, 10*time.Millisecond)
+	binary := buildStrippedGoBinary(t, goTargetSource)
+	want := goSymbolOffset(t, binary)
+	tr, st, bound := newGoAttachTracer(t, binary)
+	st.currentInode = 704
+	tr.containerPid2Inodes[fakePid] = nil
+
+	release := takeAllGoParseSlots(t)
+	// Free a slot only after the first attempt has failed.
+	countIncompleteBinds(tr, func(n int) {
+		if n == 1 {
+			release()
+		}
+	})
+	tr.runAttachJob(attachJob{pid: fakePid, attachFilePath: tr.attachFilePath, attachSymbol: tr.attachSymbol, progName: tr.progName}, nil)
+
+	require.Equal(t, []uint64{want}, *bound)
+	require.Equal(t, 1, st.attachCount)
+	tr.mu.Lock()
+	require.Len(t, tr.containerPid2Inodes[fakePid], 1)
+	tr.mu.Unlock()
+}
+
+// The retry is bounded: with every slot busy for the whole time, the job
+// stops after incompleteLookupRetries more attempts.
+func TestCreateTimeAttachRetryIsBounded(t *testing.T) {
+	withShortAttachIOTimeout(t, 20*time.Millisecond)
+	withShortRetryDelay(t, time.Millisecond)
+	binary := buildStrippedGoBinary(t, goTargetSource)
+	tr, st, bound := newGoAttachTracer(t, binary)
+	st.currentInode = 705
+	tr.containerPid2Inodes[fakePid] = nil
+
+	takeAllGoParseSlots(t)
+	attempts := 0
+	countIncompleteBinds(tr, func(n int) { attempts = n })
+	tr.runAttachJob(attachJob{pid: fakePid, attachFilePath: tr.attachFilePath, attachSymbol: tr.attachSymbol, progName: tr.progName}, nil)
+
+	require.Equal(t, 1+incompleteLookupRetries, attempts)
+	require.Empty(t, *bound)
+}
+
+// Close ends a retry wait at once, so it never waits out the delay.
+func TestCloseEndsCreateTimeRetryWait(t *testing.T) {
+	withShortAttachIOTimeout(t, 20*time.Millisecond)
+	withShortRetryDelay(t, time.Hour)
+	binary := buildStrippedGoBinary(t, goTargetSource)
+	tr, st, _ := newGoAttachTracer(t, binary)
+	st.currentInode = 706
+	tr.containerPid2Inodes[fakePid] = nil
+
+	takeAllGoParseSlots(t)
+	failed := make(chan struct{})
+	countIncompleteBinds(tr, func(n int) {
+		if n == 1 {
+			close(failed)
+		}
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tr.runAttachJob(attachJob{pid: fakePid, attachFilePath: tr.attachFilePath, attachSymbol: tr.attachSymbol, progName: tr.progName}, nil)
+	}()
+	<-failed
+	tr.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not end the retry wait")
+	}
+}
+
+// A settled container: the startup scan skips the entrypoint, so the
+// create-time attach is its only attempt. A lookup that cannot finish there is
+// retried, and the entrypoint binds once a slot is free.
+func TestSettledEntrypointRetriesIncompleteLookup(t *testing.T) {
+	proc := withFakeProcRoot(t)
+	withShortAttachIOTimeout(t, 50*time.Millisecond)
+	withShortRetryDelay(t, 10*time.Millisecond)
+	fakeStartupProcess(t, proc, 100, "mnt:[1]", "/app/server")
+	binary := buildStrippedGoBinary(t, goTargetSource)
+	want := goSymbolOffset(t, binary)
+	tr, st, bound := newGoAttachTracer(t, binary)
+	tr.attachFilePath = "/app/server"
+	st.currentInode = 707
+
+	release := takeAllGoParseSlots(t)
+	countIncompleteBinds(tr, func(n int) {
+		if n == 1 {
+			release()
+		}
+	})
+	require.NoError(t, tr.AttachContainer(settledTestContainer(100)))
+
+	require.Equal(t, []uint64{want}, *bound)
+	tr.mu.Lock()
+	require.Len(t, tr.containerPid2Inodes[100], 1)
+	tr.mu.Unlock()
+}
+
+// Close also ends a retry that waits for an attachSem slot another tracer
+// holds.
+func TestCloseEndsRetryWaitForAttachSlot(t *testing.T) {
+	withShortAttachIOTimeout(t, 20*time.Millisecond)
+	withShortRetryDelay(t, time.Millisecond)
+	binary := buildStrippedGoBinary(t, goTargetSource)
+	tr, st, _ := newGoAttachTracer(t, binary)
+	st.currentInode = 708
+	tr.containerPid2Inodes[fakePid] = nil
+
+	takeAllGoParseSlots(t)
+	sem := make(chan struct{}, 1)
+	failed := make(chan struct{})
+	countIncompleteBinds(tr, func(n int) {
+		if n == 1 {
+			close(failed)
+		}
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tr.runAttachJob(attachJob{pid: fakePid, attachFilePath: tr.attachFilePath, attachSymbol: tr.attachSymbol, progName: tr.progName}, sem)
+	}()
+	<-failed
+	// Another tracer takes the only slot once the first attempt gives it back.
+	sem <- struct{}{}
+	tr.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not end the wait for an attach slot")
+	}
 }
