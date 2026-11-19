@@ -1576,11 +1576,12 @@ jobs:
 
   test-enforce-exec-product-objects:
     name: Exec enforcement product objects match their pins
-    # Rebuilds g19pkg{64,128,256,512} for both pinned AL2023 kernels with the
-    # pinned toolchain (Debian clang-21 1:21.1.8-3~bpo13+2 and libbpf-dev
-    # 1:1.5.0-3, every package from one snapshot.debian.org timestamp) and
-    # compares each sha256 with sharedProductPins, then packages each object
-    # into its product gadget image (cmd/productimages) and compares the
+    # Rebuilds g19pkg{64,128,256,512} (stage 1: one CO-RE object per profile
+    # for every kernel) with the pinned toolchain (Debian clang-21
+    # 1:21.1.8-3~bpo13+2 and libbpf-dev 1:1.5.0-3, every package from one
+    # snapshot.debian.org timestamp) and compares each sha256 with
+    # sharedProductObjects, then packages each object into the product
+    # gadget image of each pinned kernel (cmd/productimages) and compares the
     # manifest and index digests with SharedProductImagePins. Build only:
     # loading the objects on the AL2023 kernels stays a manual EC2 gate, and
     # the images are never pushed (node-agent rebuilds them into tracers.tar).

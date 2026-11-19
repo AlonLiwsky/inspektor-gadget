@@ -1,8 +1,8 @@
 # AL2023 product object-load run (G035)
 
-Loads the 8 shared product objects (`g19pkg{64,128,256,512}-<kernel>.bpf.o`)
-on the two pinned AL2023 kernels and runs the product node tests there, then
-judges the result. The pass rule is strict: every expected row has exactly
+Loads the 4 shared product objects (`g19pkg{64,128,256,512}.bpf.o`; stage 1:
+one CO-RE object per profile for every kernel) on the two pinned AL2023
+kernels and runs the product node tests there, then judges the result. The pass rule is strict: every expected row has exactly
 one PASS, and a skip, a missing row, a duplicate, an unexpected test, or an
 infrastructure error turns the run red.
 
@@ -29,7 +29,7 @@ an EC2 run on the pinned AMIs does.
 
 ```sh
 export AL2023_PROFILES="64 128 256 512"   # PENDING D4: or "128"
-export AL2023_NEG_SET=other-kernel        # PENDING D5
+export AL2023_NEG_SET=seam                # PENDING D5 (stage 1: other-kernel is no longer a negative)
 export G035_QEMU_IMAGE_DIR=/path/images G035_QEMU_STATE=/path/state
 make enforce-exec-al2023-product-load ENFORCE_EXEC_AL2023_RUN=/path/run-1
 # or step by step:
@@ -67,8 +67,9 @@ evidence is never overwritten.
   `IG_ENFORCE_EXEC_PRODUCT_OBJECTS`.
 - **6.12, 6.18** (root, exact pinned build): the bundle manifest and the
   identity rows (`uname -r`, BTF sha256, build-id from `/sys/kernel/notes`,
-  `bpf` LSM, `ftrace_enabled`, no livepatch taint, both kallsyms symbols,
-  and the platform: the vmlinuz sha256 on QEMU, `/etc/image-id` on EC2). An
+  `bpf` LSM, `ftrace_enabled`, no livepatch taint (stage 1: no kallsyms
+  failure-frame symbol is needed), and the platform: the vmlinuz sha256 on
+  QEMU, `/etc/image-id` on EC2). An
   identity failure stops the kernel's run.
   Then `verdict-load` on all 4 objects, and for each profile in
   `AL2023_PROFILES`:
@@ -77,20 +78,24 @@ evidence is never overwritten.
   - the restart child under `unshare -m`: READY; a positive control that
     the leftover probe sees its programs and new links while it lives;
     SIGKILL; no program left; then a child that reaches READY and exits;
-  - `TestSharedProductNodeNegativesAttached` with the other kernel's image of
-    the same profile (refused by the pin, not by a geometry mismatch).
+  - `TestSharedProductNodeNegativesAttached` (`AL2023_NEG_SET=seam`): the
+    product StartNode refuses the qualification seam before any host run.
+    Stage 1 images of both kernels carry the same qualified object, so the
+    other kernel's image is no longer a negative; the per-object refusals
+    are unit tests.
 
   Then, once per kernel on profile 128 and on its own node,
   `TestSharedProductNodeFtraceNegativeAttached`: Ready goes NotReady naming
   ftrace while `kernel.ftrace_enabled=0`, Strict 126 is back after restore,
-  and StopNode is either clean or fails with stale exit credit as its only
-  fault (frees missed while ftrace was off; the node stays Degraded until it
-  restarts, accepted and fail closed). The test logs which outcome happened
-  (`product-ftrace-outcome: clean|stale-degraded`); anything else fails.
+  Ready stays NotReady with the latched kernel witness (stage 1: tasks of the
+  window are untracked until the agent restarts), and StopNode reports the
+  witness with at most stale exit credit (frees missed while ftrace was off).
+  The test logs `product-ftrace-outcome: witness-latched (...)`; anything
+  else fails.
 
   Evidence rows check the logs, so a dropped env var cannot pass silently:
-  Strict 126 and Audit 0, the in-test restart, the refusal of the negative
-  image, ftrace NotReady, 126 after restore and the logged ftrace outcome.
+  Strict 126 and Audit 0, the in-test restart, the refusal of the
+  qualification seam, ftrace NotReady, 126 after restore and the logged ftrace outcome.
   Last come the hygiene rows: no
   `se_*` pins (bpffs must be mounted), no enforce_exec programs (full names
   or their 15-byte kernel truncation), no new BPF links, no test cgroups, and

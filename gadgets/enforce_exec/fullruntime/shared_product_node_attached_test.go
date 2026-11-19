@@ -161,7 +161,7 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 	}
 	sum := sha256.Sum256(object)
 	elf := hex.EncodeToString(sum[:])
-	if _, ok := pin.ProductELF[elf]; !ok {
+	if !sharedProductObject(elf) {
 		t.Fatalf("object sha256 %s is not a product ELF of %s", elf, pin.Release)
 	}
 	t.Logf("identity: release %s btf %s build-id %s elf-sha256 %s", pin.Release, digest, pin.BuildID, elf)
@@ -182,8 +182,8 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 		}
 	}()
 	gc := gcOf()
-	if !node.host.product || len(node.host.live.receipts) != 16 {
-		t.Fatalf("product=%v receipts=%d, want a product node with 16 receipts", node.host.product, len(node.host.live.receipts))
+	if !node.host.product || len(node.host.live.receipts) != sharedProductLinks {
+		t.Fatalf("product=%v receipts=%d, want a product node with %d receipts", node.host.product, len(node.host.live.receipts), sharedProductLinks)
 	}
 	publisher, err := node.livePublisher(false)
 	if _, product := publisher.(*sharedLiveProductPublisher); err != nil || !product {
@@ -397,33 +397,60 @@ func sharedProductFtraceNegative(t *testing.T, ctx context.Context, node *NodeEn
 	if err := restore(); err != nil {
 		t.Fatalf("product-ftrace-neg: %v", err)
 	}
+	// Stage 1: the kernel witness latched the silenced BPF LSM window, so
+	// Ready stays NotReady until the agent restarts, even with ftrace on
+	// again (tasks of the window are untracked). Its only other accepted
+	// fault is stale exit credit.
 	stale := false
 	back, ok := sharedProductWaitReady(ctx, node, gc, func(err error) bool {
 		if err == nil {
-			return true
+			return false
 		}
 		msg, found := strings.CutPrefix(err.Error(), ErrSharedNodeNotReady.Error()+": ")
-		_, only := sharedProductStaleOnlyCredit(msg)
-		stale = found && only
-		return stale
+		latched, staleOnly := sharedProductWitnessLatched(msg)
+		stale = staleOnly
+		return found && latched
 	})
 	if !ok {
-		t.Fatalf("product-ftrace-neg: Ready did not recover after restore (nil or stale exit credit only): %v", back)
+		t.Fatalf("product-ftrace-neg: Ready after restore is not the latched kernel witness (plus stale exit credit at most): %v", back)
+	}
+	for i := 0; i < 3; i++ {
+		if err := node.Ready(gc); !errors.Is(err, ErrSharedKernelWitness) {
+			t.Fatalf("product-ftrace-neg: Ready read %d after restore: %v, want the latched kernel witness", i, err)
+		}
 	}
 	if _, code, err := ia.run(ctx, burst); err != nil || code != 0 {
 		t.Fatalf("product-ftrace-neg: exec burst after restore: code %d: %v", code, err)
 	}
 	after := ia.smoke(t, ctx)
 	_, r1000 = sharedProductSmokeCodes(after)
-	ready := "nil"
+	ready := "witness-latched"
 	if stale {
-		ready = "stale-credit"
+		ready = "witness-latched+stale-credit"
 	}
 	fmt.Printf("product-ftrace-restore: r1000=%s ready=%s\n", r1000, ready)
 	if after != "r0=0 r1000=126" {
 		t.Fatalf("product-ftrace-neg: deny policy after restore: %q, want r0=0 r1000=126", after)
 	}
 	return stale
+}
+
+// sharedProductWitnessLatched reports whether msg (errors.Join lines) holds
+// the latched kernel witness, and whether its only other lines are one
+// stale-only exit credit fault; any other line refuses it.
+func sharedProductWitnessLatched(msg string) (latched, stale bool) {
+	for _, line := range strings.Split(msg, "\n") {
+		switch {
+		case strings.HasPrefix(line, ErrSharedKernelWitness.Error()):
+			latched = true
+		default:
+			if _, only := sharedProductStaleOnlyCredit(line); !only || stale {
+				return false, false
+			}
+			stale = true
+		}
+	}
+	return latched, stale
 }
 
 // sharedProductStaleOnlyCredit reports whether msg is exactly one
@@ -501,14 +528,16 @@ func sharedProductFreshExitCredit(e *sharedLiveExitCredit) (string, error) {
 // TestSharedProductNodeFtraceNegativeAttached (plan section 5, step 6) runs
 // the ftrace negative on its own product node: binding A (cgroup A) on a
 // Strict deny policy, the ftrace window (sharedProductFtraceNegative), then
-// Remove and StopNode. While ftrace was off the lsm/task_free trampolines
-// missed frees, so a later exit may find a tombstone of an earlier lifetime
-// at a reused task address (REAL_OWNER_EXIT_STALE): credit at exit is then
-// Degraded until the node restarts (accepted product behaviour, fail
-// closed). StopNode must therefore be clean, or fail with stale exit credit
-// as its only fault; anything else fails. It prints
+// Remove and StopNode. Stage 1: the kernel witness latches the silenced
+// BPF LSM window, so Ready stays NotReady (ErrSharedKernelWitness) after
+// ftrace is restored, and StopNode reports it. While ftrace was off the
+// lsm/task_free trampolines also missed frees, so a later exit may find a
+// tombstone of an earlier lifetime at a reused task address
+// (REAL_OWNER_EXIT_STALE): credit at exit may then be Degraded too
+// (accepted, fail closed). StopNode must fail with the witness and at most
+// stale exit credit; anything else fails. It prints
 //
-//	product-ftrace-outcome: clean|stale-degraded (...)
+//	product-ftrace-outcome: witness-latched (...)
 //
 // Requires IG_SHARED_PRODUCT_FTRACE_NEG=1 (it toggles kernel.ftrace_enabled).
 func TestSharedProductNodeFtraceNegativeAttached(t *testing.T) {
@@ -575,16 +604,16 @@ func TestSharedProductNodeFtraceNegativeAttached(t *testing.T) {
 	stopErr := node.StopNode(context.WithoutCancel(ctx))
 	stopped = true
 	ia.stop()
-	outcome := "clean"
-	if stopErr != nil {
-		count, only := sharedProductStaleOnlyCredit(stopErr.Error())
-		if !only {
-			t.Fatalf("product-ftrace-outcome: StopNode failed with more than stale exit credit: %v", stopErr)
-		}
-		outcome = fmt.Sprintf("stale-degraded (stale=%d; fresh reading before StopNode: %s; StopNode: %v)", count, fresh, stopErr)
-	} else if readyStale || fresh != "clean" {
-		t.Fatalf("product-ftrace-outcome: StopNode was clean but Ready stale=%v, fresh reading %s", readyStale, fresh)
+	// Stage 1: StopNode reports the latched kernel witness, plus at most
+	// stale exit credit.
+	if stopErr == nil || !errors.Is(stopErr, ErrSharedKernelWitness) {
+		t.Fatalf("product-ftrace-outcome: StopNode %v, want the latched kernel witness", stopErr)
 	}
+	latched, stale := sharedProductWitnessLatched(stopErr.Error())
+	if !latched {
+		t.Fatalf("product-ftrace-outcome: StopNode failed with more than the witness and stale exit credit: %v", stopErr)
+	}
+	outcome := fmt.Sprintf("witness-latched (stale exit credit %v, Ready stale %v; fresh reading before StopNode: %s)", stale, readyStale, fresh)
 	sharedProductRequireGone(t, expected)
 	fmt.Printf("product-ftrace-outcome: %s\n", outcome)
 	t.Logf("product-ftrace-outcome: %s; every product link and program gone after StopNode", outcome)
@@ -619,6 +648,10 @@ func sharedProductSmokeCodes(out string) (string, string) {
 	return r0, r1000
 }
 
+// sharedProductLinks is the product node's link count (S1: 6 BPF LSM + 5
+// tracepoint links; the restart child's check was still the pre-D1 16).
+const sharedProductLinks = 11
+
 // sharedProductRestart starts the node in a child test process, SIGKILLs
 // it, requires its links and programs gone, then starts the node again
 // here: Ready nil and a publish works.
@@ -651,7 +684,7 @@ func sharedProductRestart(t *testing.T, ctx context.Context, host SharedNodeHost
 		}
 		ready = line == "PRODUCT-CHILD READY"
 	}
-	if !ready || len(expected) != 16 {
+	if !ready || len(expected) != sharedProductLinks {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		t.Fatalf("product-restart: child ready=%v links=%d (%v)", ready, len(expected), scanner.Err())
@@ -752,6 +785,8 @@ func TestSharedProductNodeNegativesAttached(t *testing.T) {
 	}
 	if _, err := StartNode(WithSharedNodeQualification(ctx, SharedNodeQualification{Run: qrun}), config); !errors.Is(err, ErrSharedNativeUnavailable) || qruns != 0 {
 		t.Fatalf("product-neg-qualification: err=%v runs=%d", err, qruns)
+	} else {
+		t.Logf("product-neg-qualification: refused before any host run: %v", err)
 	}
 	for _, ref := range strings.Split(os.Getenv("IG_SHARED_PRODUCT_NEG_IMAGES"), ",") {
 		if ref == "" {
@@ -769,6 +804,36 @@ func TestSharedProductNodeNegativesAttached(t *testing.T) {
 			t.Fatalf("product-neg %s: untyped refusal %v", ref, err)
 		}
 		t.Logf("product-neg %s: %v", ref, err)
+	}
+}
+
+// TestSharedProductWitnessLatched: the stage-1 ftrace outcome classifier
+// accepts the latched kernel witness, alone or with exactly one stale-only
+// exit credit fault, and nothing else.
+func TestSharedProductWitnessLatched(t *testing.T) {
+	var stale [ExitCreditCounters]uint64
+	stale[ExitCreditInserted], stale[ExitCreditSettled], stale[ExitCreditStale], stale[ExitCreditUnsettled] = 100, 100, 2, 3
+	v, err := ExitCredit([ExitCreditCounters]uint64{}, stale, sharedProductExitTombstones)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleMsg := fmt.Sprintf("shared candidate credit at exit degraded, node degraded: %s", v)
+	witness := fmt.Errorf("%w: kernel.ftrace_enabled was read as 0 at a syscall exit", ErrSharedKernelWitness).Error()
+	for name, tc := range map[string]struct {
+		msg            string
+		latched, stale bool
+	}{
+		"witness alone":            {witness, true, false},
+		"witness and stale credit": {witness + "\n" + staleMsg, true, true},
+		"stale credit alone":       {staleMsg, false, true},
+		"two stale lines":          {witness + "\n" + staleMsg + "\n" + staleMsg, false, false},
+		"another fault":            {witness + "\nshared candidate capsule degraded", false, false},
+		"empty":                    {"", false, false},
+	} {
+		latched, stale := sharedProductWitnessLatched(tc.msg)
+		if latched != tc.latched || (tc.latched && stale != tc.stale) {
+			t.Errorf("%s: latched %v stale %v, want %v %v", name, latched, stale, tc.latched, tc.stale)
+		}
 	}
 }
 

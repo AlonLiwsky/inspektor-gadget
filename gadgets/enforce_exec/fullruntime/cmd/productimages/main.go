@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Command productimages packages the shared product objects that
-// build-product.sh wrote (OBJECTS/<profile>-<6.12|6.18>.bpf.o) into an OCI
-// image layout, one image per pinned kernel x profile
+// build-product.sh wrote (OBJECTS/<profile>.bpf.o; stage 1: one CO-RE object
+// per profile for every kernel) into an OCI image layout, one image per
+// pinned kernel x profile
 // (fullruntime.BuildSharedProductImage), tagged with its local reference,
 // and fails unless every manifest and index digest equals
 // fullruntime.SharedProductImagePins. It prints one OK or FAIL line per
@@ -23,7 +24,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"oras.land/oras-go/v2/content/oci"
 
@@ -67,9 +67,7 @@ func run(ctx context.Context, objects, layout, out string) error {
 	var built []entry
 	fail := false
 	for _, pin := range pins {
-		// 6.12.113-138.209.amzn2023.x86_64 -> 6.12
-		parts := strings.SplitN(pin.Release, ".", 3)
-		path := filepath.Join(objects, pin.Profile+"-"+parts[0]+"."+parts[1]+".bpf.o")
+		path := filepath.Join(objects, pin.Profile+".bpf.o")
 		elf, err := os.ReadFile(path)
 		if err != nil {
 			return err

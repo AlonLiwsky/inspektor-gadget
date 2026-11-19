@@ -19,6 +19,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 )
@@ -99,7 +100,14 @@ func TestSharedNodeBirthParkAttached(t *testing.T) {
 	if _, err := node.BirthParkHealth(); err != nil {
 		t.Fatalf("object %s has no birth park: %v", object, err)
 	}
-	ia, ib := startSharedPipeInit(t, cgroupA, "ig15-g019-park-init-a"), startSharedPipeInit(t, cgroupB, "ig15-g019-park-init-b")
+	// IG_SHARED_BIRTH_PARK_SHELL (diagnostic): the inits' shell. The default
+	// /bin/sh is dash on Debian and Ubuntu, which exits on a refused fork
+	// without its errno; bash prints the errno and survives.
+	shell := "/bin/sh"
+	if raw := os.Getenv("IG_SHARED_BIRTH_PARK_SHELL"); raw != "" {
+		shell = raw
+	}
+	ia, ib := startSharedPipeInitShell(t, cgroupA, "ig15-g019-park-init-a", shell), startSharedPipeInitShell(t, cgroupB, "ig15-g019-park-init-b", shell)
 	type binding struct {
 		name    string
 		init    *sharedPipeInit
@@ -195,7 +203,44 @@ func TestSharedNodeBirthParkAttached(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	t.Logf("birth park: streams=%d kill=%v spin=%v rounds %v revisions %v retryable refusals %v; retryable refusals per committed revision %v", streams, kill, spin, rounds, revisions, retried, perRevision)
+	// Diagnostic (always logged, before any verdict): the fail-closed
+	// refusals by class and the attempts over the churn, the park
+	// counters, and the limits that can refuse a fork outside the engine.
+	{
+		w := sharedM4ReadWitness(t, gc)
+		names := [...]string{"LIMIT", "SOURCE", "MISSING_TARGET", "EVAL_WORK", "STORAGE", "CONSTRUCT", "QUALIFY", "PENDING", "OPEN_PARENT", "GAP", "WORK_RETRY", "ENTRY", "ADMISSION"}
+		var rates []string
+		for i := range w.rates {
+			if d := w.rates[i] - witnessBefore.rates[i]; d != 0 && i < len(names) {
+				rates = append(rates, fmt.Sprintf("%s[%d]=+%d", names[i], i, d))
+			}
+		}
+		var attempts []string
+		for i := range w.attempts {
+			attempts = append(attempts, fmt.Sprintf("[%d]=+%d", i, w.attempts[i]-witnessBefore.attempts[i]))
+		}
+		now, perr := node.BirthParkHealth()
+		t.Logf("PARKDIAG shell=%s fail-closed refusals by class %v; attempts %v; birth park now %+v before %+v (%v)", shell, rates, attempts, now, parkBefore, perr)
+		for _, b := range bindings {
+			var limits []string
+			for _, f := range []string{"pids.max", "pids.current", "pids.peak", "pids.events", "cgroup.events"} {
+				raw, _ := os.ReadFile(filepath.Join(b.init.path, f))
+				limits = append(limits, f+"="+strings.Join(strings.Fields(string(raw)), ","))
+			}
+			t.Logf("PARKDIAG %s cgroup %s: %s", b.name, b.init.path, strings.Join(limits, " "))
+		}
+		var nproc unix.Rlimit
+		_ = unix.Getrlimit(unix.RLIMIT_NPROC, &nproc)
+		threads, _ := os.ReadFile("/proc/sys/kernel/threads-max")
+		pidMax, _ := os.ReadFile("/proc/sys/kernel/pid_max")
+		sh, _ := filepath.EvalSymlinks(shell)
+		t.Logf("PARKDIAG RLIMIT_NPROC %d/%d threads-max %s pid_max %s shell %s -> %s", nproc.Cur, nproc.Max, strings.TrimSpace(string(threads)), strings.TrimSpace(string(pidMax)), shell, sh)
+	}
 	if len(bad) != 0 {
+		if len(bad) > 12 {
+			t.Logf("churn/revision failures: %d, the first 12 shown", len(bad))
+			bad = bad[:12]
+		}
 		t.Fatalf("churn/revision failures: %v", bad)
 	}
 	for _, b := range bindings {

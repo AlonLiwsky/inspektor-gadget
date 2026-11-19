@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -125,10 +126,10 @@ func newSharedFactFiles(t *testing.T) sharedFactFiles {
 			t.Fatal(err)
 		}
 	}
-	copyFile("/usr/bin/true", f.interp)
-	copyFile("/usr/bin/true", f.long)
+	copyFile(sharedTruePath, f.interp)
+	copyFile(sharedTruePath, f.long)
 	copyFile("/usr/bin/bash", f.ancestor)
-	copyFile("/usr/bin/true", filepath.Join(f.chroot, "true"))
+	copyFile(sharedTruePath, filepath.Join(f.chroot, "true"))
 	for name, body := range map[string]string{f.script: "#!" + f.interp + "\n", f.binfmt: "binfmt payload\n", filepath.Join(f.chroot, "x.igf"): "binfmt payload\n"} {
 		if err := os.WriteFile(name, []byte(body), 0o755); err != nil {
 			t.Fatal(err)
@@ -269,7 +270,7 @@ func TestSharedNodeFactsAttached(t *testing.T) {
 		}
 	}
 	both := []string{files.script, files.interp}
-	expect("plain /usr/bin/true", "/usr/bin/true", 0, []string{"/usr/bin/true"}, []string{"/usr/bin/true"}, "/usr/bin/true")
+	expect("plain /usr/bin/true", sharedTruePath, 0, []string{sharedTruePath}, []string{sharedTruePath}, sharedTruePath)
 	expect("script, base", files.script, 0, both, both, both...)
 
 	// Allowed script, denied interpreter: exactly two evaluations; Strict
@@ -289,7 +290,7 @@ func TestSharedNodeFactsAttached(t *testing.T) {
 	}
 	publish("many paths", never, fullpolicy.Rule{Name: "many", Action: fullpolicy.Deny, Target: fullpolicy.Target{Path: append(many, files.interp)}})
 	expect("9-path list", files.interp, eperm, []string{files.interp}, []string{files.interp}, files.interp)
-	expect("9-path list, unmatched", "/usr/bin/true", 0, []string{"/usr/bin/true"}, []string{"/usr/bin/true"}, "/usr/bin/true")
+	expect("9-path list, unmatched", sharedTruePath, 0, []string{sharedTruePath}, []string{sharedTruePath}, sharedTruePath)
 
 	// Ancestor: the private interpreter is refused only below anc-sh.
 	publish("ancestor", never, fullpolicy.Rule{Name: "ancestor", Action: fullpolicy.Deny, Actor: fullpolicy.Actor{Ancestor: &fullpolicy.Ancestor{Path: []string{files.ancestor}, Depth: 2}}, Target: fullpolicy.Target{Path: []string{files.interp}}})
@@ -307,7 +308,7 @@ func TestSharedNodeFactsAttached(t *testing.T) {
 	if r := records["A"][0]; r.fsMask&1 == 0 || r.fsKnown&1 == 0 {
 		t.Fatalf("tmpfs record %+v", r)
 	}
-	expect("rootfs target", "/usr/bin/true", 0, []string{"/usr/bin/true"}, []string{"/usr/bin/true"}, "/usr/bin/true")
+	expect("rootfs target", sharedTruePath, 0, []string{sharedTruePath}, []string{sharedTruePath}, sharedTruePath)
 
 	// stdin pipe.
 	yes := true
@@ -371,12 +372,20 @@ func TestSharedNodeFactsAttached(t *testing.T) {
 	// chroot can reach, is no known path either) nor hide the ancestors.
 	// Strict refuses the first pass (EPERM), Audit runs it (the chroot has
 	// no dynamic loader: ENOENT, 127).
+	// chroot(8) by PATH: /usr/sbin/chroot is not everywhere (Ubuntu 25.10
+	// and 26.04 have /usr/bin/chroot only). Not symlink-resolved: it may be
+	// a multi-call binary that dispatches on argv[0].
+	chroot, err := exec.LookPath("chroot")
+	if err != nil {
+		t.Fatalf("chroot(8): %v", err)
+	}
+	t.Logf("chroot(8): %s", chroot)
 	rootCases := []struct {
 		label, command string
 		passesB        []string
 	}{
-		{"target spoof in a chroot (H1)", "/usr/sbin/chroot " + files.chroot + " /x.igf", []string{"", ""}},
-		{"ancestor hiding in a chroot (H1)", fmt.Sprintf("%s -c '/usr/sbin/chroot %s /true; exit $?'", files.ancestor, files.chroot), []string{""}},
+		{"target spoof in a chroot (H1)", chroot + " " + files.chroot + " /x.igf", []string{"", ""}},
+		{"ancestor hiding in a chroot (H1)", fmt.Sprintf("%s -c '%s %s /true; exit $?'", files.ancestor, chroot, files.chroot), []string{""}},
 	}
 	for i, c := range rootCases {
 		if i == 1 {

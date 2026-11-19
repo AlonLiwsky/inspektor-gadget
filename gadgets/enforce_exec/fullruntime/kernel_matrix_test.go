@@ -47,25 +47,14 @@ func TestOwnerBuilderKernelMatrixMatchesRuntime(t *testing.T) {
 // candidate matrix is derived from them, and neither shares anything with
 // the persistent-owner matrix in either direction.
 func TestSharedCandidateKernelMatrixIsSeparate(t *testing.T) {
-	elf := func(sums ...string) map[string]struct{} {
-		out := map[string]struct{}{}
-		for _, s := range sums {
-			out[s] = struct{}{}
-		}
-		return out
-	}
 	want := map[string]sharedProductPin{
 		"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": {
 			Release: "6.12.113-138.209.amzn2023.x86_64", BuildID: "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
-			OuterSymbol: "do_execveat_common.isra.0", HandlerSymbol: "search_binary_handler",
-			ProductELF: elf("0d5e4d9732689312a272d2dccc79618f0d0e7b7c3ac011c5d0bccc550e31aab4", "507382feed5fd8d534b21d00be11f041b2f9f9068ead6e47666273a50dd6ad1c",
-				"528b686977d1920642a225680cafcf2ff0573c2b4bdf0565747fd1e672728f2c", "1b504b838a6086e20a9968b848b09173e7c4273df040d53da2bd21323fb2dfa1"),
+			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"da796db9846e32d64b475fb2b7dbd33178e297c5630e9303c3dc57c60d9f119f": {}, "8bc88d1505dac04fa744cf9d2f0af511b2337da8dd889efa5798c64977f51987": {}, "74b21461d18e98d6336cac320e7f830a5ee8e441198e3053dcf68b98ad093845": {}, "206decf3344b9f7c90dd285d36ec653dbf5f557ef081d986fa4e56c6cd726b35": {}},
 		},
 		"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
 			Release: "6.18.56-125.164.amzn2023.x86_64", BuildID: "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
-			OuterSymbol: "do_execveat_common.isra.0", HandlerSymbol: "exec_binprm",
-			ProductELF: elf("a3a2f56fa0345904a3b8005001bb4e03929f3e94275382d56622330b0f4c9757", "3fa3da0e7a7f8cb90317e2a648dfe48753df3ba954b2fb6b20575a3c43bc8fc8",
-				"ca63241d3457d1037204c97971e46a1ee63b28f7e6439b19fe66658c16a42be7", "91b21068719070461138cdce68afa6494d10cc324ea1b75c362c862438ed2de1"),
+			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"da796db9846e32d64b475fb2b7dbd33178e297c5630e9303c3dc57c60d9f119f": {}, "8bc88d1505dac04fa744cf9d2f0af511b2337da8dd889efa5798c64977f51987": {}, "74b21461d18e98d6336cac320e7f830a5ee8e441198e3053dcf68b98ad093845": {}, "206decf3344b9f7c90dd285d36ec653dbf5f557ef081d986fa4e56c6cd726b35": {}},
 		},
 	}
 	if !reflect.DeepEqual(sharedProductPins, want) {
@@ -100,9 +89,12 @@ func TestSharedCandidateKernelMatrixIsSeparate(t *testing.T) {
 // own layout (a faked 6.18 OVL_FILE on 6.12 dereferenced the realfile as an
 // ovl_file: every image fact READ_FAULT/UNKNOWN, G020 6.12 image failure).
 func TestMain(m *testing.M) {
-	if os.Getenv("IG_SHARED_OVL_BTF") != "1" && os.Getenv("IG_SHARED_OVL_AUTOLOAD") != "1" && !onSharedCandidateKernel() {
+	// D3: under the test-only probed-kernel override the attached tests run
+	// on a stock kernel and need its real layout and FMODE_BACKING probe too.
+	if os.Getenv("IG_SHARED_OVL_BTF") != "1" && os.Getenv("IG_SHARED_OVL_AUTOLOAD") != "1" && !onSharedCandidateKernel() && !sharedProbedKernelOverride() {
 		overlayLayoutReader = func() (uint32, error) { return sharedImageOverlayLayoutOvlFile, nil }
 		overlayModuleLoader = func() error { return nil }
+		fmodeBackingReader = func(uint32) (uint32, error) { return sharedFmodeBacking24, nil }
 	}
 	os.Exit(m.Run())
 }
@@ -118,32 +110,28 @@ func onSharedCandidateKernel() bool {
 	return ok
 }
 
-// TestSharedImageOverlayLayoutExactMatrix: every shared candidate kernel has
-// exactly its source-verified overlay layout, the values match the classifier
-// header, and nothing outside the exact matrix selects a layout.
+// sharedImageOverlayLayoutsPinned are the source-verified layouts of the two
+// pinned builds (6.12 fs/overlayfs/file.c:170, 6.18 file.c:92-95,232). D3:
+// production no longer has this table (the layout is derived from the
+// overlay BTF shape); the tests keep it to assert that the derivation gives
+// the source-verified value on the pinned builds.
+var sharedImageOverlayLayoutsPinned = map[string]uint32{
+	"6.12.113-138.209.amzn2023.x86_64": sharedImageOverlayLayoutRealFile,
+	"6.18.56-125.164.amzn2023.x86_64":  sharedImageOverlayLayoutOvlFile,
+}
+
+// TestSharedImageOverlayLayoutExactMatrix: the shape derivation gives every
+// pinned kernel its source-verified layout, and the values match the
+// classifier header.
 func TestSharedImageOverlayLayoutExactMatrix(t *testing.T) {
-	want := map[string]uint32{
-		"6.12.113-138.209.amzn2023.x86_64": 1,
-		"6.18.56-125.164.amzn2023.x86_64":  2,
+	if len(sharedImageOverlayLayoutsPinned) != len(sharedCandidateKernelBTF) {
+		t.Fatalf("layout matrix %v differs from kernel matrix %v", sharedImageOverlayLayoutsPinned, sharedCandidateKernelBTF)
 	}
-	if len(sharedImageOverlayLayouts) != len(sharedCandidateKernelBTF) {
-		t.Fatalf("layout matrix %v differs from kernel matrix %v", sharedImageOverlayLayouts, sharedCandidateKernelBTF)
-	}
-	for digest, release := range sharedCandidateKernelBTF {
-		spec := overlaySpecForLayout(t, want[release])
-		got, err := sharedImageOverlayLayout(digest, spec)
-		if err != nil || got != want[release] || got == sharedImageOverlayLayoutUnset {
-			t.Errorf("%s: layout %d err %v, want %d", release, got, err, want[release])
-		}
-		for _, unknown := range []string{"", digest[:63], digest + "0", strings.ToUpper(digest), release} {
-			if got, err := sharedImageOverlayLayout(unknown, spec); err == nil || got != sharedImageOverlayLayoutUnset {
-				t.Errorf("nonexact identity %q selected layout %d", unknown, got)
-			}
-		}
-	}
-	for _, digest := range []string{SupportedKernelBTF, SupportedKubernetesKernelBTF} {
-		if _, err := sharedImageOverlayLayout(digest, overlaySpecForLayout(t, 2)); err == nil {
-			t.Errorf("persistent-owner kernel %s selected an overlay layout", digest)
+	for _, release := range sharedCandidateKernelBTF {
+		want := sharedImageOverlayLayoutsPinned[release]
+		got, err := sharedImageOverlayLayout(overlaySpecForLayout(t, want))
+		if err != nil || got != want || got == sharedImageOverlayLayoutUnset {
+			t.Errorf("%s: layout %d err %v, want %d", release, got, err, want)
 		}
 	}
 	header, err := os.ReadFile("../full/shared_image_classify.h")
@@ -179,7 +167,7 @@ func overlaySpecForLayout(t *testing.T, layout uint32) *btf.Spec {
 
 func ovlSpec(t *testing.T, ovl *btf.Struct) *btf.Spec {
 	t.Helper()
-	types := []btf.Type{&btf.Struct{Name: "unrelated", Size: 4}}
+	types := []btf.Type{&btf.Struct{Name: "unrelated", Size: 4}, &btf.Struct{Name: "ovl_inode", Size: 8}}
 	if ovl != nil {
 		types = append(types, ovl)
 	}
@@ -194,41 +182,61 @@ func ovlSpec(t *testing.T, ovl *btf.Struct) *btf.Spec {
 	return spec
 }
 
-// TestSharedImageOverlayLayoutModuleBTFPin (review M6): the overlay module BTF
-// shape must confirm the vmlinux-digest layout; every mismatch, a missing
-// module BTF and a swapped-kernel combination select UNSET.
-func TestSharedImageOverlayLayoutModuleBTFPin(t *testing.T) {
-	var d612, d618 string
-	for digest, release := range sharedCandidateKernelBTF {
-		if strings.HasPrefix(release, "6.12.") {
-			d612 = digest
-		} else {
-			d618 = digest
-		}
-	}
+// TestSharedImageOverlayLayoutShape (review M6, D3): the layout comes from the
+// overlay BTF shape alone. A missing BTF, a BTF without overlayfs's own types
+// (the absence of struct ovl_file then proves nothing), a struct ovl_file
+// without a struct file *realfile member and a duplicated struct ovl_file
+// select UNSET. The realfile offset and the other members are not pinned:
+// the object relocates the access (CO-RE).
+func TestSharedImageOverlayLayoutShape(t *testing.T) {
 	file := &btf.Struct{Name: "file", Size: 8}
 	ptr := &btf.Pointer{Target: file}
 	member := func(name string, off uint32) btf.Member {
 		return btf.Member{Name: name, Type: ptr, Offset: btf.Bits(off)}
 	}
-	cases := []struct {
-		name   string
-		digest string
-		spec   *btf.Spec
-	}{
-		{"6.18 digest, module BTF missing", d618, nil},
-		{"6.12 digest, module BTF missing", d612, nil},
-		{"6.18 digest, 6.12 module shape (ovl_file absent)", d618, overlaySpecForLayout(t, 1)},
-		{"6.12 digest, 6.18 module shape (ovl_file present)", d612, overlaySpecForLayout(t, 2)},
-		{"6.18 wrong size", d618, ovlSpec(t, &btf.Struct{Name: "ovl_file", Size: 24, Members: []btf.Member{member("realfile", 0), member("upperfile", 64)}})},
-		{"6.18 swapped members", d618, ovlSpec(t, &btf.Struct{Name: "ovl_file", Size: 16, Members: []btf.Member{member("upperfile", 0), member("realfile", 64)}})},
-		{"6.18 wrong offset", d618, ovlSpec(t, &btf.Struct{Name: "ovl_file", Size: 16, Members: []btf.Member{member("realfile", 0), member("upperfile", 128)}})},
-		{"6.18 extra member", d618, ovlSpec(t, &btf.Struct{Name: "ovl_file", Size: 16, Members: []btf.Member{member("realfile", 0), member("upperfile", 64), member("x", 128)}})},
-		{"6.18 non-pointer member", d618, ovlSpec(t, &btf.Struct{Name: "ovl_file", Size: 16, Members: []btf.Member{member("realfile", 0), {Name: "upperfile", Type: &btf.Int{Name: "long", Size: 8}, Offset: 64}}})},
+	noWitness := func(ovl *btf.Struct) *btf.Spec {
+		types := []btf.Type{&btf.Struct{Name: "unrelated", Size: 4}}
+		if ovl != nil {
+			types = append(types, ovl)
+		}
+		b, err := btf.NewBuilder(types, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec, err := b.Spec()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return spec
 	}
-	for _, tc := range cases {
-		if got, err := sharedImageOverlayLayout(tc.digest, tc.spec); err == nil || got != sharedImageOverlayLayoutUnset {
+	refused := []struct {
+		name string
+		spec *btf.Spec
+	}{
+		{"overlay BTF missing", nil},
+		{"no overlayfs types, ovl_file absent", noWitness(nil)},
+		{"no overlayfs types, ovl_file present", noWitness(&btf.Struct{Name: "ovl_file", Size: 16, Members: []btf.Member{member("realfile", 0), member("upperfile", 64)}})},
+		{"no realfile member", ovlSpec(t, &btf.Struct{Name: "ovl_file", Size: 16, Members: []btf.Member{member("upperfile", 0), member("x", 64)}})},
+		{"realfile not a pointer", ovlSpec(t, &btf.Struct{Name: "ovl_file", Size: 16, Members: []btf.Member{{Name: "realfile", Type: &btf.Int{Name: "long", Size: 8}, Offset: 0}}})},
+		{"realfile not a struct file pointer", ovlSpec(t, &btf.Struct{Name: "ovl_file", Size: 16, Members: []btf.Member{{Name: "realfile", Type: &btf.Pointer{Target: &btf.Struct{Name: "path", Size: 16}}, Offset: 0}}})},
+	}
+	for _, tc := range refused {
+		if got, err := sharedImageOverlayLayout(tc.spec); err == nil || got != sharedImageOverlayLayoutUnset {
 			t.Errorf("%s: layout %d err %v, want UNSET and error", tc.name, got, err)
+		}
+	}
+	accepted := []struct {
+		name string
+		spec *btf.Spec
+		want uint32
+	}{
+		{"ovl_file absent", ovlSpec(t, nil), sharedImageOverlayLayoutRealFile},
+		{"6.18 shape", overlaySpecForLayout(t, sharedImageOverlayLayoutOvlFile), sharedImageOverlayLayoutOvlFile},
+		{"realfile moved (relocated by CO-RE)", ovlSpec(t, &btf.Struct{Name: "ovl_file", Size: 24, Members: []btf.Member{member("upperfile", 0), member("realfile", 64), member("x", 128)}}), sharedImageOverlayLayoutOvlFile},
+	}
+	for _, tc := range accepted {
+		if got, err := sharedImageOverlayLayout(tc.spec); err != nil || got != tc.want {
+			t.Errorf("%s: layout %d err %v, want %d", tc.name, got, err, tc.want)
 		}
 	}
 }

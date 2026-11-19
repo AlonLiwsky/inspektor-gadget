@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf/btf"
+
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 
@@ -64,7 +66,18 @@ func TestSharedNodeExecveCheckAttached(t *testing.T) {
 		wantCheck = int(unix.EINVAL)
 	case strings.HasPrefix(release, "6.18."):
 	default:
-		t.Fatalf("kernel %s: want AL2023 6.12 or 6.18", release)
+		// D3: on a probed kernel the expectation follows the feature, not
+		// the release: AT_EXECVE_CHECK exists iff linux_binprm has is_check.
+		if !sharedProbedKernelOverride() {
+			t.Fatalf("kernel %s: want AL2023 6.12 or 6.18", release)
+		}
+		kernel, err := btf.LoadKernelSpec()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := btfMemberOffsetAny(kernel, "linux_binprm", "is_check"); err != nil {
+			wantCheck = int(unix.EINVAL)
+		}
 	}
 	files := newSharedFactFiles(t)
 	c := &sharedVerdictCollector{}

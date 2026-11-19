@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -33,25 +34,26 @@ func TestSharedProductPinsMatchTestdata(t *testing.T) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) != 6 {
-			t.Fatalf("testdata line %q: %d fields, want 6", line, len(fields))
+		if len(fields) != 4 {
+			t.Fatalf("testdata line %q: %d fields, want 4", line, len(fields))
 		}
-		release, digest, buildID, outer, handler := fields[0], fields[1], fields[2], fields[3], fields[4]
+		release, digest, buildID := fields[0], fields[1], fields[2]
 		pin, ok := sharedProductPins[digest]
 		if !ok {
 			t.Fatalf("testdata BTF %s (%s) is not pinned", digest, release)
 		}
 		seen[digest] = true
-		if pin.Release != release || pin.BuildID != buildID || pin.OuterSymbol != outer || pin.HandlerSymbol != handler {
-			t.Errorf("pin %s = %+v, testdata %q", digest, pin, fields[:5])
+		if pin.Release != release || pin.BuildID != buildID {
+			t.Errorf("pin %s = %+v, testdata %q", digest, pin, fields)
 		}
-		elf := strings.Split(fields[5], ",")
-		if len(elf) != 4 || len(pin.ProductELF) != len(elf) {
-			t.Errorf("pin %s ELF set %v, testdata %v", digest, pin.ProductELF, elf)
+		// The qualified objects, in profile order (the stage-1 objects).
+		qualified := strings.Split(fields[3], ",")
+		if len(qualified) != len(pin.ProductObjects) {
+			t.Errorf("pin %s: testdata qualifies %d objects, ProductObjects %d", release, len(qualified), len(pin.ProductObjects))
 		}
-		for _, sum := range elf {
-			if _, ok := pin.ProductELF[sum]; !ok || len(sum) != 64 || strings.ToLower(sum) != sum {
-				t.Errorf("pin %s lacks testdata ELF %q", digest, sum)
+		for i, obj := range qualified {
+			if _, ok := pin.ProductObjects[obj]; !ok || obj != sharedProductObjects[sharedProductProfiles[i].Name] {
+				t.Errorf("pin %s: testdata object %d %s is not ProductObjects' %s object", release, i, obj, sharedProductProfiles[i].Name)
 			}
 		}
 	}
@@ -60,6 +62,35 @@ func TestSharedProductPinsMatchTestdata(t *testing.T) {
 	}
 	if len(seen) != len(sharedProductPins) {
 		t.Fatalf("testdata covers %d of %d pins", len(seen), len(sharedProductPins))
+	}
+}
+
+// TestSharedProductObjectsMatchTestdata (D3): sharedProductObjects equals
+// testdata/shared_product_objects.tsv, one object per profile for every
+// kernel (bpf/build-product.sh --check rebuilds them).
+func TestSharedProductObjectsMatchTestdata(t *testing.T) {
+	data, err := os.ReadFile("testdata/shared_product_objects.tsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) != 2 || !isLowerHex(fields[1], 64) {
+			t.Fatalf("testdata line %q", line)
+		}
+		got[fields[0]] = fields[1]
+	}
+	if !maps.Equal(got, sharedProductObjects) || len(got) != 4 {
+		t.Fatalf("testdata %v, sharedProductObjects %v", got, sharedProductObjects)
+	}
+	for _, sum := range got {
+		if !sharedProductObject(sum) || sharedProductObject(strings.ToUpper(sum)) || sharedProductObject("") {
+			t.Fatalf("sharedProductObject(%s)", sum)
+		}
 	}
 }
 

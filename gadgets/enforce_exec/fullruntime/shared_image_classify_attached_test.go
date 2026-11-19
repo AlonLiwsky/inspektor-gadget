@@ -100,7 +100,7 @@ func TestSharedImageClassifyAttached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sharedCandidateKernelBTF[digest] != release {
+	if sharedCandidateKernelBTF[digest] != release && !sharedProbedKernelOverride() {
 		t.Fatalf("release %q does not match BTF %s", release, digest)
 	}
 	t.Logf("kernel %s BTF %s overlay layout %d", release, digest, layout)
@@ -204,7 +204,18 @@ func TestSharedImageClassifyAttached(t *testing.T) {
 		if err := variable.Set(layout); err != nil {
 			t.Fatal(err)
 		}
-		collection, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{Programs: ebpf.ProgramOptions{KernelTypes: kernel, LogLevel: ebpf.LogLevelStats, LogSizeStart: 1 << 20}})
+		// D3: the probed FMODE_BACKING bit, and no KernelTypes override: the
+		// classifier relocates struct ovl_file against the overlay module
+		// BTF, which the default relocation targets include.
+		backing, err := fmodeBackingReader(layout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v := spec.Variables["se_image_fmode_backing"]; v == nil || v.Set(backing) != nil {
+			t.Fatal("se_image_fmode_backing rodata constant required")
+		}
+		_ = kernel
+		collection, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{Programs: ebpf.ProgramOptions{LogLevel: ebpf.LogLevelStats, LogSizeStart: 1 << 20}})
 		if err != nil {
 			var verifier *ebpf.VerifierError
 			if errors.As(err, &verifier) {

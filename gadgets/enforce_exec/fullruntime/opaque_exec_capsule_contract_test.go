@@ -212,10 +212,20 @@ func TestOpaqueExecCapsuleTaskStorageSourcePins(t *testing.T) {
 		t.Error("identity-bound re-admission must require the original route's exact payload identity")
 	}
 	// The two capsule CREATE adapters, the birth park's put (G019 gap 1:
-	// the source's park on the forking task), and the staged verdict event
-	// of a clean proposal (G020 H2, the exec'ing task's own storage).
-	if n := strings.Count(src, "BPF_LOCAL_STORAGE_GET_F_CREATE"); n != 4 {
-		t.Errorf("BPF_LOCAL_STORAGE_GET_F_CREATE appears %d times, want exactly the two CREATE adapters, the birth park's put and the staged verdict event", n)
+	// the source's park on the forking task), the staged verdict event
+	// of a clean proposal (G020 H2, the exec'ing task's own storage), and
+	// the two kernel-witness marks (S1 review N1: the task_alloc child's
+	// fork mark, the exec mark reserved at bprm_creds_for_exec).
+	if n := strings.Count(src, "BPF_LOCAL_STORAGE_GET_F_CREATE"); n != 6 {
+		t.Errorf("BPF_LOCAL_STORAGE_GET_F_CREATE appears %d times, want exactly the two CREATE adapters, the birth park's put, the staged verdict event and the two witness marks", n)
+	}
+	for _, mark := range []string{
+		"bpf_task_storage_get(\n\t\t&d1_fork_marks, child, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);",
+		"bpf_task_storage_get(\n\t\t&d1_exec_marks, bpf_get_current_task_btf(), 0,\n\t\tBPF_LOCAL_STORAGE_GET_F_CREATE);",
+	} {
+		if strings.Count(src, squashSpace(mark)) != 1 {
+			t.Errorf("witness mark CREATE missing or duplicated: %s", mark)
+		}
 	}
 	if !strings.Contains(src, squashSpace("bpf_task_storage_get(&se_verdict_staging,\n\t\t\t\t     bpf_get_current_task_btf(), 0,\n\t\t\t\t     BPF_LOCAL_STORAGE_GET_F_CREATE);")) {
 		t.Error("the only verdict-staging CREATE is on the current task")

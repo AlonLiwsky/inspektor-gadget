@@ -120,10 +120,9 @@ tail_calls:
   - {map: opaque_real_continue_strict, index: 0, program: opaque_real_owner_continue_strict}
   - {map: opaque_real_continue_audit, index: 0, program: opaque_real_owner_continue_audit}
 programs:
-  # The exec failure-frame kprobes are attached (sharedCandidateProbeSet);
-  # their kernel symbols differ per kernel and are set per node with
-  # programs.<name>.attach_to (do_execveat_common.isra.N, and exec_binprm
-  # instead of search_binary_handler where the qualified loader uses it).
+  # D1 (LSM-only prototype): the exec frame is lsm/bprm_creds_for_exec ..
+  # tp_btf/sys_exit on every kernel (sharedCandidateProbeSet); no program
+  # takes a per-kernel attach_to symbol.
   # The protocol command (a syscall program in the product object, TC in
   # recovery twins): never exposed by the candidate.
   se_command:

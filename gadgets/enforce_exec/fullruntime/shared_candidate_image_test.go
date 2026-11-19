@@ -25,18 +25,17 @@ import (
 
 // TestBuildSharedCandidateImage: the image resolves under the normalized
 // reference to an index of one manifest for this GOARCH whose layers are the
-// packaged candidate metadata (geometry annotations, failure-frame targets)
-// and the object; a rebuild reuses the blobs; an entry outside the matrix,
-// without symbols or with an invalid profile is refused.
+// packaged candidate metadata (geometry annotations) and the object; a rebuild
+// reuses the blobs; an entry outside the matrix or with an invalid profile is
+// refused.
 func TestBuildSharedCandidateImage(t *testing.T) {
 	elf := sharedMinimalObject(t)
 	var release string
-	var pin sharedProductPin
 	for _, p := range sharedProductPins {
-		release, pin = p.Release, p
+		release = p.Release
 		break
 	}
-	kernel := KernelMatrixEntry{Release: release, OuterSymbol: pin.OuterSymbol, HandlerSymbol: pin.HandlerSymbol, Profile: sharedCandidateQualificationProfile()}
+	kernel := KernelMatrixEntry{Release: release, Profile: sharedCandidateQualificationProfile()}
 	store := memory.New()
 	ref, err := BuildSharedCandidateImage(t.Context(), store, elf, kernel)
 	if err != nil || ref != SharedCandidateImage {
@@ -94,10 +93,6 @@ func TestBuildSharedCandidateImage(t *testing.T) {
 	for _, check := range [][2]string{
 		{"annotations.enforce-exec-owner-abi", "3"},
 		{"annotations.enforce-exec-shared-profile", "1"},
-		{"programs.opaque_real_owner_failure_outer_enter.attach_to", kernel.OuterSymbol},
-		{"programs.opaque_real_owner_failure_outer_exit.attach_to", kernel.OuterSymbol},
-		{"programs.opaque_real_owner_failure_handler_enter.attach_to", kernel.HandlerSymbol},
-		{"programs.opaque_real_owner_failure_handler_exit.attach_to", kernel.HandlerSymbol},
 	} {
 		if got := config.GetString(check[0]); got != check[1] {
 			t.Fatalf("%s = %q, want %q", check[0], got, check[1])
@@ -127,30 +122,24 @@ func TestBuildSharedCandidateImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	t.Setenv("IG_ENFORCE_EXEC_PROBED_KERNEL", "")
 	for name, bad := range map[string]KernelMatrixEntry{
-		"outside the matrix": {Release: "6.1.0-generic", OuterSymbol: "a", HandlerSymbol: "b", Profile: kernel.Profile},
-		"no symbols":         {Release: release, Profile: kernel.Profile},
-		"invalid profile":    {Release: release, OuterSymbol: pin.OuterSymbol, HandlerSymbol: pin.HandlerSymbol},
-		"unpinned outer":     {Release: release, OuterSymbol: "do_execveat_common.isra.38", HandlerSymbol: pin.HandlerSymbol, Profile: kernel.Profile},
-		"unpinned handler":   {Release: release, OuterSymbol: pin.OuterSymbol, HandlerSymbol: "a", Profile: kernel.Profile},
+		"outside the matrix": {Release: "6.1.0-generic", Profile: kernel.Profile},
+		"invalid profile":    {Release: release},
 	} {
 		if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), elf, bad); err == nil {
 			t.Fatalf("%s: built", name)
 		}
 	}
-	// Every pin builds with its own symbols and refuses the other kernel's.
+	// Every pinned release builds and supports diagnostic overlays.
 	for _, own := range sharedProductPins {
-		for _, other := range sharedProductPins {
-			entry := KernelMatrixEntry{Release: own.Release, OuterSymbol: other.OuterSymbol, HandlerSymbol: other.HandlerSymbol, Profile: kernel.Profile}
-			_, err := BuildSharedCandidateImage(t.Context(), memory.New(), elf, entry)
-			if want := own.HandlerSymbol == other.HandlerSymbol && own.OuterSymbol == other.OuterSymbol; (err == nil) != want {
-				t.Fatalf("%s with %s/%s: %v", own.Release, other.OuterSymbol, other.HandlerSymbol, err)
-			}
-			// A diagnostic twin may select another handler source.
-			entry.Diagnostic = true
-			if err := entry.validate(); err != nil {
-				t.Fatalf("diagnostic %s with %s/%s: %v", own.Release, other.OuterSymbol, other.HandlerSymbol, err)
-			}
+		entry := KernelMatrixEntry{Release: own.Release, Profile: kernel.Profile}
+		if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), elf, entry); err != nil {
+			t.Fatalf("%s: %v", own.Release, err)
+		}
+		entry.Diagnostic = true
+		if err := entry.validate(); err != nil {
+			t.Fatalf("diagnostic %s: %v", own.Release, err)
 		}
 	}
 	if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), []byte("not an ELF"), kernel); err == nil || !strings.Contains(err.Error(), "candidate object") {

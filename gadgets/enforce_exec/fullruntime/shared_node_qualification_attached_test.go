@@ -6,7 +6,6 @@
 package fullruntime
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -59,21 +58,7 @@ func TestSharedNodeM2Attached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Bind the failure-frame kprobes to this kernel's symbols exactly as the
-	// qualified loader resolves them (IG_SHARED_M2_HANDLER_SYMBOL=exec_binprm
-	// where that loader uses IG_OPAQUE_REAL_LIVE_HANDLER_SYMBOL=exec_binprm).
-	kallsyms, err := os.ReadFile("/proc/kallsyms")
-	if err != nil {
-		t.Fatal(err)
-	}
-	outer, err := opaqueDiagnosticExecOuterSymbol(bytes.NewReader(kallsyms))
-	if err != nil {
-		t.Fatal(err)
-	}
-	handlerSymbol, err := opaqueDiagnosticExecHandlerSymbol(bytes.NewReader(kallsyms), os.Getenv("IG_SHARED_M2_HANDLER_SYMBOL"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// D1: no failure-frame symbols to bind.
 	// IG_SHARED_M2_PROFILE selects the object's q(task, work) geometry
 	// (64, 128 default, 256, 512) and IG_SHARED_M2_TOMBSTONES its tombstone
 	// table (unset: the legacy 32 x TASKS of qualification objects; product
@@ -120,7 +105,7 @@ func TestSharedNodeM2Attached(t *testing.T) {
 	}
 	store := memory.New()
 	image, err := BuildSharedCandidateImage(t.Context(), store, elf, KernelMatrixEntry{
-		Release: sharedCandidateKernelBTF[digest], OuterSymbol: outer, HandlerSymbol: handlerSymbol,
+		Release: sharedCandidateKernelBTF[digest],
 		Profile: profile, Diagnostic: os.Getenv("IG_SHARED_M2_DIAGNOSTIC") == "1",
 	})
 	if err != nil {
@@ -164,7 +149,7 @@ func TestSharedNodeM2Attached(t *testing.T) {
 		}
 	}()
 	receipts := node.host.live.receipts
-	if len(receipts) != 16 {
+	if len(receipts) != 11 { // S1: 6 BPF LSM links + 5 tracepoint links (+ the sched_process_fork witness, the two sys_exit programs merged into one)
 		t.Fatalf("receipts %d, want 8 trampoline + 8 probe links", len(receipts))
 	}
 	// The capsule's death retire (lsm/task_free) attaches before the capsule
@@ -270,5 +255,5 @@ func TestSharedNodeM2Attached(t *testing.T) {
 	if s := session.Inspect(); !errors.Is(s.Fault, ErrSharedNativeUnavailable) {
 		t.Fatalf("Inspect after stop: %+v", s)
 	}
-	t.Log("PASS: M2 StartNode 16 links (task_free, exit, task_alloc order; capsule free before terminal), product reaper, bind, live Inspect, Ready unavailable, full cleanup")
+	t.Log("PASS: M2 StartNode 11 links (S1) (task_free, exit, task_alloc order; capsule free before terminal), product reaper, bind, live Inspect, Ready unavailable, full cleanup")
 }

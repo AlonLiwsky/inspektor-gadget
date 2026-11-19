@@ -257,14 +257,80 @@ Ready was nil (G011 pass 2, run g011p2-20261115t160735-f9e2). Ready had
 already gone NotReady before that exec. Only this one exec was measured
 (uid 1000, Deny fallback); nothing else about enforcement with ftrace off is
 known, so treat a NotReady node as unprotected. This is an accepted, detected
-limitation: only root can change the sysctl. The image is bound to the build as well: its failure-frame
-`attach_to` targets must equal the pinned symbols and the loaded eBPF object's
+limitation: only root can change the sysctl. The image is bound to the build as well. **D1 (LSM-only prototype, this
+branch):** the image carries no failure-frame `attach_to` target; the exec
+frame is `lsm/bprm_creds_for_exec` .. `lsm/bprm_committed_creds` (success) or
+`tp_btf/sys_exit` (failure) on every kernel, an `attach_to` override on any
+probe is refused, and the failure-frame symbol columns of the table above
+are historical (the pins no longer hold them). The loaded eBPF object's
 sha256 (recorded by the eBPF operator for native owners,
-`operators.NativeProgramDigestKey`) must be one of the pinned product objects
-(`g19pkg64/128/256/512` of that kernel). Every other kernel or image is refused
-at agent start (`StartNode`, `SelectSharedProductImage`) with an error that
-wraps `ErrSharedNativeUnavailable` and names the reason. The pins live in
-`kernel_matrix.go` (`sharedProductPins`) and `testdata/shared_product_pins.tsv`.
+`operators.NativeProgramDigestKey`) must be one of the product objects
+QUALIFIED on that pin (`sharedProductPin.ProductObjects`, literal digests: the
+four stage-1 objects are qualified on both AL2023 pins by the S1 oracle; a
+rebuilt object is refused until it is qualified again). Every other kernel
+or image is refused at agent start (`StartNode`, `SelectSharedProductImage`)
+with an error that wraps `ErrSharedNativeUnavailable` and names the reason. The
+pins live in `kernel_matrix.go` (`sharedProductPins`) and
+`testdata/shared_product_pins.tsv`.
+
+**Kernel witness and startup canary (stage 1, `shared_kernel_witness.go`).**
+StartNode makes every attached program prove it runs (the canary forks, execs
+and exits; a silent program refuses the start), then requires the
+`ftrace_enabled` weak ksym to have resolved, then judges the `d1_witness`
+cells. Live, the node latches NotReady until restart when the syscall exit
+reads `kernel.ftrace_enabled == 0`, or when an exec or fork reaches its
+tracepoint (`sched_process_exec`, `sched_process_fork`) without the mark its
+LSM hook (`bprm_committed_creds`, `task_alloc`) leaves in the task's own BPF
+task storage. A mark dies with its task, so no number of io_uring workers or
+zombies can exhaust anything. **Start refusals and retry:** an exec or fork in
+flight while the links attach reaches its tracepoint unmarked; StartNode
+refuses with `ErrSharedKernelWitness` wrapping
+`ErrSharedKernelWitnessRetryable`, and the agent retries StartNode with
+backoff (a fresh load counts from zero; `StartNodeRetrying` bounds the
+attempts and doubles the wait up to a cap). A refusal with ftrace seen off, the
+ksym unresolved or a failed mark creation is not retryable for this boot.
+
+**Witness memory (DaemonSet sizing).** A mark lives in BPF task storage,
+allocated with `GFP_ATOMIC` from the BPF memory allocator and charged to the
+agent's memory cgroup. On 6.12 an element is `sizeof(struct
+bpf_local_storage_elem)` (128 bytes, cache-line aligned) plus the 16-byte mark,
+taken from the 192-byte size class; a task's first task-storage element also
+allocates its `struct bpf_local_storage` (about 176 bytes, 192-byte class),
+shared with the engine's other task-storage maps. So each live task that forked
+(its own fork mark) and exec'd (its exec mark) since the agent loaded holds at
+most 2 x 192 + 192 = 576 bytes, freed with the task: about 58 MB per 100,000
+live tasks in the worst case. Size the node-agent DaemonSet memory limit with
+headroom for `576 B * max_live_tasks` above the agent's baseline (for example,
+about 58 MiB for 100,000 live tasks). A creation that fails (memory limit) is
+counted in cell [10] and latches the node NotReady (`ErrSharedKernelWitness`);
+it refuses with `-ENOMEM` only when the task is in a Strict-bound cgroup, so
+Audit, unbound, and host tasks are never blocked.
+
+**One syscall-exit program.** `real_owner_capsule_terminal`
+(`tp_btf/sys_exit`) carries the ftrace witness and, for exec syscalls only
+(x86_64, ia32 and x32 `execve`/`execveat`), the failure terminal and the
+capsule terminal (there were two `sys_exit` programs). Every syscall of every
+task on the node still pays for the syscall-tracepoint slow path that any
+`sys_exit` program enables.
+
+**One CO-RE object per profile (universal-kernel spike, direction D3; not
+qualified).** The product objects are no longer built per kernel: the
+per-kernel builds had identical instructions after CO-RE relocation and
+differed only in unrelocated placeholders and in the BTF/DWARF copied from
+each kernel's `vmlinux.h`. `sharedProductObjects` (`kernel_matrix.go`,
+`testdata/shared_product_objects.tsv`) pins four sha256 per release
+(`g19pkg64/128/256/512`), for every kernel. The overlay `private_data`
+layout is derived from the overlay BTF shape and relocated by the object
+(`struct ovl_file___se_image`), and `FMODE_BACKING`, a preprocessor constant
+that BTF does not carry and that changed inside the 6.12 stable series, is
+probed live (`kernel_probe.go`). Kernel admission is unchanged in a default
+build: only the exact pinned builds. A qualification build can admit another
+kernel on its probes with the test-only `IG_ENFORCE_EXEC_PROBED_KERNEL=1`
+(`kernel_probe_override_tag.go`); it still refuses a kernel without the bpf
+LSM, with ftrace off, or livepatched. Stage 1 combines this with D1 (the
+objects are built with `ENFORCE_EXEC_D1_LSM_ONLY`): there are no
+failure-frame symbols to resolve, and D1's own test override is folded into
+this one.
 
 After ftrace has been disabled, even briefly, the node can stay Degraded until
 the agent restarts. While ftrace was off the `lsm/task_free` trampolines did
@@ -281,10 +347,11 @@ always happen: it needs an address freed in the window to be reused before
 the node stops (in about a quarter of the G035 QEMU runs).
 
 **Rebuilding the pinned objects.** `bpf/build-product.sh`
-rebuilds the eight product objects (`g19pkg64/128/256/512` for each kernel)
-with the exact flag set of the qualification build (at neutral paths, see
+rebuilds the four product objects (`g19pkg64/128/256/512`; stage 1: one
+CO-RE object per profile for every kernel) with the exact flag set of the
+qualification build plus `ENFORCE_EXEC_D1_LSM_ONLY` (at neutral paths, see
 below), and `--check` compares
-each sha256 with `testdata/shared_product_pins.tsv`. Build it in the pinned
+each sha256 with `testdata/shared_product_objects.tsv`. Build it in the pinned
 Debian trixie container: the CI job `test-enforce-exec-product-objects`
 does, and `make enforce-exec-product-objects` runs the same image and
 scripts with docker. `bpf/install-product-toolchain.sh` installs every
@@ -302,16 +369,18 @@ on them). The script therefore always compiles at fixed real directories it
 creates in the container, `/src/inspektor-gadget` (a copy of the BPF sources)
 and `/src/btf/<kernel>`, never at the checkout path, and refuses an object
 that embeds `/home/`, `/root/` or the checkout path. The objects are
-byte-identical from any checkout path (measured: two checkouts at different
-paths built the same eight sha256). Prefix maps are not used: a measured
-`-fdebug-prefix-map` build changed the FWD order of the 6.12 objects.
+byte-identical from any checkout path (measured for stage 1: the pinned
+toolchain image and the CI image with `install-product-toolchain.sh`, at two
+checkout paths, built the same four sha256). Prefix maps are not used: a
+measured `-fdebug-prefix-map` build changed the FWD order of the 6.12 objects.
 
-> **Not yet requalified.** The pins in `kernel_matrix.go` and
-> `testdata/shared_product_pins.tsv` are the neutral-path rebuild. They
-> replace the G011-qualified objects (whose debug info embedded a build-host
-> home path); the kernels, BTF, build-ids and failure-frame symbols are
-> unchanged. The G011 evidence below was produced with the previous objects;
-> requalification of the new objects on both AL2023 AMIs is pending (G035).
+> **Qualification (stage 1).** The four objects in
+> `testdata/shared_product_objects.tsv` are QUALIFIED on both AL2023 pins
+> (`sharedProductPin.ProductObjects`, the last column of
+> `testdata/shared_product_pins.tsv`): the stage-1 oracle (D3 34 steps and
+> D1 18 tests, Strict and Audit) and the product StartNode attached test ran
+> on both pinned kernels with these exact objects, 0 FAIL and 0 SKIP. The
+> G011 evidence below was produced with the earlier per-kernel objects.
 
 ### Product images
 
@@ -319,8 +388,9 @@ Each pinned object is packaged into one product gadget image, built in the
 default build by `BuildSharedProductImage` (`shared_product_oci.go`): an
 index holding exactly one `linux/amd64` manifest, whose config is the merged
 product metadata (`candidate/gadget.yaml`, the packaged attach declaration,
-the geometry annotations, the pinned failure-frame symbols and the event
-ABI) and whose one layer is the object. Nothing time- or host-dependent is
+the geometry annotations and the event ABI; stage 1 has no failure-frame
+attach target, so a profile's image is the same on both kernels) and whose
+one layer is the object. Nothing time- or host-dependent is
 written (no annotations, no timestamps, the platform is fixed), so the
 digests are a function of the object and this source. The images are
 **never pushed to a registry**: the node-agent image build rebuilds them from
@@ -328,14 +398,14 @@ source into its `tracers.tar` and must reproduce the pinned digests.
 
 | Kernel | Profile | Image (local reference) | Manifest digest | Index digest |
 |---|---|---|---|---|
-| `6.12.113-138.209` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.12.113-138.209` | `sha256:382485d6e53d414cd00e7ebf94d92c8556c7c18cb320cabc8e8d1fc66e829e3a` | `sha256:2421e2a74346c11d33b2c94624d6e9d9addcc08f4fd60a5d028763148817500d` |
-| `6.12.113-138.209` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.12.113-138.209` | `sha256:aeb6eaaa67ecb4b9e463c757dd9b6d4025d394b941852ffdba2ab4bd2f5112af` | `sha256:cf1eb6ebf6ddd700fae2ff11e894e2480e5705dd394be72448d0ed644d954230` |
-| `6.12.113-138.209` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.12.113-138.209` | `sha256:0f44808a63b3119e12c2a40b4c462bb96284bd3663e071d4f16a0fc0caedca18` | `sha256:cc6674c4968a10f54daa72763b72112b1acf6db6efbf6b0277f1e51e7543c495` |
-| `6.12.113-138.209` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.12.113-138.209` | `sha256:dee10b290dc2b2346837001da9ad0063635b4a23a66e3bc46f4ecaf531fd2158` | `sha256:24125ffa6ca766bb5cb2e09633c247406977597bf48b4eca48e18e069d3090f4` |
-| `6.18.56-125.164` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.18.56-125.164` | `sha256:f2c10f364a62874289c354885ad0e4f27631cdfd668261eed96fef502ff95245` | `sha256:3f19b0342a6a522ce25485465981ad7b8d9537ee4c98bf54608be680550a32b7` |
-| `6.18.56-125.164` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.18.56-125.164` | `sha256:516b5669e73790bc1e59ec56f381a0b29ec06d164874aa66384a161c685b6e53` | `sha256:b4f0fa89a64caa1636382941378be664682a2500f51621f207d48e1ed5aab6d0` |
-| `6.18.56-125.164` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.18.56-125.164` | `sha256:1f17c47573eeb9dc1391a9cb5017fefa30d99da2f3ad736c8f79990554c1cdf7` | `sha256:992e3d09a9d3be5ca26900db07e5ccfceca422498d058c05f977621ce1f94846` |
-| `6.18.56-125.164` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.18.56-125.164` | `sha256:df89f93074d8ebfac1b18536319ebaca5da07f0010a8e5fd711ccc1e0ca8586a` | `sha256:2fe300f78856753d198f9f87e97bd6189db83f0a5e0ecd74c3b0e709e24375ef` |
+| `6.12.113-138.209` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.12.113-138.209` | `sha256:394725f46a06fc712548eb8d06b077aef07362c47ccafddf63113ff63d6d744e` | `sha256:d479e1640f224cd290a60bd7d962047feae0ab138b6331764c21ac154c3ede11` |
+| `6.12.113-138.209` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.12.113-138.209` | `sha256:91ddb1816a7330af366dc580c673480a82f331bf717e895853317d69838117b3` | `sha256:d787b9305048d3dac04401ba08c0ed94d16696aaa2d02996b68b342ae99b7c06` |
+| `6.12.113-138.209` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.12.113-138.209` | `sha256:b2980cc0976550dbea549bd91a683c305254acb38acf5405dc65ad0cae005909` | `sha256:792501332082798ce6f5c8306edf8806513449d665a542e88f4ff7e3292b2116` |
+| `6.12.113-138.209` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.12.113-138.209` | `sha256:313883bc686923022d1e619aad725b8a2f86ea10400eb38d54c87894da639dbc` | `sha256:b442a32a3c4b85d6bac82d0dbaec30693af44a3007dcea4e539b0d3ff6e33f0a` |
+| `6.18.56-125.164` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.18.56-125.164` | `sha256:394725f46a06fc712548eb8d06b077aef07362c47ccafddf63113ff63d6d744e` | `sha256:d479e1640f224cd290a60bd7d962047feae0ab138b6331764c21ac154c3ede11` |
+| `6.18.56-125.164` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.18.56-125.164` | `sha256:91ddb1816a7330af366dc580c673480a82f331bf717e895853317d69838117b3` | `sha256:d787b9305048d3dac04401ba08c0ed94d16696aaa2d02996b68b342ae99b7c06` |
+| `6.18.56-125.164` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.18.56-125.164` | `sha256:b2980cc0976550dbea549bd91a683c305254acb38acf5405dc65ad0cae005909` | `sha256:792501332082798ce6f5c8306edf8806513449d665a542e88f4ff7e3292b2116` |
+| `6.18.56-125.164` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.18.56-125.164` | `sha256:313883bc686923022d1e619aad725b8a2f86ea10400eb38d54c87894da639dbc` | `sha256:b442a32a3c4b85d6bac82d0dbaec30693af44a3007dcea4e539b0d3ff6e33f0a` |
 
 - **Pins.** `testdata/shared_product_images.tsv` (release, profile, image,
   object sha256, manifest and index digest) mirrors `sharedProductImagePins`
@@ -418,8 +488,8 @@ detected, not guarded (see the measurement above).
 CO-RE relocates field offsets but cannot verify:
 
 - hook semantics and ordering across the exec paths;
-- the kprobe failure-frame symbols (`do_execveat_common.isra.N`, the handler);
-- verifier acceptance of the 16-link, spin-lock object;
+- verifier acceptance of the spin-lock object on each kernel's verifier (the
+  combined-stack limit is counted differently across releases);
 - exec-path behaviour changed by AL2023 backports under the same version
   string.
 
@@ -1094,11 +1164,13 @@ User-approved G025 capacity thresholds:
     `Inspect`) for 60 s after it is observed (the fail-closed witness's
     Degraded window, `FailClosedRateDegradedWindow`), then it clears. It is
     never benign in steady state: the attach order leaves no window where a
-    capsule exists without its terminal, the final reading is taken before
-    detach, and every exec returns through `bprm_execve`'s fexit, so a
-    retire means the terminal program did not run (a trampoline recursion
-    miss). It is not sticky: the retire released the pin (a failed release
-    is a sticky release fault) and the exec's admission was evaluated.
+    capsule exists without its terminal, and the final reading is taken before
+    detach. In D1, `tp_btf/sys_exit` can be skipped by the tracing recursion
+    guard, so a death retire is an expected recovery path when `sys_exit` was
+    skipped (the health poller exports `SysExitRecursionMisses` from
+    `ProgramStats.RecursionMisses`). It is not sticky: the retire released the
+    pin (a failed release is a sticky release fault) and the exec's admission
+    was evaluated.
   - Uncovered exec (security review M2): when begin-time coverage is lost
     (the exec did not matter at begin, or the tracing helper's trylock made
     the create miss), the first selected admission freezes uncovered and

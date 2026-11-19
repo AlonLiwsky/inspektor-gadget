@@ -88,7 +88,7 @@ func TestPushSharedImageDeterministic(t *testing.T) {
 
 // TestSharedProductImagePinsMatchTestdata: SharedProductImagePins equals
 // testdata/shared_product_images.tsv line by line, every image's object is
-// a pinned product object of its kernel, every kernel has every profile
+// the qualified product object of its profile on its kernel, every kernel has every profile
 // once, and each compiled-in profile is valid.
 func TestSharedProductImagePinsMatchTestdata(t *testing.T) {
 	f, err := os.Open("testdata/shared_product_images.tsv")
@@ -120,8 +120,10 @@ func TestSharedProductImagePinsMatchTestdata(t *testing.T) {
 		if !ok || pin.Release != kernel.Release {
 			t.Fatalf("pin %d: BTF %s not a product kernel", i, pin.BTF)
 		}
-		if _, ok := kernel.ProductELF[pin.ObjectSHA256]; !ok {
-			t.Errorf("pin %d: object %s is not a pinned %s object", i, pin.ObjectSHA256, kernel.Release)
+		// Stage 1: the image's object is the qualified product object of
+		// its profile on this kernel.
+		if !kernel.qualifiesProductObject(pin.ObjectSHA256) || pin.ObjectSHA256 != sharedProductObjects[pin.Profile] {
+			t.Errorf("pin %d: object %s is not the qualified %s object of %s", i, pin.ObjectSHA256, pin.Profile, kernel.Release)
 		}
 		if want := sharedProductProfiles[i%len(sharedProductProfiles)].Name; pin.Profile != want {
 			t.Errorf("pin %d: profile %s, want %s (pin order)", i, pin.Profile, want)
@@ -138,9 +140,9 @@ func TestSharedProductImagePinsMatchTestdata(t *testing.T) {
 			t.Errorf("pin %d: digests %s %s", i, pin.ManifestDigest, pin.IndexDigest)
 		}
 	}
-	// Every pinned product object has an image.
+	// Every qualified product object has an image on its kernel.
 	for btf, kernel := range sharedProductPins {
-		for object := range kernel.ProductELF {
+		for object := range kernel.ProductObjects {
 			found := false
 			for _, pin := range pins {
 				found = found || pin.BTF == btf && pin.ObjectSHA256 == object

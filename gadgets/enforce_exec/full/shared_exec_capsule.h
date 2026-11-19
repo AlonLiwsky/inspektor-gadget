@@ -34,6 +34,48 @@
  *  previous capsule, and the nonwrapping sequence binds retire and the route
  *  pin to one exec.
  *
+ * D1 (LSM-only prototype, ENFORCE_EXEC_D1_LSM_ONLY) hooks and correctness
+ * argument. It REPLACES the "HARD loader invariant", "Kernel serialization
+ * premise" and "Coverage premise" paragraphs below, which describe the
+ * fentry/fexit attachment and are kept for the non-D1 build only.
+ *  - Entry and begin are ONE program, lsm/bprm_creds_for_exec, which calls
+ *    se_cap_on_entry then se_cap_on_begin. The kernel calls that hook once
+ *    per bprm_execve, in the executing task, before the first
+ *    security_bprm_check pass. The entry marker is therefore always taken by
+ *    the begin of the same call: every begin of an exec that matters is
+ *    "covered". Nothing depends on two programs sharing a trampoline image.
+ *  - An LSM program is not subject to the tracing recursion guard, so the
+ *    begin of an exec is never skipped while the hook runs at all. (If BPF
+ *    LSM stops running altogether, e.g. ftrace disabled, admission stops
+ *    too: that is the node's kernel witness's business, not the capsule's.)
+ *  - The terminal is tp_btf/sys_exit of the executing task: a task runs no
+ *    other system call between its bprm_creds_for_exec and the return of
+ *    that execve, so the first syscall exit after a begin is that exec's.
+ *    It retires only an OPEN or FROZEN capsule whose task is the current
+ *    one, with the capsule's own bprm (se_cap_mine holds by construction).
+ *  - The terminal CAN be missed: a tracing program skipped by the recursion
+ *    guard, a task without the syscall-tracepoint work flag, a failed
+ *    kernel_execve (no syscall exit). Correctness never needed it: by the
+ *    "Per-task terminal proof" below a task runs one exec at a time, so a
+ *    capsule found non-FREE at this task's next begin is a FINISHED exec and
+ *    is retired there (every begin retires first), and a task that dies
+ *    with one is retired at lsm/task_free. A missed terminal costs only the
+ *    original-route pin held until then (publication of that route waits).
+ *  - Exclusivity is per task (task-storage adapter): another thread never
+ *    reaches this capsule, so cred_guard_mutex is not needed for it. The
+ *    terminal now runs AFTER that mutex is released (it ran before, inside
+ *    bprm_execve): another thread of the group may begin its own exec
+ *    first, with its own capsule; nothing is shared.
+ *  - Loader order (nativeattach.Rank): lsm/task_free death retire, then the
+ *    two tp_btf/sys_exit terminals and the lsm/bprm_committed_creds success
+ *    terminal, then lsm/bprm_creds_for_exec, then lsm/bprm_check_security;
+ *    detach in exact reverse. With a begin attached before its terminal,
+ *    capsules would only wait for the next begin or task_free, as above.
+ *  - Address reuse: a reused bprm address is harmless because every begin
+ *    retires the previous capsule before opening; a reused task_struct
+ *    address starts with no storage (the kernel frees task storage with the
+ *    task). Both as before.
+ *
  * HARD loader invariant (part of the coverage proof, not a suggestion):
  * (task-storage adapter: first the lsm/task_free death retire, then)
  * attach fexit/bprm_execve, then fentry/bprm_execve, then

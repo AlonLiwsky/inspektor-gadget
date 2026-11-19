@@ -229,15 +229,15 @@ var (
 		"opaque_real_owner_child_final_free_candidate": "bpf_lsm_task_free",
 		"opaque_real_owner_child_source_candidate":     "bpf_lsm_task_alloc",
 		"real_owner_capsule_free":                      "bpf_lsm_task_free",
-		"opaque_real_owner_failure_fexit_probe":        "bprm_execve",
-		"real_owner_capsule_terminal":                  "bprm_execve",
-		"real_owner_capsule_entry":                     "bprm_execve",
-		"real_owner_capsule_begin":                     "security_bprm_creds_for_exec",
-		"opaque_real_owner_reader_begin_probe":         "bpf_lsm_bprm_check_security",
+		// D1 (LSM-only prototype): no fentry/fexit link.
+		"real_owner_capsule_begin":               "bpf_lsm_bprm_creds_for_exec",
+		"opaque_real_owner_reader_success_probe": "bpf_lsm_bprm_committed_creds",
+		"opaque_real_owner_reader_begin_probe":   "bpf_lsm_bprm_check_security",
 	}
 	candidateAttachPerHook = map[string]int{
-		"bpf_lsm_task_free": 2, "bpf_lsm_task_alloc": 1, "bprm_execve": 3,
-		"security_bprm_creds_for_exec": 1, "bpf_lsm_bprm_check_security": 1,
+		"bpf_lsm_task_free": 2, "bpf_lsm_task_alloc": 1,
+		"bpf_lsm_bprm_creds_for_exec": 1, "bpf_lsm_bprm_check_security": 1,
+		"bpf_lsm_bprm_committed_creds": 1,
 	}
 )
 

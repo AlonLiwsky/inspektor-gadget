@@ -406,9 +406,9 @@ func TestSharedNodeVerdictEventsAttached(t *testing.T) {
 	// Strict allow (mode 2: the Strict default allow), Audit allow. Three
 	// processes' first execs: each task's exec sequence starts at 1, their
 	// task_cookie differ: (task_cookie, exec_id) is node-unique.
-	first := expect("allow", "A", "/usr/bin/true", 0, want{path: "/usr/bin/true", mode: 2})[0]
-	second := expect("allow again", "A", "/usr/bin/true", 0, want{path: "/usr/bin/true", mode: 2})[0]
-	other := expect("allow", "B", "/usr/bin/true", 0, want{path: "/usr/bin/true", mode: 1})[0]
+	first := expect("allow", "A", sharedTruePath, 0, want{path: sharedTruePath, mode: 2})[0]
+	second := expect("allow again", "A", sharedTruePath, 0, want{path: sharedTruePath, mode: 2})[0]
+	other := expect("allow", "B", sharedTruePath, 0, want{path: sharedTruePath, mode: 1})[0]
 	if first.hostPID == second.hostPID || first.taskCookie == second.taskCookie || first.taskCookie == other.taskCookie || second.taskCookie == other.taskCookie {
 		t.Fatalf("first execs of three processes share a task_cookie: %+v %+v %+v", first, second, other)
 	}

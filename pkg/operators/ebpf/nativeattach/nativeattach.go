@@ -118,6 +118,19 @@ func Rank(p *ebpf.ProgramSpec) int {
 	if p.Type == ebpf.Tracing && p.AttachType == ebpf.AttachTraceRawTp && p.AttachTo == "sched_process_exit" {
 		return rankTaskExit
 	}
+	// D1 (LSM-only prototype): the exec frame's terminals are tp_btf/sys_exit
+	// programs; they are the exit path of the bprm_creds_for_exec begin and
+	// of every bprm_check decision, so they attach before both.
+	if p.Type == ebpf.Tracing && p.AttachType == ebpf.AttachTraceRawTp && p.AttachTo == "sys_exit" {
+		return rankExecExit
+	}
+	// D1 kernel witness: the tracepoint half of an LSM/tracepoint pair
+	// attaches AFTER its LSM half (bpf_lsm_bprm_committed_creds is
+	// rankExecExit; bpf_lsm_task_alloc precedes sched_process_fork, which is
+	// rankMovement), and is detached before it.
+	if p.Type == ebpf.Tracing && p.AttachType == ebpf.AttachTraceRawTp && p.AttachTo == "sched_process_exec" {
+		return rankExecEntry
+	}
 	switch TrampolineTarget(p) {
 	case "bpf_lsm_task_free":
 		return rankTaskFree
@@ -128,6 +141,9 @@ func Rank(p *ebpf.ProgramSpec) int {
 			return rankExecExit
 		}
 		return rankExecEntry
+	case "bpf_lsm_bprm_committed_creds":
+		// D1: the success terminal is an exit path of the exec frame too.
+		return rankExecExit
 	case "security_bprm_creds_for_exec", "bpf_lsm_bprm_creds_for_exec":
 		return rankCredsForExec
 	case "bpf_lsm_bprm_check_security":
