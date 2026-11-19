@@ -19,13 +19,21 @@ by this guard and are counted. No timeout releases the fence.
    protection for that exact pod and committed generation. The caller
    serializes engine publication/withdrawal with this handover. A snapshot
    of the live incarnation alone does not attest product protection.
-4. Arm and verify the fence **before** withdrawing any product route, not
-   just before closing its links. The product hook must attach after the
-   fence hook so that it evaluates first on the supported kernels. Close
-   agent descriptors after teardown; close is not an uninstall.
+4. On agent teardown, Arm and verify the fence **before** withdrawing any
+   product route, not just before closing its links. The product hook must
+   attach after the fence hook so that it evaluates first on the supported
+   kernels. Close agent descriptors after teardown; close is not an uninstall.
 5. Report cumulative per-pod outage counters and ring-buffer loss; reading
    them does not clear counters. Remove an exec-only row only after proving
    the pod cgroup ceased to exist. A stale container is not that proof.
+
+This v1 component does not support ordinary live binding withdrawal.
+`Arm` ends the global live incarnation and is reserved for agent teardown;
+it is not a per-binding operation, and the same process cannot register
+again to undo it. Do not withdraw live product routes without first fencing
+them. Live reconciliation requires the F2/v2 exact-child refence and
+authoritative withdrawal implementation, not an extension or bypass of
+the v1 API. This component alone does not qualify that integration.
 
 The pinned exit hook arms on the authenticated process's last thread
 (`signal->live == 0`), ahead of descriptor release. The LSM hook also

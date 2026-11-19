@@ -8,6 +8,11 @@
 #define EPERM 1L
 #define FENCE_RETIRED (~(__u64)0)
 #define FENCE_READ(x) (*(volatile typeof(x) *)&(x))
+/* Each helper call respects Linux's BPF_MAX_LOOPS. Together the chunks
+ * cover every nonnegative signed-int cgroup level, not a policy depth cap.
+ */
+#define FENCE_LEVELS_PER_CHUNK (1U << 23)
+#define FENCE_LEVEL_CHUNKS (1U << 8)
 
 /* live == 0 is always fenced, including an unassigned binding (owner == 0). */
 struct {
@@ -60,7 +65,8 @@ struct {
 
 static __always_inline bool read_start(struct task_struct *task, __u64 *start)
 {
-	return !BPF_CORE_READ_INTO(start, task, group_leader, start_boottime) && *start;
+	return !BPF_CORE_READ_INTO(start, task, group_leader, start_boottime) &&
+	       *start;
 }
 
 static __always_inline void arm_owner(struct task_struct *task, bool exiting)
@@ -85,7 +91,8 @@ static __always_inline void arm_owner(struct task_struct *task, bool exiting)
 	if (tgid != owner->tgid)
 		return;
 	int task_tgid;
-	if (!BPF_CORE_READ_INTO(&task_tgid, task, tgid) && (__u32)task_tgid != owner->tgid)
+	if (!BPF_CORE_READ_INTO(&task_tgid, task, tgid) &&
+	    (__u32)task_tgid != owner->tgid)
 		return;
 
 	__u64 start = 0;
@@ -96,7 +103,9 @@ static __always_inline void arm_owner(struct task_struct *task, bool exiting)
 	 * authenticated TGID is treated conservatively, not as proof it is live.
 	 */
 	int remaining;
-	if (exiting && !BPF_CORE_READ_INTO(&remaining, task, signal, live.counter) && remaining > 0)
+	if (exiting &&
+	    !BPF_CORE_READ_INTO(&remaining, task, signal, live.counter) &&
+	    remaining > 0)
 		return;
 
 	/* A delayed callback from a previous owner must not clear its successor. */
@@ -122,7 +131,8 @@ int BPF_PROG(fence_selfexec, struct task_struct *task)
 SEC("tp_btf/sys_enter")
 int BPF_PROG(fence_reg, struct pt_regs *regs, long syscall)
 {
-	if (syscall != FENCE_NR_PRCTL || PT_REGS_PARM1_CORE(regs) != FENCE_PRCTL)
+	if (syscall != FENCE_NR_PRCTL ||
+	    PT_REGS_PARM1_CORE(regs) != FENCE_PRCTL)
 		return 0;
 
 #ifndef FENCE_TEST_NO_NONCE
@@ -135,12 +145,14 @@ int BPF_PROG(fence_reg, struct pt_regs *regs, long syscall)
 #else
 	__u64 incarnation = PT_REGS_PARM4_CORE(regs);
 #endif
-	if (!incarnation || incarnation == FENCE_RETIRED || PT_REGS_PARM5_CORE(regs))
+	if (!incarnation || incarnation == FENCE_RETIRED ||
+	    PT_REGS_PARM5_CORE(regs))
 		return 0;
 
 	__u32 zero = 0;
 	__u64 *live = bpf_map_lookup_elem(&fence_state, &zero);
-	struct fence_challenge *challenge = bpf_map_lookup_elem(&fence_nonce, &zero);
+	struct fence_challenge *challenge =
+		bpf_map_lookup_elem(&fence_nonce, &zero);
 	if (!live || !challenge || FENCE_READ(*live))
 		return 0;
 
@@ -154,17 +166,21 @@ int BPF_PROG(fence_reg, struct pt_regs *regs, long syscall)
 		.incarnation = incarnation,
 		.tgid = bpf_get_current_pid_tgid() >> 32,
 	};
-	if (!next.tgid || !read_start(bpf_get_current_task_btf(), &next.start_boottime))
+	if (!next.tgid ||
+	    !read_start(bpf_get_current_task_btf(), &next.start_boottime))
 		return 0;
 
-	struct fence_identity *previous = bpf_map_lookup_elem(&fence_owner, &zero);
+	struct fence_identity *previous =
+		bpf_map_lookup_elem(&fence_owner, &zero);
 	if (previous && (incarnation <= previous->incarnation ||
-	    (next.tgid == previous->tgid && next.start_boottime == previous->start_boottime)))
+			 (next.tgid == previous->tgid &&
+			  next.start_boottime == previous->start_boottime)))
 		return 0;
 
 #ifndef FENCE_TEST_NO_NONCE
 	/* Only one invocation may consume this challenge and publish an owner. */
-	if (__sync_val_compare_and_swap(&challenge->incarnation, incarnation, 0) != incarnation)
+	if (__sync_val_compare_and_swap(&challenge->incarnation, incarnation,
+					0) != incarnation)
 		return 0;
 #endif
 	challenge->lo = 0;
@@ -213,8 +229,61 @@ static __always_inline void account(__u64 cgid, __u64 pod_uid_hash, __u32 mode)
 		.tgid = bpf_get_current_pid_tgid() >> 32,
 		.mode = mode,
 	};
-	if (bpf_ringbuf_output(&fence_events, &event, sizeof(event), 0) && totals)
+	if (bpf_ringbuf_output(&fence_events, &event, sizeof(event), 0) &&
+	    totals)
 		__sync_fetch_and_add(&totals->lost, 1);
+}
+
+struct binding_walk {
+	struct fence_binding *binding;
+	__u64 leaf;
+	__u64 cgid;
+	__u32 first_level;
+	__u8 complete;
+	__u8 fault;
+};
+
+static long walk_bindings(__u32 offset, void *data)
+{
+	struct binding_walk *walk = data;
+	if (offset >= FENCE_LEVELS_PER_CHUNK ||
+	    walk->first_level > 0x7f800000U) {
+		walk->fault = true;
+		return 1;
+	}
+	__u32 level = walk->first_level + offset;
+	__u64 id = bpf_get_current_ancestor_cgroup_id(level);
+	if (!id) {
+		walk->fault = true;
+		return 1;
+	}
+	struct fence_binding *candidate =
+		bpf_map_lookup_elem(&fence_cgroups, &id);
+	if (candidate &&
+	    ((candidate->strict_sections | candidate->audit_sections) &
+	     FENCE_SECTION_EXEC)) {
+		walk->binding = candidate;
+		walk->cgid = id;
+	}
+	if (id == walk->leaf) {
+		walk->complete = true;
+		return 1;
+	}
+	return 0;
+}
+
+static long walk_binding_chunks(__u32 chunk, void *data)
+{
+	struct binding_walk *walk = data;
+	if (chunk >= FENCE_LEVEL_CHUNKS) {
+		walk->fault = true;
+		return 1;
+	}
+	walk->first_level = chunk * FENCE_LEVELS_PER_CHUNK;
+	long result = bpf_loop(FENCE_LEVELS_PER_CHUNK, walk_bindings, data, 0);
+	if (result <= 0 || result > FENCE_LEVELS_PER_CHUNK)
+		walk->fault = true;
+	return walk->complete || walk->fault;
 }
 
 SEC("lsm/bprm_check_security")
@@ -244,26 +313,14 @@ long BPF_PROG(fence_exec, struct linux_binprm *bprm, int prior)
 	/* The helper's level is absolute (root is level 0). Keep the nearest
 	 * binding, but don't mistake a partial ancestor walk for no binding.
 	 */
-	struct fence_binding *binding = 0;
-	__u64 cgid = 0;
-	bool complete = false;
-#pragma clang loop unroll(disable)
-	for (int level = 0; level <= FENCE_MAX_LEVEL; level++) {
-		__u64 id = bpf_get_current_ancestor_cgroup_id(level);
-		if (!id)
-			break;
-		struct fence_binding *candidate = bpf_map_lookup_elem(&fence_cgroups, &id);
-		if (candidate && ((candidate->strict_sections | candidate->audit_sections) & FENCE_SECTION_EXEC)) {
-			binding = candidate;
-			cgid = id;
-		}
-		if (id == leaf) {
-			complete = true;
-			break;
-		}
-	}
-	if (!complete)
+	struct binding_walk walk = { .leaf = leaf };
+	long walked =
+		bpf_loop(FENCE_LEVEL_CHUNKS, walk_binding_chunks, &walk, 0);
+	if (walked <= 0 || walked > FENCE_LEVEL_CHUNKS || walk.fault ||
+	    !walk.complete)
 		return lookup_fault();
+	struct fence_binding *binding = walk.binding;
+	__u64 cgid = walk.cgid;
 	if (!binding)
 		return 0;
 	bool strict = (binding->strict_sections & FENCE_SECTION_EXEC) != 0;

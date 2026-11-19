@@ -7,8 +7,6 @@
 #define FENCE_AUDIT 2
 #define FENCE_SECTION_EXEC (1U << 0)
 #define FENCE_MAX_PODS 4096
-/* Refuse when the hierarchy cannot be searched completely. */
-#define FENCE_MAX_LEVEL 64
 
 struct fence_identity {
 	__u64 incarnation;

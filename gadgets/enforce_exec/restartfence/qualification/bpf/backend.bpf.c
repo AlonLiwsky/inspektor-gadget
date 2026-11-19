@@ -26,7 +26,8 @@ long BPF_PROG(backend_check, struct linux_binprm *bprm, int ret)
 	if (prior_ret)
 		return prior_ret;
 	__u64 cgroup = bpf_get_current_cgroup_id();
-	struct backend_binding *binding = bpf_map_lookup_elem(&backend_bind, &cgroup);
+	struct backend_binding *binding =
+		bpf_map_lookup_elem(&backend_bind, &cgroup);
 	if (!binding || binding->mode == 1)
 		return 0;
 	if (binding->mode != 2)

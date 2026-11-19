@@ -46,8 +46,8 @@ static int attempt(const char *path, const char *target, unsigned long batch,
 	}
 	if (!child) {
 		close(pipefd[0]);
-		char *const argv[] = {(char *)path, "marker", NULL};
-		char *const envp[] = {NULL};
+		char *const argv[] = { (char *)path, "marker", NULL };
+		char *const envp[] = { NULL };
 		execve(path, argv, envp);
 		int error = errno;
 		ssize_t n;
@@ -61,7 +61,8 @@ static int attempt(const char *path, const char *target, unsigned long batch,
 	size_t used = 0;
 	int bad = 0;
 	for (;;) {
-		ssize_t n = read(pipefd[0], (char *)&error + used, sizeof(error) - used);
+		ssize_t n = read(pipefd[0], (char *)&error + used,
+				 sizeof(error) - used);
 		if (n < 0 && errno == EINTR)
 			continue;
 		if (n < 0) {
@@ -111,7 +112,8 @@ int main(int argc, char **argv)
 	if (argc == 2 && !strcmp(argv[1], "marker"))
 		return 0;
 	if (argc != 4 || strcmp(argv[1], "serve")) {
-		fprintf(stderr, "usage: exec-probe serve DENIED_PATH ALLOWED_PATH\n");
+		fprintf(stderr,
+			"usage: exec-probe serve DENIED_PATH ALLOWED_PATH\n");
 		return 2;
 	}
 	printf("{\"ready_pid\":%ld}\n", (long)getpid());
@@ -123,7 +125,8 @@ int main(int argc, char **argv)
 		char extra;
 		if (sscanf(line, "%lu %lu %c", &batch, &count, &extra) != 2 ||
 		    count == 0 || count > 1000000UL) {
-			fprintf(stderr, "expected batch count (count 1..1000000)\n");
+			fprintf(stderr,
+				"expected batch count (count 1..1000000)\n");
 			return 2;
 		}
 		for (unsigned long i = 0; i < count; i++) {
