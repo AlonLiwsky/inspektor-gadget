@@ -20,9 +20,9 @@ programs that deny these operations for a covered task:
 A 32-bit (compat) task uses other syscall numbers. For such a task, the
 barrier denies every `CAP_SYS_ADMIN` use.
 
-The barrier needs every hook, so it needs Linux 6.1 or later
-(`userns_create`). It also needs BPF LSM in the active LSM list and
-`kernel.ftrace_enabled=1`.
+The barrier needs every hook, so it needs the `userns_create` LSM hook in
+the kernel BTF (mainline Linux 6.1). It also needs BPF LSM in the active LSM
+list and `kernel.ftrace_enabled=1`.
 
 ## Using the barrier
 
@@ -69,7 +69,11 @@ the gadget reports Ready:
   support claim: call `Verify` only after the gadget's own kernel check
   admitted the kernel.
 - `Attest` repeats the link, BPF LSM and ftrace checks without the self-test,
-  so a gadget can call it on each status read.
+  so a gadget can call it on each status read. It sees the state only when it
+  runs: ftrace turned off and on again between two reads is not seen, so a
+  covered task must not be able to write `/proc/sys`. It does not check the
+  livepatch taint or the kernel build; the gadget's own kernel check must run
+  on each status read too.
 - `Hooks` lists the programs. `WithProgram` names the gadget's own program for
   a hook (a kernel name of at most 15 characters). `WithProgramID` matches it
   by kernel program ID, for a program whose name is longer than 15 characters
