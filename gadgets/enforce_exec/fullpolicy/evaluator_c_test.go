@@ -420,10 +420,12 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 		"container":    func(_ *Facts, r *Rule) { r.Actor.Container = []string{"not-worker"} },
 		"uid":          func(f *Facts, _ *Rule) { other := uint32(42); f.EffectiveUID = &other },
 		"target-image": func(f *Facts, _ *Rule) { f.TargetFromImage = &yes },
-		"filesystem":   func(f *Facts, _ *Rule) { f.FSType, f.FileKinds = "ext4", nil },
-		"ancestor":     func(f *Facts, _ *Rule) { f.Ancestors = []string{"/other"} },
-		"argv":         func(f *Facts, _ *Rule) { f.Argv = []string{"complete argument", "embedded--name="} },
-		"stdin":        func(f *Facts, _ *Rule) { f.StdinIsPipe = &no },
+		"filesystem": func(f *Facts, _ *Rule) {
+			f.FSType, f.FileKinds, f.FileKindsKnown = "ext4", nil, []string{"deleted"}
+		},
+		"ancestor": func(f *Facts, _ *Rule) { f.Ancestors = []string{"/other"} },
+		"argv":     func(f *Facts, _ *Rule) { f.Argv = []string{"complete argument", "embedded--name="} },
+		"stdin":    func(f *Facts, _ *Rule) { f.StdinIsPipe = &no },
 	}
 	for _, pair := range [][2]string{
 		{"actor-path", "target-path"}, // the G004 init-exec case
@@ -448,11 +450,12 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 			if action == Deny {
 				r.Action, r.Target.SetRole = Deny, ""
 			}
+			// Seed the control before the miss mutates the rule or its facts.
+			f2, r2 := f, r
 			k.unknown(&f, &r)
 			k.miss(&f, &r)
 			add(fmt.Sprintf("kleene-%s-unknown-and-false-%s", k.name, action), r, f)
 			// Without the known false conjunct it stays an error.
-			f2, r2 := base, r
 			k.unknown(&f2, &r2)
 			add(fmt.Sprintf("kleene-%s-unknown-alone-%s", k.name, action), r2, f2)
 		}

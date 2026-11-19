@@ -33,9 +33,8 @@ static const struct fm_blob *lookup_scalar(unsigned int, unsigned long long,
 
 static struct fm_blob *entries;
 static unsigned int count;
-static const struct fm_blob *lookup_scalar(unsigned int slot,
-					   unsigned long long cookie,
-					   unsigned int key)
+static const struct fm_blob *
+lookup_scalar(unsigned int slot, unsigned long long cookie, unsigned int key)
 {
 	return slot == 0 && cookie == 7 && key < count ? &entries[key] : 0;
 }
@@ -67,8 +66,11 @@ int main(int argc, char **argv)
 	if (result == 0) {
 		/* The engine: OC_WINDOWS invocations of OC_ADVANCES advances;
 		 * rules left over at the cap are a fault (never a prefix). */
-		for (int w = 0; w < OC_WINDOWS && cursor.state == FE_STAGE_ACTIVE; w++)
-			for (int k = 0; k < OC_ADVANCES && cursor.state == FE_STAGE_ACTIVE; k++)
+		for (int w = 0;
+		     w < OC_WINDOWS && cursor.state == FE_STAGE_ACTIVE; w++)
+			for (int k = 0;
+			     k < OC_ADVANCES && cursor.state == FE_STAGE_ACTIVE;
+			     k++)
 				if (fe_stage_advance(&tok, f, s, &cursor, alt))
 					return 5;
 		if (cursor.state == FE_STAGE_ACTIVE)
@@ -85,7 +87,8 @@ int main(int argc, char **argv)
 	const struct fe_header *head = (const void *)entries;
 	int execution_class =
 		fe_execution_class(&tok, head->generation, &policies, &writers);
-	printf(" %u %u %u %u %u\n", d.audit_unknown, (unsigned int)execution_class,
-	       writers, d.enforced_writes, d.role_conflicts);
+	printf(" %u %u %u %u %u\n", d.audit_unknown,
+	       (unsigned int)execution_class, writers, d.enforced_writes,
+	       d.role_conflicts);
 	return 0;
 }

@@ -262,6 +262,15 @@ FE_INLINE int fe_list_valid(struct fe_list list)
 	return list.count <= 256 && list.base < FM_MAX_ENTRIES &&
 	       list.count <= FM_MAX_ENTRIES - list.base;
 }
+/* Bounds are part of the program, not facts acquired at evaluation time. */
+FE_INLINE int fe_rule_list_bounds_valid(const struct fe_rule *r)
+{
+	return fe_list_valid(r->actor_path) && fe_list_valid(r->target_path) &&
+	       fe_list_valid(r->ancestor_path) &&
+	       fe_list_valid(r->actor_role) && fe_list_valid(r->uid) &&
+	       fe_list_valid(r->container) && fe_list_valid(r->fs_type) &&
+	       fe_list_valid(r->arg_contains) && fe_list_valid(r->arg_prefix);
+}
 struct fe_bytes_context {
 	const fm_u8 *left, *right;
 	fm_u32 length;
@@ -814,11 +823,11 @@ int fe_match_alternative(const struct fe_facts *facts,
 	/* Callers check argv validity first: a failure here is structural. */
 	int argmatch = fe_match_arguments(facts, scratch, key, request->kind
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
-				  ,
+					  ,
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
-				  token
+					  token
 #else
-				  token_ptr
+					  token_ptr
 #endif
 #endif
 	);
@@ -941,7 +950,7 @@ static
 		} else if (c->kind == FE_FS) {
 			fm_u32 bit = fe_fs_bit(s);
 			result = !bit ? FE_STRUCTURAL :
-			 (c->facts->fs_known & bit) ?
+				 (c->facts->fs_known & bit) ?
 					!!(c->facts->fs_mask & bit) :
 					-1;
 		} else {
@@ -1497,8 +1506,10 @@ int fe_rule_match_global(const struct fe_facts *f, struct fe_scratch *scratch,
 FE_INLINE int fe_rule_match(struct fe_eval_context *e, const struct fe_rule *r,
 			    const struct fe_policy *p, fm_u32 rule_key)
 {
+	/* Validate descriptors before either matcher can defer missing facts. */
+	if (!fe_rule_list_bounds_valid(r))
+		return FE_STRUCTURAL;
 #ifdef FE_GLOBAL_MATCHER
-	(void)r;
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
 	return fe_rule_match_global(
 		e->facts, e->scratch, rule_key, p->uid,
