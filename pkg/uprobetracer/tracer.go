@@ -803,7 +803,9 @@ func (t *Tracer[Event]) bindProbe(ex *link.Executable, offset *uint64) (link.Lin
 //     attach or a refcount bump from another pid's already-existing attach).
 //   - added=false + err=nil: the inode was already in `existing` (idempotent
 //     no-op) or attachToFile failed with symbol-absent (non-fatal skip, no ref).
-//   - err != nil: a hard failure (inode read failed); caller logs and skips.
+//   - err != nil: a hard failure (inode read failed, or a symbol lookup that
+//     did not finish, errSymbolLookupIncomplete); caller logs and skips, and
+//     its retry guard does not latch.
 func (t *Tracer[Event]) attachOneOpenFile(containerPid uint32, file *os.File, label string, offsets []uint64, existing map[uint64]bool) (uint64, bool, error) {
 	realInodePtr, err := t.readRealInode(int(file.Fd()))
 	if err != nil {
@@ -827,6 +829,12 @@ func (t *Tracer[Event]) attachOneOpenFile(containerPid uint32, file *os.File, la
 	}
 
 	progLinks, err := t.attachToFile(file, offsets)
+	// A symbol lookup that did not finish is not a missing symbol: fail the
+	// target, so the caller's retry guard does not record it as handled.
+	if errors.Is(err, errSymbolLookupIncomplete) {
+		file.Close()
+		return 0, false, fmt.Errorf("not attaching uprobe %q to %q for container %d: %w", t.progName, label, containerPid, err)
+	}
 	if err != nil {
 		// The target exists but does not export the symbol (e.g. runc, a wrapper
 		// executable, or BoringSSL which omits SSL_read_ex/SSL_write_ex), or a
@@ -894,6 +902,9 @@ type openedTarget struct {
 	// t.mu, from the cache in the normal case. Carried to the commit phase so
 	// no ELF/pread work is needed under t.mu.
 	offsets []uint64
+	// symbol is the file version the open-phase symbol lookup read; the
+	// commit checks it again before it binds offsets.
+	symbol preparedSymbol
 }
 
 // openTargets opens each resolved in-container path WITHOUT holding t.mu — the
@@ -915,8 +926,8 @@ func (t *Tracer[Event]) openTargets(ctx context.Context, containerPid uint32, pa
 			openFailed = true
 			continue
 		}
-		offsets := t.prepareSymbolOffsets(ctx, file, t.resolveAttachOffsets(file, containerPid))
-		opened = append(opened, openedTarget{file: file, label: filePath, offsets: offsets})
+		offsets, symbol := t.prepareSymbolOffsets(ctx, file, t.resolveAttachOffsets(file, containerPid))
+		opened = append(opened, openedTarget{file: file, label: filePath, offsets: offsets, symbol: symbol})
 	}
 	return opened, openFailed
 }
@@ -986,7 +997,8 @@ func (t *Tracer[Event]) commitOpenedTargets(containerPid uint32, opened []opened
 	}
 	attachFailed := false
 	for _, ot := range opened {
-		realInodePtr, added, err := t.attachOneOpenFile(containerPid, ot.file, ot.label, ot.offsets, existing)
+		offsets := ot.symbol.forCommit(ot.file, ot.offsets)
+		realInodePtr, added, err := t.attachOneOpenFile(containerPid, ot.file, ot.label, offsets, existing)
 		if err != nil {
 			t.logger.Debugf("%s", err.Error())
 			attachFailed = true
@@ -1407,9 +1419,10 @@ type mappedOpen struct {
 	file     *os.File
 	path     string
 	rangeKey string
-	// offsets mirrors openedTarget.offsets: resolved in the open phase, consumed
-	// in the commit phase.
+	// offsets and symbol mirror openedTarget: resolved in the open phase,
+	// consumed in the commit phase.
 	offsets []uint64
+	symbol  preparedSymbol
 }
 
 // discoverAndOpenMappedLibraries performs the I/O-heavy half of the map_files
@@ -1428,12 +1441,16 @@ type mappedOpen struct {
 // loop), containerPid's own address space never maps the target library. Only
 // the pid that actually executed can reveal it. Bookkeeping (the commit,
 // containerPid2Inodes, mappedLibAttached) stays credited to containerPid.
+//
+// Its only non-test caller, reattachMappedLibraries, holds t.mu, so the symbol
+// lookup never waits (lockedLookup).
 func (t *Tracer[Event]) discoverAndOpenMappedLibraries(containerPid, execPid uint32, pattern *regexp.Regexp) ([]mappedOpen, error) {
-	return t.discoverAndOpenMappedLibrariesInNamespace(containerPid, execPid, pattern, 0)
+	return t.discoverAndOpenMappedLibrariesInNamespace(lockedLookup, containerPid, execPid, pattern, 0)
 }
 
 // A nonzero snapshotMntns must survive discovery and map_files opening unchanged.
-func (t *Tracer[Event]) discoverAndOpenMappedLibrariesInNamespace(containerPid, execPid uint32, pattern *regexp.Regexp, snapshotMntns uint64) ([]mappedOpen, error) {
+// ctx bounds the wait in the symbol lookup.
+func (t *Tracer[Event]) discoverAndOpenMappedLibrariesInNamespace(ctx context.Context, containerPid, execPid uint32, pattern *regexp.Regexp, snapshotMntns uint64) ([]mappedOpen, error) {
 	// Capture the mount namespace BEFORE walking maps so we can pass it to
 	// openMapFile for the post-open PID-recycle validation.
 	expectedMntns, err := readProcMntns(execPid)
@@ -1472,9 +1489,6 @@ func (t *Tracer[Event]) discoverAndOpenMappedLibrariesInNamespace(containerPid, 
 	}
 	t.logger.Debugf("uprobetracer: discoverAndOpenMappedLibraries: matched=%d containerPid=%d execPid=%d paths=%v", len(libs), containerPid, execPid, paths)
 
-	// Bounds the symbol preparation below; see attachIOTimeout.
-	ctx, cancel := context.WithTimeout(context.Background(), attachIOTimeout)
-	defer cancel()
 	var opened []mappedOpen
 	for _, lib := range libs {
 		file, err := t.openMapFileFunc(execPid, lib.rangeKey, expectedMntns)
@@ -1501,8 +1515,8 @@ func (t *Tracer[Event]) discoverAndOpenMappedLibrariesInNamespace(containerPid, 
 		// attachOffsetsResolver (resolver.go:161-164). Passing execPid here would
 		// change only log/error text, and would make those diagnostics disagree with
 		// every other pid field on this attach.
-		offsets := t.prepareSymbolOffsets(ctx, file, t.resolveAttachOffsets(file, containerPid))
-		opened = append(opened, mappedOpen{file: file, path: lib.path, rangeKey: lib.rangeKey, offsets: offsets})
+		offsets, symbol := t.prepareSymbolOffsets(ctx, file, t.resolveAttachOffsets(file, containerPid))
+		opened = append(opened, mappedOpen{file: file, path: lib.path, rangeKey: lib.rangeKey, offsets: offsets, symbol: symbol})
 	}
 	return opened, nil
 }
@@ -1528,7 +1542,8 @@ func (t *Tracer[Event]) commitMappedLibraries(containerPid uint32, opened []mapp
 	}
 
 	for _, mo := range opened {
-		realInodePtr, added, err := t.attachOneOpenFile(containerPid, mo.file, mo.path, mo.offsets, existing)
+		offsets := mo.symbol.forCommit(mo.file, mo.offsets)
+		realInodePtr, added, err := t.attachOneOpenFile(containerPid, mo.file, mo.path, offsets, existing)
 		if err != nil {
 			t.logger.Debugf("uprobetracer: reattachMappedLibraries pid %d %q: attach failed: %v", containerPid, mo.path, err)
 			continue
@@ -1591,7 +1606,10 @@ func (t *Tracer[Event]) reattachContainerMappedLibsPid(containerPid, execPid uin
 	t.mu.Unlock()
 
 	// Phase 1 (NO lock): discover + open the map_files candidates.
-	opened, err := t.discoverAndOpenMappedLibrariesInNamespace(containerPid, execPid, pattern, snapshotMntns)
+	// Bounds the symbol lookup in the lock-free discovery; see attachIOTimeout.
+	ctx, cancel := context.WithTimeout(context.Background(), attachIOTimeout)
+	defer cancel()
+	opened, err := t.discoverAndOpenMappedLibrariesInNamespace(ctx, containerPid, execPid, pattern, snapshotMntns)
 	if err != nil {
 		closeMappedOpen(opened) // empty today (error precedes the open loop); defensive against future partial-result edits
 		return err

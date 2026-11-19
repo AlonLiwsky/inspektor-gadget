@@ -184,6 +184,11 @@ func (c *symbolCache) resolveContext(ctx context.Context, file *os.File, name st
 			}
 		}
 		if flight.err != nil {
+			if isWaitEnded(flight.err) && ctx.Err() == nil {
+				// The owner's wait ended, not this caller's: look again
+				// with this caller's own context.
+				return c.resolveContext(ctx, file, name)
+			}
 			return 0, flight.err
 		}
 		current, err := fileSymbolVersion(file)
@@ -282,6 +287,13 @@ func (t *Tracer[Event]) resolveSymbolOffset(ctx context.Context, file *os.File) 
 		var goErr error
 		offset, goErr = goSymbols.resolveContext(ctx, file, t.attachSymbol)
 		if goErr != nil {
+			if isWaitEnded(goErr) {
+				// The wait for a parse slot, or for another caller's parse,
+				// ended first. That is not an answer: do not report it as a
+				// missing symbol, so the attach counts as failed and the next
+				// attach tries again.
+				return 0, fmt.Errorf("resolving symbol %q: %w: %w", t.attachSymbol, errSymbolLookupIncomplete, goErr)
+			}
 			return 0, fmt.Errorf("resolving symbol %q (ELF: %w; gopclntab: %w)", t.attachSymbol, err, goErr)
 		}
 		err = nil
@@ -289,20 +301,57 @@ func (t *Tracer[Event]) resolveSymbolOffset(ctx context.Context, file *os.File) 
 	return offset, err
 }
 
+// errSymbolLookupIncomplete marks a symbol lookup whose wait ended before an
+// answer. It is not a negative answer: the attach fails, and nothing records
+// the target as handled.
+var errSymbolLookupIncomplete = errors.New("symbol lookup did not finish")
+
+// isWaitEnded reports a lookup that ended on its context: the wait for a parse
+// slot, or for another caller's parse of the same key.
+func isWaitEnded(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// preparedSymbol records the file version that an open-phase symbol lookup
+// read. The zero value means the offsets did not come from that lookup.
+type preparedSymbol struct {
+	used    bool
+	version symbolVersion
+}
+
+// forCommit runs under t.mu. It returns the offsets to bind. When the file
+// changed after the open phase, it drops the open-phase answer, and the commit
+// resolves the symbol again.
+func (p preparedSymbol) forCommit(file *os.File, offsets []uint64) []uint64 {
+	if !p.used {
+		return offsets
+	}
+	if version, err := fileSymbolVersion(file); err != nil || version != p.version {
+		return nil
+	}
+	return offsets
+}
+
 // prepareSymbolOffsets runs in the open phase, without t.mu. When there are
 // no custom offsets, it resolves the attach symbol there, so the commit under
-// t.mu binds a known offset and does not parse. On an error it returns no
-// offsets: the commit then resolves again, and a stable negative answer comes
-// from the cache.
-func (t *Tracer[Event]) prepareSymbolOffsets(ctx context.Context, file *os.File, offsets []uint64) []uint64 {
+// t.mu binds a known offset and does not parse. It returns the file version
+// the lookup read, for the commit to check. On any error it returns no
+// offsets, and the commit resolves again under t.mu without waiting
+// (lockedLookup): a stable negative answer comes from the cache, a free slot
+// still parses, and a busy one fails the attach so the next attach retries.
+func (t *Tracer[Event]) prepareSymbolOffsets(ctx context.Context, file *os.File, offsets []uint64) ([]uint64, preparedSymbol) {
 	if len(offsets) > 0 || t.progType == ProgUSDT {
-		return offsets
+		return offsets, preparedSymbol{}
+	}
+	version, err := fileSymbolVersion(file)
+	if err != nil {
+		return nil, preparedSymbol{}
 	}
 	offset, err := t.resolveSymbolOffset(ctx, file)
 	if err != nil {
-		return nil
+		return nil, preparedSymbol{}
 	}
-	return []uint64{offset}
+	return []uint64{offset}, preparedSymbol{used: true, version: version}
 }
 
 // bindOrdinarySites keeps custom offsets intact and resolves ordinary names

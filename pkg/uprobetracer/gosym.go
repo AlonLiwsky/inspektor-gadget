@@ -223,8 +223,9 @@ var errGoSymbolNotFound = errors.New("not found in .gopclntab")
 // answer instead of reading .gopclntab again on every attach.
 var errGoSymbolUnsupported = errors.New("unsupported Go binary")
 
-// goParseSlots bounds concurrent .gopclntab reads of different binaries, so
-// their peaks do not stack. goSymbols already collapses reads of one binary.
+// goParseSlots bounds concurrent .gopclntab reads, so their peaks do not
+// stack. goSymbols already collapses concurrent reads of one binary for one
+// symbol name.
 // Only the read and the table build hold a slot; the cheap section checks
 // before them do not, so non-Go executables never wait.
 var goParseSlots = make(chan struct{}, 2)
@@ -290,7 +291,7 @@ func resolveGoSymbolContext(ctx context.Context, file *os.File, symbol string) (
 	defer func() {
 		if r := recover(); r != nil {
 			addr = 0
-			err = fmt.Errorf("panic parsing Go symbol table: %v", r)
+			err = fmt.Errorf("%w: panic parsing Go symbol table: %v", errGoSymbolUnsupported, r)
 		}
 	}()
 
@@ -339,7 +340,7 @@ func resolveGoSymbolContext(ctx context.Context, file *os.File, symbol string) (
 	}
 	textStart, err := goTextStart(f, textSection, pclntabData)
 	if err != nil {
-		return 0, fmt.Errorf("reading Go text start: %w", err)
+		return 0, fmt.Errorf("%w: reading Go text start: %w", errGoSymbolUnsupported, err)
 	}
 
 	// debug/gosym allocates one Func and one Sym per function upfront, from
@@ -382,14 +383,14 @@ func resolveGoSymbolContext(ctx context.Context, file *os.File, symbol string) (
 		}
 		offset := fn.Entry - prog.Vaddr
 		if offset > ^uint64(0)-prog.Off {
-			return 0, fmt.Errorf("file offset overflow for symbol %q", symbol)
+			return 0, fmt.Errorf("%w: file offset overflow for symbol %q", errGoSymbolUnsupported, symbol)
 		}
 		offset += prog.Off
 		if offset >= uint64(fileSize.Size()) {
-			return 0, fmt.Errorf("file offset 0x%x for symbol %q is past the end of the file", offset, symbol)
+			return 0, fmt.Errorf("%w: file offset 0x%x for symbol %q is past the end of the file", errGoSymbolUnsupported, offset, symbol)
 		}
 		return offset, nil
 	}
 
-	return 0, fmt.Errorf("symbol %q (VA 0x%x) not found in any executable LOAD segment", symbol, fn.Entry)
+	return 0, fmt.Errorf("%w: symbol %q (VA 0x%x) not found in any executable LOAD segment", errGoSymbolUnsupported, symbol, fn.Entry)
 }

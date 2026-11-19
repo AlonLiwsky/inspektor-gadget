@@ -582,12 +582,16 @@ func TestPrepareSymbolOffsetsResolvesOffLock(t *testing.T) {
 	require.NoError(t, err)
 	tr := &Tracer[struct{}]{attachSymbol: "main.target", progType: ProgUprobe}
 
-	offsets := tr.prepareSymbolOffsets(context.Background(), file, nil)
+	offsets, symbol := tr.prepareSymbolOffsets(context.Background(), file, nil)
 	require.Equal(t, []uint64{want}, offsets)
+	require.True(t, symbol.used)
 	// Custom offsets and USDT are left as they are.
-	require.Equal(t, []uint64{7}, tr.prepareSymbolOffsets(context.Background(), file, []uint64{7}))
+	custom, symbol := tr.prepareSymbolOffsets(context.Background(), file, []uint64{7})
+	require.Equal(t, []uint64{7}, custom)
+	require.False(t, symbol.used)
 	usdt := &Tracer[struct{}]{attachSymbol: "main.target", progType: ProgUSDT}
-	require.Nil(t, usdt.prepareSymbolOffsets(context.Background(), file, nil))
+	none, _ := usdt.prepareSymbolOffsets(context.Background(), file, nil)
+	require.Nil(t, none)
 
 	takeAllGoParseSlots(t)
 	var bound []uint64
@@ -597,4 +601,51 @@ func TestPrepareSymbolOffsetsResolvesOffLock(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, []uint64{want}, bound)
+}
+
+// A canceled wait for a parse slot is not a missing symbol. The open phase
+// returns no offsets and leaves the lookup to the commit, and the lookup
+// error is marked incomplete, so a failed attach is not recorded as handled.
+func TestPrepareSymbolOffsetsLeavesIncompleteLookupToCommit(t *testing.T) {
+	file := buildStrippedGoTarget(t)
+	tr := &Tracer[struct{}]{attachSymbol: "main.target", progType: ProgUprobe}
+
+	release := takeAllGoParseSlots(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	offsets, symbol := tr.prepareSymbolOffsets(ctx, file, nil)
+	require.Nil(t, offsets)
+	require.False(t, symbol.used)
+	_, err := tr.resolveSymbolOffset(lockedLookup, file)
+	require.ErrorIs(t, err, errSymbolLookupIncomplete)
+	require.NotErrorIs(t, err, link.ErrNoSymbol)
+
+	release()
+	offsets, symbol = tr.prepareSymbolOffsets(context.Background(), file, nil)
+	require.Len(t, offsets, 1)
+	require.True(t, symbol.used)
+}
+
+// The commit binds an open-phase offset only while the file has the version
+// the lookup read. After an in-place rewrite it drops that offset.
+func TestPreparedSymbolForCommitChecksFileVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "target")
+	require.NoError(t, os.WriteFile(path, []byte("version one"), 0o644))
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { file.Close() })
+	version, err := fileSymbolVersion(file)
+	require.NoError(t, err)
+
+	require.Equal(t, []uint64{0x220}, preparedSymbol{used: true, version: version}.forCommit(file, []uint64{0x220}))
+	// Offsets that did not come from the open-phase lookup pass unchanged.
+	require.Equal(t, []uint64{7}, preparedSymbol{}.forCommit(file, []uint64{7}))
+
+	rewrite, err := os.OpenFile(path, os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = rewrite.WriteAt([]byte("version two, moved"), 0)
+	require.NoError(t, err)
+	require.NoError(t, rewrite.Close())
+
+	require.Nil(t, preparedSymbol{used: true, version: version}.forCommit(file, []uint64{0x220}))
 }
