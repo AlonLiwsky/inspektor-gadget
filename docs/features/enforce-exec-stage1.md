@@ -35,6 +35,20 @@ Status: draft PR (branch `universal/stage1-pr`, on main). It is qualified but no
   - a fork can get EPERM after a recursion-skipped sys_exit (Strict bindings only; Audit and unbound tasks never get EPERM). `NodeEnforcer.SysExitRecursionMisses` exports the kernel `RecursionMisses` counter;
   - some qualification steps run on test twins of the product object.
 
+## Strict policy evaluation
+
+A rule matches only if all its conditions match. A known-false condition
+makes the rule a non-match even if another observation is unavailable.
+If no condition is false and a needed observation is unknown, evaluation
+reports an error and Strict blocks. A rule that cannot match does not
+change the policy's default decision.
+
+The product validates compiled rule data before activation, requires a
+complete installation, and retains the same immutable policy while
+evaluating it. The evaluator reports structural errors it encounters;
+a known-false condition can end a rule without visiting later conditions.
+The evaluator does not revalidate the complete policy data on every exec.
+
 ## Code
 
 - `gadgets/enforce_exec/fullruntime/bpf/opaque_real_owner_child_candidate.bpf.c`

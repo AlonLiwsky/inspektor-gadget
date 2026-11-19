@@ -289,154 +289,232 @@ func originList(value string, present bool) []string {
 
 func ruleMatches(r compiledRule, f Facts, role string) (bool, error) {
 	a, t := r.source.Actor, r.source.Target
-	if len(r.actor) > 0 {
-		if f.ActorPath == "" {
-			return false, fmt.Errorf("actor executable unavailable")
-		}
-		if !pathMatches(r.actor, f.ActorPath) {
-			return false, nil
-		}
-	}
-	if len(r.target) > 0 {
-		if f.TargetPath == "" {
-			return false, fmt.Errorf("target executable unavailable")
-		}
-		if !pathMatches(r.target, f.TargetPath) {
-			return false, nil
-		}
-	}
-	if len(a.Role) > 0 {
-		if role == "" {
-			return false, fmt.Errorf("inherited role unavailable")
-		}
-		if !slices.Contains(a.Role, role) {
-			return false, nil
-		}
-	}
-	if len(a.Container) > 0 {
-		if f.Container == "" {
-			return false, fmt.Errorf("container name unavailable")
-		}
-		if !slices.Contains(a.Container, f.Container) {
-			return false, nil
-		}
-	}
-	if len(a.UID) > 0 {
-		if f.EffectiveUID == nil {
-			return false, fmt.Errorf("effective UID unavailable")
-		}
-		if !slices.Contains(a.UID, int64(*f.EffectiveUID)) {
-			return false, nil
-		}
-	}
-	if a.FromImage != nil {
-		if f.ActorFromImage == nil {
-			return false, fmt.Errorf("actor image provenance unavailable")
-		}
-		if *a.FromImage != *f.ActorFromImage {
-			return false, nil
-		}
-	}
-	if t.FromImage != nil {
-		if f.TargetFromImage == nil {
-			return false, fmt.Errorf("target image provenance unavailable")
-		}
-		if *t.FromImage != *f.TargetFromImage {
-			return false, nil
-		}
-	}
-	if len(t.FSType) > 0 {
-		found, unknown := false, false
-		for _, kind := range t.FSType {
-			positive := kind == f.FSType || slices.Contains(f.FileKinds, kind)
-			found = found || positive
-			unknown = unknown || (!positive && !slices.Contains(f.FileKindsKnown, kind))
-		}
-		// OR accepts a known positive even if another class is unknown.
-		if !found {
-			if unknown {
-				return false, fmt.Errorf("target filesystem classification unavailable")
-			}
-			return false, nil
-		}
-	}
-	if a.Ancestor != nil {
-		depth := int(a.Ancestor.Depth)
-		found := false
-		for i, path := range f.Ancestors {
-			if i >= depth {
-				break
-			}
-			if path == "" {
-				return false, fmt.Errorf("ancestor executable unavailable")
-			}
-			if pathMatches(r.ancestor, path) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			if len(f.Ancestors) < depth && !f.AncestorsComplete {
-				return false, fmt.Errorf("ancestor traversal incomplete")
-			}
-			return false, nil
-		}
-	}
-	if a := t.Argv; a != nil {
-		if len(a.Contains) > 0 || len(a.Prefix) > 0 {
-			if !f.ArgvComplete || len(f.Argv) > MaxArgc {
-				return false, fmt.Errorf("staged argv incomplete or oversized")
-			}
-			size := 0
-			for _, arg := range f.Argv {
-				if strings.ContainsRune(arg, 0) {
-					return false, fmt.Errorf("invalid staged argument")
+	// Each conjunct is known true, known false, or UNKNOWN (an error). The
+	// rule is their Kleene AND (G004, user decision): a known false conjunct
+	// makes it known false whatever else is UNKNOWN; otherwise an UNKNOWN
+	// conjunct makes it an evaluation error; otherwise it matches. A
+	// conjunct's own value is unchanged.
+	conjuncts := []func() (bool, error){
+		func() (bool, error) {
+			if len(r.actor) > 0 {
+				if f.ActorPath == "" {
+					return false, fmt.Errorf("actor executable unavailable")
 				}
-				size += len(arg) + 1
+				if !pathMatches(r.actor, f.ActorPath) {
+					return false, nil
+				}
 			}
-			if size > MaxArgBytes {
-				return false, fmt.Errorf("staged argv exceeds %d bytes", MaxArgBytes)
+			return true, nil
+		},
+		func() (bool, error) {
+			if len(r.target) > 0 {
+				if f.TargetPath == "" {
+					return false, fmt.Errorf("target executable unavailable")
+				}
+				if !pathMatches(r.target, f.TargetPath) {
+					return false, nil
+				}
 			}
-			// Lists are alternatives. Contains matches a complete argument, prefix matches
-			// the beginning of an argument (not a lossy space-joined command line).
-			if len(a.Contains) > 0 {
+			return true, nil
+		},
+		func() (bool, error) {
+			if len(a.Role) > 0 {
+				if role == "" {
+					return false, fmt.Errorf("inherited role unavailable")
+				}
+				if !slices.Contains(a.Role, role) {
+					return false, nil
+				}
+			}
+			return true, nil
+		},
+		func() (bool, error) {
+			if len(a.Container) > 0 {
+				if f.Container == "" {
+					// The native program carries the container name
+					// (compiled in): without it the program is
+					// malformed, so it is a structural error there; it
+					// is one here too (never masked).
+					return false, structural("container name unavailable")
+				}
+				if !slices.Contains(a.Container, f.Container) {
+					return false, nil
+				}
+			}
+			return true, nil
+		},
+		func() (bool, error) {
+			if len(a.UID) > 0 {
+				if f.EffectiveUID == nil {
+					return false, fmt.Errorf("effective UID unavailable")
+				}
+				if !slices.Contains(a.UID, int64(*f.EffectiveUID)) {
+					return false, nil
+				}
+			}
+			return true, nil
+		},
+		func() (bool, error) {
+			if a.FromImage != nil {
+				if f.ActorFromImage == nil {
+					return false, fmt.Errorf("actor image provenance unavailable")
+				}
+				if *a.FromImage != *f.ActorFromImage {
+					return false, nil
+				}
+			}
+			return true, nil
+		},
+		func() (bool, error) {
+			if t.FromImage != nil {
+				if f.TargetFromImage == nil {
+					return false, fmt.Errorf("target image provenance unavailable")
+				}
+				if *t.FromImage != *f.TargetFromImage {
+					return false, nil
+				}
+			}
+			return true, nil
+		},
+		func() (bool, error) {
+			if len(t.FSType) > 0 {
+				found, unknown := false, false
+				for _, kind := range t.FSType {
+					positive := kind == f.FSType || slices.Contains(f.FileKinds, kind)
+					found = found || positive
+					unknown = unknown || (!positive && !slices.Contains(f.FileKindsKnown, kind))
+				}
+				// OR accepts a known positive even if another class is unknown.
+				if !found {
+					if unknown {
+						return false, fmt.Errorf("target filesystem classification unavailable")
+					}
+					return false, nil
+				}
+			}
+			return true, nil
+		},
+		func() (bool, error) {
+			if a.Ancestor != nil {
+				depth := int(a.Ancestor.Depth)
+				if depth < 1 || depth > MaxAncestorDepth {
+					return false, structural("ancestor depth outside 1..MaxAncestorDepth")
+				}
 				found := false
-				for _, v := range a.Contains {
-					if slices.Contains(f.Argv, v) {
+				for i, path := range f.Ancestors {
+					if i >= depth {
+						break
+					}
+					if path == "" {
+						return false, fmt.Errorf("ancestor executable unavailable")
+					}
+					if pathMatches(r.ancestor, path) {
 						found = true
 						break
 					}
 				}
 				if !found {
+					if len(f.Ancestors) < depth && !f.AncestorsComplete {
+						return false, fmt.Errorf("ancestor traversal incomplete")
+					}
 					return false, nil
 				}
 			}
-			if len(a.Prefix) > 0 {
-				found := false
-				for _, v := range a.Prefix {
+			return true, nil
+		},
+		func() (bool, error) {
+			if a := t.Argv; a != nil {
+				if len(a.Contains) > 0 || len(a.Prefix) > 0 {
+					if !f.ArgvComplete || len(f.Argv) > MaxArgc {
+						return false, fmt.Errorf("staged argv incomplete or oversized")
+					}
+					size := 0
 					for _, arg := range f.Argv {
-						if strings.HasPrefix(arg, v) {
-							found = true
-							break
+						if strings.ContainsRune(arg, 0) {
+							return false, fmt.Errorf("invalid staged argument")
+						}
+						size += len(arg) + 1
+					}
+					if size > MaxArgBytes {
+						return false, fmt.Errorf("staged argv exceeds %d bytes", MaxArgBytes)
+					}
+					// Lists are alternatives. Contains matches a complete argument, prefix matches
+					// the beginning of an argument (not a lossy space-joined command line).
+					if len(a.Contains) > 0 {
+						found := false
+						for _, v := range a.Contains {
+							if slices.Contains(f.Argv, v) {
+								found = true
+								break
+							}
+						}
+						if !found {
+							return false, nil
+						}
+					}
+					if len(a.Prefix) > 0 {
+						found := false
+						for _, v := range a.Prefix {
+							for _, arg := range f.Argv {
+								if strings.HasPrefix(arg, v) {
+									found = true
+									break
+								}
+							}
+						}
+						if !found {
+							return false, nil
 						}
 					}
 				}
-				if !found {
-					return false, nil
+			}
+			return true, nil
+		},
+		func() (bool, error) {
+			if a := t.Argv; a != nil {
+				if a.StdinIsPipe != nil {
+					if f.StdinIsPipe == nil {
+						return false, fmt.Errorf("stdin identity unavailable")
+					}
+					if *a.StdinIsPipe != *f.StdinIsPipe {
+						return false, nil
+					}
 				}
 			}
-		}
-		if a.StdinIsPipe != nil {
-			if f.StdinIsPipe == nil {
-				return false, fmt.Errorf("stdin identity unavailable")
+			return true, nil
+		},
+	}
+	var unknown error
+	for _, c := range conjuncts {
+		ok, err := c()
+		if err != nil {
+			var se *structuralError
+			if errors.As(err, &se) {
+				return false, err // a malformed rule: never masked
 			}
-			if *a.StdinIsPipe != *f.StdinIsPipe {
-				return false, nil
+			if unknown == nil {
+				unknown = err
 			}
+			continue
 		}
+		if !ok {
+			return false, nil
+		}
+	}
+	if unknown != nil {
+		return false, unknown
 	}
 	return true, nil
 }
+
+// structuralError is a malformed rule or program (as opposed to a fact the
+// backend could not acquire): Kleene AND never masks it with a known false
+// conjunct; it is returned at once (the C matchers' FE_STRUCTURAL).
+type structuralError struct{ msg string }
+
+func (e *structuralError) Error() string { return e.msg }
+
+func structural(msg string) error { return &structuralError{msg} }
 
 func pathMatches(patterns []*regexp.Regexp, s string) bool {
 	for _, p := range patterns {
