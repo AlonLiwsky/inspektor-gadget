@@ -129,7 +129,7 @@ func buildEvaluatorRunner(t *testing.T, flags ...string) string {
 	}
 	path := filepath.Join(t.TempDir(), "evaluator")
 	args := append([]string{"-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"}, flags...)
-	args = append(args, "testdata/evaluator_runner.c", "-o", path)
+	args = append(args, kleeneMutantSource(t, "testdata/evaluator_runner.c"), "-o", path)
 	if out, err := exec.Command(clang, args...).CombinedOutput(); err != nil {
 		t.Fatalf("compile: %v\n%s", err, out)
 	}
@@ -396,6 +396,78 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 	f.ActorFromImage = nil
 	f.ActorPath = "/does-not-match"
 	add("unknown-short-circuited", all, f)
+	// G004 Kleene AND: an UNKNOWN conjunct consulted BEFORE a known false
+	// one. The rule is known false (not an error); with no known false
+	// conjunct it stays an error. Each case names the unknown, then the
+	// known false conjunct (check order: actor path, target path, role,
+	// container, uid, actor image, target image, fs, ancestor, argv, stdin).
+	kleene := []struct {
+		name          string
+		unknown, miss func(*Facts, *Rule)
+	}{}
+	unk := map[string]func(*Facts, *Rule){
+		"actor-path":  func(f *Facts, _ *Rule) { f.ActorPath = "" },
+		"target-path": func(f *Facts, _ *Rule) { f.TargetPath = "" },
+		"role":        func(f *Facts, _ *Rule) { f.Roles = nil },
+		"uid":         func(f *Facts, _ *Rule) { f.EffectiveUID = nil },
+		"actor-image": func(f *Facts, _ *Rule) { f.ActorFromImage = nil },
+		"filesystem":  func(f *Facts, _ *Rule) { f.FSType, f.FileKinds, f.FileKindsKnown = "", nil, nil },
+		"ancestor":    func(f *Facts, _ *Rule) { f.Ancestors, f.AncestorsComplete = nil, false },
+		"argv":        func(f *Facts, _ *Rule) { f.ArgvComplete = false },
+	}
+	miss := map[string]func(*Facts, *Rule){
+		"target-path":  func(f *Facts, _ *Rule) { f.TargetPath = "/not/target" },
+		"container":    func(_ *Facts, r *Rule) { r.Actor.Container = []string{"not-worker"} },
+		"uid":          func(f *Facts, _ *Rule) { other := uint32(42); f.EffectiveUID = &other },
+		"target-image": func(f *Facts, _ *Rule) { f.TargetFromImage = &yes },
+		"filesystem":   func(f *Facts, _ *Rule) { f.FSType, f.FileKinds = "ext4", nil },
+		"ancestor":     func(f *Facts, _ *Rule) { f.Ancestors = []string{"/other"} },
+		"argv":         func(f *Facts, _ *Rule) { f.Argv = []string{"complete argument", "embedded--name="} },
+		"stdin":        func(f *Facts, _ *Rule) { f.StdinIsPipe = &no },
+	}
+	for _, pair := range [][2]string{
+		{"actor-path", "target-path"}, // the G004 init-exec case
+		{"actor-path", "stdin"},
+		{"target-path", "uid"},
+		{"role", "container"},
+		{"uid", "target-image"},
+		{"actor-image", "filesystem"},
+		{"filesystem", "ancestor"},
+		{"ancestor", "argv"},
+		{"argv", "stdin"},
+	} {
+		kleene = append(kleene, struct {
+			name          string
+			unknown, miss func(*Facts, *Rule)
+		}{pair[0] + "-then-" + pair[1], unk[pair[0]], miss[pair[1]]})
+	}
+	for _, k := range kleene {
+		for _, action := range []Action{Allow, Deny} {
+			f, r := base, all
+			r.Actor.Container = append([]string(nil), all.Actor.Container...)
+			if action == Deny {
+				r.Action, r.Target.SetRole = Deny, ""
+			}
+			k.unknown(&f, &r)
+			k.miss(&f, &r)
+			add(fmt.Sprintf("kleene-%s-unknown-and-false-%s", k.name, action), r, f)
+			// Without the known false conjunct it stays an error.
+			f2, r2 := base, r
+			k.unknown(&f2, &r2)
+			add(fmt.Sprintf("kleene-%s-unknown-alone-%s", k.name, action), r2, f2)
+		}
+	}
+	f = base
+	f.ActorPath, f.StdinIsPipe = "", nil
+	add("kleene-two-unknowns-no-false", all, f)
+	// Audit: an unknown AND a known false is not audit-unknown.
+	f = base
+	f.ActorPath, f.TargetPath = "", "/not/target"
+	tests = append(tests, struct {
+		name     string
+		policies []Policy
+		facts    Facts
+	}{"kleene-audit-unknown-and-false", []Policy{{ID: "p", Revision: "r", Mode: Audit, RootRole: "root", Default: Allow, Rules: []Rule{{Name: "d", Action: Deny, Actor: Actor{Path: []string{"/usr/**"}}, Target: Target{Path: []string{"/bin/*"}}}}}}, f})
 	f = base
 	f.Ancestors = []string{"/wrong", "/bin/init"}
 	f.AncestorsComplete = false

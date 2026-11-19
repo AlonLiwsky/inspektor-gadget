@@ -6,6 +6,11 @@
 #if defined(FM_GLOBAL_BLOB_LOOKUP) || defined(FM_GLOBAL_SCALAR_BLOB_LOOKUP)
 #define FE_GLOBAL_MATCHER 1
 #endif
+/* Matcher results: 1 match, 0 known no-match, -1 a fact the kernel could not
+ * acquire (UNKNOWN: Kleene AND defers it), FE_STRUCTURAL a malformed program
+ * or matcher failure (a hard error: returned at once, never masked by a known
+ * false conjunct). Both negatives are evaluation errors of the rule. */
+#define FE_STRUCTURAL (-2)
 /* Ordinary BPF images retain ABI2 behavior. Host oracle fixtures exercise the
  * development semantics; they do not authorize live selection. */
 #if defined(ENFORCE_EXEC_ABI3_DEVELOPMENT) || !defined(__bpf__)
@@ -751,7 +756,7 @@ int fe_match_alternative(const struct fe_facts *facts,
 #endif
 	const struct fm_blob *blob = fe_blob(context, key);
 	if (!blob)
-		return -1;
+		return FE_STRUCTURAL;
 	if (request->kind == FE_PATH) {
 		const struct fe_path *path = 0;
 		if (request->path_selector == 0)
@@ -764,21 +769,23 @@ int fe_match_alternative(const struct fe_facts *facts,
 			if (ancestor < 16 && ancestor < facts->ancestor_count)
 				path = &facts->ancestors[ancestor];
 		}
+		/* Callers check the fact first: no path here is structural. */
 		if (!path || !path->length)
-			return -1;
-		return fm_match_key(context, key, path->bytes, path->length,
-				    &scratch->matcher);
+			return FE_STRUCTURAL;
+		int matched = fm_match_key(context, key, path->bytes,
+					   path->length, &scratch->matcher);
+		return matched < 0 ? FE_STRUCTURAL : matched;
 	}
 	if (request->kind == FE_VALUE)
 		return blob->words[0] == request->value;
 	const struct fe_string *string = (const void *)blob;
 	if (string->length > 255)
-		return -1;
+		return FE_STRUCTURAL;
 	if (request->kind == FE_STRING) {
 		const struct fe_string *container =
 			(const void *)fe_blob(context, request->string_key);
 		if (!container || container->length > 255)
-			return -1;
+			return FE_STRUCTURAL;
 		if (string->length != container->length)
 			return 0;
 		return fe_bytes_equal_keys(
@@ -798,13 +805,14 @@ int fe_match_alternative(const struct fe_facts *facts,
 	}
 	if (request->kind == FE_FS) {
 		fm_u32 bit = fe_fs_bit(string);
-		return bit && (facts->fs_known & bit) ?
-			       !!(facts->fs_mask & bit) :
-			       -1;
+		if (!bit)
+			return FE_STRUCTURAL;
+		return (facts->fs_known & bit) ? !!(facts->fs_mask & bit) : -1;
 	}
 	if (request->kind != FE_ARG_EXACT && request->kind != FE_ARG_PREFIX)
-		return -1;
-	return fe_match_arguments(facts, scratch, key, request->kind
+		return FE_STRUCTURAL;
+	/* Callers check argv validity first: a failure here is structural. */
+	int argmatch = fe_match_arguments(facts, scratch, key, request->kind
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
 				  ,
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
@@ -814,6 +822,7 @@ int fe_match_alternative(const struct fe_facts *facts,
 #endif
 #endif
 	);
+	return argmatch < 0 ? FE_STRUCTURAL : argmatch;
 }
 /* Reuse the independently checked alternative across the complete 256-entry
  * list. The request carries only scalar selection; no readonly blob pointer
@@ -830,7 +839,7 @@ int fe_match_list_global(const struct fe_facts *facts,
 {
 	struct fe_list list = { .base = base, .count = count };
 	if (!facts || !scratch || !request || !fe_list_valid(list))
-		return -1;
+		return FE_STRUCTURAL;
 	if (!count)
 		return 1;
 	int unknown_fs = 0;
@@ -839,6 +848,8 @@ int fe_match_list_global(const struct fe_facts *facts,
 			break;
 		int result =
 			fe_match_alternative(facts, scratch, request, base + i);
+		if (result == FE_STRUCTURAL)
+			return FE_STRUCTURAL;
 		if (request->kind == FE_FS && result < 0) {
 			unknown_fs = 1;
 			continue;
@@ -865,7 +876,7 @@ static
 #if defined(FE_BOUNDED_LOOP_CANDIDATE) && defined(FE_GLOBAL_MATCHER)
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
 	if (!c->blob_context) {
-		c->result = -1;
+		c->result = FE_STRUCTURAL;
 		return 1;
 	}
 #endif
@@ -885,13 +896,13 @@ static
 #else
 	const struct fm_blob *blob = fe_blob(c->blob_context, c->list.base + i);
 	if (!blob) {
-		c->result = -1;
+		c->result = FE_STRUCTURAL;
 		return 1;
 	}
 	int result = 0;
 	if (c->kind == FE_PATH) {
 		if (!c->path) {
-			c->result = -1;
+			c->result = FE_STRUCTURAL;
 			return 1;
 		}
 		result = fm_match_key(c->blob_context, c->list.base + i,
@@ -902,12 +913,12 @@ static
 	} else {
 		const struct fe_string *s = (const struct fe_string *)blob;
 		if (s->length > 255) {
-			c->result = -1;
+			c->result = FE_STRUCTURAL;
 			return 1;
 		}
 		if (c->kind == FE_STRING) {
 			if (!c->string) {
-				c->result = -1;
+				c->result = FE_STRUCTURAL;
 				return 1;
 			}
 			if (s->length == c->string->length)
@@ -929,9 +940,10 @@ static
 #endif
 		} else if (c->kind == FE_FS) {
 			fm_u32 bit = fe_fs_bit(s);
-			result = bit && (c->facts->fs_known & bit) ?
-					 !!(c->facts->fs_mask & bit) :
-					 -1;
+			result = !bit ? FE_STRUCTURAL :
+			 (c->facts->fs_known & bit) ?
+					!!(c->facts->fs_mask & bit) :
+					-1;
 		} else {
 #ifdef FE_GLOBAL_MATCHER
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
@@ -949,6 +961,12 @@ static
 		}
 	}
 #endif
+	/* Only an unknown fs class is a fact; every other negative (the
+	 * matcher, the argument scan) is structural. */
+	if (result < 0 && (c->kind != FE_FS || result == FE_STRUCTURAL)) {
+		c->result = FE_STRUCTURAL;
+		return 1;
+	}
 	if (c->kind == FE_FS && result < 0) {
 		c->result =
 			-1; /* keep looking for a known-positive OR alternative */
@@ -966,7 +984,7 @@ int fe_match_scalar(struct fe_match_context *c, fm_u32 base, fm_u32 count,
 {
 	struct fe_list list = { .base = base, .count = count };
 	if (!c || !fe_list_valid(list))
-		return -1;
+		return FE_STRUCTURAL;
 	if (!list.count)
 		return 1;
 	c->list = list;
@@ -976,13 +994,13 @@ int fe_match_scalar(struct fe_match_context *c, fm_u32 base, fm_u32 count,
 	for (fm_u32 i = 0; i < list.count; i++) {
 		long step = fe_match_step(i, c);
 		if (step != 0 && step != 1)
-			return -1;
+			return FE_STRUCTURAL;
 		if (step)
 			break;
 	}
 #else
 	if (FE_LOOP(list.count, fe_match_step, c) < 0)
-		return -1;
+		return FE_STRUCTURAL;
 #endif
 	return c->result;
 }
@@ -1086,6 +1104,7 @@ struct fe_predicate_context {
 	const struct fe_policy *policy;
 	struct fe_match_context match;
 	int result;
+	int unknown; /* an UNKNOWN conjunct was seen (Kleene AND, G004) */
 };
 /* One predicate per helper callback prevents the verifier from multiplying
  * matcher states across nine sequential list callsites. Field order remains the
@@ -1127,7 +1146,7 @@ static long fe_predicate_step(fm_u32 index, void *opaque)
 			c->string = FE_CONTAINER_LOOKUP(e->blob_context);
 			if (!c->string || !c->string->length ||
 			    c->string->length > 255)
-				goto unknown;
+				goto structural;
 		}
 		break;
 	case 4:
@@ -1158,7 +1177,7 @@ static long fe_predicate_step(fm_u32 index, void *opaque)
 		if (!r->ancestor_path.count)
 			return 0;
 		if (!r->ancestor_depth || r->ancestor_depth > 16)
-			goto unknown;
+			goto structural;
 		struct fe_ancestor_context a = {
 			.blob_context = e->blob_context,
 			.facts = f,
@@ -1166,8 +1185,9 @@ static long fe_predicate_step(fm_u32 index, void *opaque)
 			.list = r->ancestor_path,
 			.depth = r->ancestor_depth,
 		};
-		if (FE_LOOP(16, fe_ancestor_step, &a) < 0)
-			goto unknown;
+		if (FE_LOOP(16, fe_ancestor_step, &a) < 0 ||
+		    a.result == FE_STRUCTURAL)
+			goto structural;
 		result = a.result;
 		if (!result && f->ancestor_count < r->ancestor_depth &&
 		    !f->ancestors_complete)
@@ -1182,6 +1202,10 @@ static long fe_predicate_step(fm_u32 index, void *opaque)
 		kind = FE_ARG_EXACT;
 		break;
 	case 10:
+		/* Review F2: prefix alone (case 9 may have deferred an UNKNOWN
+		 * argv): never scan an argv that is not valid. */
+		if (r->arg_prefix.count && !fe_argv_valid(f, e->scratch))
+			goto unknown;
 		list = r->arg_prefix;
 		kind = FE_ARG_PREFIX;
 		break;
@@ -1193,18 +1217,28 @@ static long fe_predicate_step(fm_u32 index, void *opaque)
 		result = r->stdin_pipe == f->stdin_pipe;
 		goto done;
 	default:
-		goto unknown;
+		goto structural;
 	}
 	result = fe_match(c, list, kind);
 done:
-	if (result != 1) {
-		pc->result = result;
+	if (result == 1)
+		return 0;
+	if (result == FE_STRUCTURAL) {
+structural:
+		/* Malformed program: a hard error, never masked. */
+		pc->result = FE_STRUCTURAL;
 		return 1;
 	}
-	return 0;
+	if (result == 0) {
+		/* A known false conjunct: the rule is known false. */
+		pc->result = 0;
+		return 1;
+	}
 unknown:
-	pc->result = -1;
-	return 1;
+	/* Kleene AND (G004): an UNKNOWN conjunct is an error only if no other
+	 * conjunct is known false; keep consulting the rest. */
+	pc->unknown = 1;
+	return 0;
 }
 #endif
 #ifdef FE_GLOBAL_MATCHER
@@ -1248,6 +1282,15 @@ int fe_rule_match_global(const struct fe_facts *f, struct fe_scratch *scratch,
 	if (!header)
 		return -1;
 	int result;
+	/* Kleene AND (G004): each conjunct is known true, known false or
+	 * UNKNOWN (a fact not acquired). A known false conjunct returns 0 at
+	 * once; an UNKNOWN one is remembered and the rest are still consulted;
+	 * the rule is an error (-1) only if no conjunct was known false. A
+	 * malformed program or matcher failure (FE_STRUCTURAL, -2: invalid list,
+	 * missing blob or container string, string over 255, unknown kind or fs
+	 * class, ancestor depth) returns at once and is never masked; the rule
+	 * header checks above stay a hard -1. */
+	int unknown = 0;
 #if defined(FE_BOUNDED_LOOP_CANDIDATE)
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
 	if (!request)
@@ -1276,7 +1319,11 @@ int fe_rule_match_global(const struct fe_facts *f, struct fe_scratch *scratch,
 		request->kind = (predicate);                              \
 		result = fe_match_list_global(f, scratch, request,        \
 					      (list).base, (list).count); \
-		if (result != 1)                                          \
+		if (result == FE_STRUCTURAL)                              \
+			return FE_STRUCTURAL;                             \
+		if (result < 0)                                           \
+			unknown = 1;                                      \
+		else if (result != 1)                                     \
 			return result;                                    \
 	} while (0)
 #else
@@ -1291,104 +1338,123 @@ int fe_rule_match_global(const struct fe_facts *f, struct fe_scratch *scratch,
 		c.facts = f;                           \
 		c.scratch = scratch;                   \
 		result = fe_match(&c, (list), (kind)); \
-		if (result != 1)                       \
+		if (result == FE_STRUCTURAL)           \
+			return FE_STRUCTURAL;          \
+		if (result < 0)                        \
+			unknown = 1;                   \
+		else if (result != 1)                  \
 			return result;                 \
 	} while (0)
 #endif
 #if defined(FE_BOUNDED_LOOP_CANDIDATE)
 	request->path_selector = 0;
 	if (r->actor_path.count && !f->actor_path.length)
-		return -1;
+		unknown = 1;
+	else
 #else
 	c.path = &f->actor_path;
 	c.path_selector = 0;
 	if (r->actor_path.count && !c.path->length)
-		return -1;
+		unknown = 1;
+	else
 #endif
-	FE_TEST(r->actor_path, FE_PATH);
+		FE_TEST(r->actor_path, FE_PATH);
 #if defined(FE_BOUNDED_LOOP_CANDIDATE)
 	request->path_selector = 1;
 	if (r->target_path.count && !f->target_path.length)
-		return -1;
+		unknown = 1;
+	else
 #else
 	c.path = &f->target_path;
 	c.path_selector = 1;
 	if (r->target_path.count && !c.path->length)
-		return -1;
+		unknown = 1;
+	else
 #endif
-	FE_TEST(r->target_path, FE_PATH);
+		FE_TEST(r->target_path, FE_PATH);
 #if defined(FE_BOUNDED_LOOP_CANDIDATE)
 	if (r->actor_role.count &&
 	    fe_resolve_role(f, policy_uid, &request->value) < 0)
 #else
 	if (r->actor_role.count && fe_resolve_role(f, policy_uid, &c.value) < 0)
 #endif
-		return -1;
-	FE_TEST(r->actor_role, FE_VALUE);
+		unknown = 1;
+	else
+		FE_TEST(r->actor_role, FE_VALUE);
 	if (r->container.count) {
+		/* A program without its container string is malformed. */
 #if defined(FE_BOUNDED_LOOP_CANDIDATE)
 		const struct fe_string *container =
 			FE_CONTAINER_LOOKUP(blob_context);
 		request->string_key = header->container;
 		if (!container || !container->length || container->length > 255)
-			return -1;
+			return FE_STRUCTURAL;
 #else
 		c.string = FE_CONTAINER_LOOKUP(blob_context);
 		c.string_key = header->container;
 		if (!c.string || !c.string->length || c.string->length > 255)
-			return -1;
+			return FE_STRUCTURAL;
 #endif
 	}
 	FE_TEST(r->container, FE_STRING);
-	if (r->uid.count && !f->uid_known)
-		return -1;
+	if (r->uid.count && !f->uid_known) {
+		unknown = 1;
+	} else {
 #if defined(FE_BOUNDED_LOOP_CANDIDATE)
-	request->value = f->effective_uid;
+		request->value = f->effective_uid;
 #else
-	c.value = f->effective_uid;
+		c.value = f->effective_uid;
 #endif
-	FE_TEST(r->uid, FE_VALUE);
+		FE_TEST(r->uid, FE_VALUE);
+	}
 	if (r->actor_image != -1) {
 		if (f->actor_image < 0 || f->actor_image > 1)
-			return -1;
-		if (r->actor_image != f->actor_image)
+			unknown = 1;
+		else if (r->actor_image != f->actor_image)
 			return 0;
 	}
 	if (r->target_image != -1) {
 		if (f->target_image < 0 || f->target_image > 1)
-			return -1;
-		if (r->target_image != f->target_image)
+			unknown = 1;
+		else if (r->target_image != f->target_image)
 			return 0;
 	}
 	FE_TEST(r->fs_type, FE_FS);
 	if (r->ancestor_path.count) {
 		if (!r->ancestor_depth || r->ancestor_depth > 16)
-			return -1;
+			return FE_STRUCTURAL;
 #if defined(FE_BOUNDED_LOOP_CANDIDATE)
-		int found = 0;
+		int found = 0; /* 1 match, 0 none, -1 UNKNOWN */
 		for (fm_u32 i = 0; i < 16; i++) {
 			if (i >= r->ancestor_depth || i >= f->ancestor_count)
 				break;
-			if (!f->ancestors[i].length)
-				return -1;
+			if (!f->ancestors[i].length) {
+				found = -1;
+				break;
+			}
 			request->path_selector = 2 + i;
 			request->kind = FE_PATH;
 			result = fe_match_list_global(f, scratch, request,
 						      r->ancestor_path.base,
 						      r->ancestor_path.count);
-			if (result < 0)
-				return -1;
+			if (result == FE_STRUCTURAL)
+				return FE_STRUCTURAL;
+			if (result < 0) {
+				found = -1;
+				break;
+			}
 			if (result == 1) {
 				found = 1;
 				break;
 			}
 		}
-		if (!found) {
-			if (f->ancestor_count < r->ancestor_depth &&
-			    !f->ancestors_complete)
-				return -1;
+		if (!found && f->ancestor_count < r->ancestor_depth &&
+		    !f->ancestors_complete)
+			found = -1;
+		if (found < 0)
+			unknown = 1;
+		else if (!found)
 			return 0;
-		}
 #else
 		c.blob_context = blob_context;
 		c.facts = f;
@@ -1400,30 +1466,32 @@ int fe_rule_match_global(const struct fe_facts *f, struct fe_scratch *scratch,
 			.list = r->ancestor_path,
 			.depth = r->ancestor_depth,
 		};
-		if (FE_LOOP(16, fe_ancestor_step, &a) < 0)
-			return -1;
-		if (a.result != 1) {
-			if (a.result < 0 ||
-			    (f->ancestor_count < r->ancestor_depth &&
-			     !f->ancestors_complete))
-				return -1;
+		if (FE_LOOP(16, fe_ancestor_step, &a) < 0 ||
+		    a.result == FE_STRUCTURAL)
+			return FE_STRUCTURAL;
+		if (a.result < 0 ||
+		    (a.result != 1 && f->ancestor_count < r->ancestor_depth &&
+		     !f->ancestors_complete))
+			unknown = 1;
+		else if (a.result != 1)
 			return 0;
-		}
 #endif
 	}
 	if ((r->arg_contains.count || r->arg_prefix.count) &&
-	    !fe_argv_valid(f, scratch))
-		return -1;
-	FE_TEST(r->arg_contains, FE_ARG_EXACT);
-	FE_TEST(r->arg_prefix, FE_ARG_PREFIX);
+	    !fe_argv_valid(f, scratch)) {
+		unknown = 1;
+	} else {
+		FE_TEST(r->arg_contains, FE_ARG_EXACT);
+		FE_TEST(r->arg_prefix, FE_ARG_PREFIX);
+	}
 	if (r->stdin_pipe != -1) {
 		if (f->stdin_pipe < 0 || f->stdin_pipe > 1)
-			return -1;
-		if (r->stdin_pipe != f->stdin_pipe)
+			unknown = 1;
+		else if (r->stdin_pipe != f->stdin_pipe)
 			return 0;
 	}
 #undef FE_TEST
-	return 1;
+	return unknown ? -1 : 1;
 }
 #endif
 FE_INLINE int fe_rule_match(struct fe_eval_context *e, const struct fe_rule *r,
@@ -1455,6 +1523,8 @@ FE_INLINE int fe_rule_match(struct fe_eval_context *e, const struct fe_rule *r,
 			   .scratch = e->scratch },
 	};
 	if (FE_LOOP(12, fe_predicate_step, &c) < 0)
+		return FE_STRUCTURAL;
+	if (c.result == 1 && c.unknown)
 		return -1;
 	return c.result;
 #endif
