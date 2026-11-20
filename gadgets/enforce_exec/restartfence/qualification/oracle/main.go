@@ -131,6 +131,8 @@ type pod struct {
 	root, child string
 	id, childID uint64
 	mode        uint32
+	ancestors   []string
+	chainIDs    []uint64
 	probe       *workload
 }
 type fixture struct {
@@ -362,6 +364,9 @@ func (f *fixture) cleanup() error {
 		if _, e := os.Stat(p.child); e == nil {
 			err = errors.Join(err, os.Remove(p.child))
 		}
+		for j := len(p.ancestors) - 1; j >= 0; j-- {
+			err = errors.Join(err, os.Remove(p.ancestors[j]))
+		}
 		if _, e := os.Stat(p.root); e == nil {
 			err = errors.Join(err, os.Remove(p.root))
 		}
@@ -412,25 +417,61 @@ func setup(ctx context.Context, name, out, work, object, backend, helper, mutant
 			p.mode = 1
 		}
 		p.child = p.root + "/container"
-		if err := os.Mkdir(p.root, 0o755); err != nil {
-			return nil, err
+		if name == "deep-cgroup" {
+			depth := []int{64, 65, 64, 65}[i]
+			if i >= 2 {
+				p.mode = 1
+			}
+			chain, e := deepCgroupChain(p.root, depth)
+			if e != nil {
+				return nil, e
+			}
+			p.ancestors, p.child = chain[:len(chain)-1], chain[len(chain)-1]
 		}
-		if err := os.Mkdir(p.child, 0o755); err != nil {
-			return nil, err
+		if name == "deep-cgroup" {
+			paths := append([]string{p.root}, p.ancestors...)
+			paths = append(paths, p.child)
+			if _, err := createDeepPaths(paths, func(path string) error { return os.Mkdir(path, 0o755) }, os.Remove); err != nil {
+				return f, err
+			}
+		} else {
+			if err := os.Mkdir(p.root, 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.Mkdir(p.child, 0o755); err != nil {
+				return nil, err
+			}
 		}
-		p.id, err = inode(p.root)
-		if err != nil {
-			return nil, err
-		}
-		p.childID, err = inode(p.child)
-		if err != nil {
-			return nil, err
-		}
-		p.probe, err = startWorkload(ctx, helper, denied, allowed, p.child, filepath.Join(out, fmt.Sprintf("probe-%d.jsonl", i)))
-		if err != nil {
-			return nil, err
+		if err := func() error {
+			p.id, err = inode(p.root)
+			if err != nil {
+				return err
+			}
+			p.childID, err = inode(p.child)
+			if err != nil {
+				return err
+			}
+			p.probe, err = startWorkload(ctx, helper, denied, allowed, p.child, filepath.Join(out, fmt.Sprintf("probe-%d.jsonl", i)))
+			if err != nil {
+				return err
+			}
+			return nil
+		}(); err != nil {
+			if name == "deep-cgroup" {
+				paths := append([]string{p.root}, p.ancestors...)
+				paths = append(paths, p.child)
+				for j := len(paths) - 1; j >= 0; j-- {
+					err = errors.Join(err, os.Remove(paths[j]))
+				}
+			}
+			return f, err
 		}
 		f.pods = append(f.pods, p)
+	}
+	if name == "deep-cgroup" {
+		if err := f.attestDeepCgroups(); err != nil {
+			return f, err
+		}
 	}
 	if err := f.start(); err != nil {
 		return f, err
@@ -495,6 +536,11 @@ func (f *fixture) checkOutageTotals(before fence.Snapshot) error {
 }
 
 func (f *fixture) scenario(name string) error {
+	if name == "deep-cgroup" {
+		if err := f.attestDeepCgroups(); err != nil {
+			return err
+		}
+	}
 	switch name {
 	case "graceful":
 		if err := f.transition(func() error {
@@ -505,7 +551,7 @@ func (f *fixture) scenario(name string) error {
 		}); err != nil {
 			return err
 		}
-	case "sigkill", "partial-move", "cgroup-exit", "abi-skew", "load-failure", "nonce", "uninstall":
+	case "deep-cgroup", "sigkill", "partial-move", "cgroup-exit", "abi-skew", "load-failure", "nonce", "uninstall":
 		if err := f.transition(f.owner.kill); err != nil {
 			return err
 		}
@@ -526,6 +572,11 @@ func (f *fixture) scenario(name string) error {
 	}
 	if err := f.expectLive(0); err != nil {
 		return err
+	}
+	if name == "deep-cgroup" {
+		if err := f.attestDeepCgroups(); err != nil {
+			return err
+		}
 	}
 	beforeCounts, err := f.counterSnapshot()
 	if err != nil {
@@ -705,7 +756,13 @@ func (f *fixture) scenario(name string) error {
 			return err
 		}
 	}
-	return f.recover()
+	if err := f.recover(); err != nil {
+		return err
+	}
+	if name == "deep-cgroup" {
+		return f.attestDeepCgroups()
+	}
+	return nil
 }
 
 func run() error {
@@ -721,9 +778,9 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	cases := []string{"graceful", "sigkill", "partial-move", "abi-skew", "cgroup-exit", "selfexec", "thread-selfexec", "failed-selfexec", "uninstall", "load-failure", "nonce"}
-	if selected := os.Getenv("FENCE_CASE"); selected != "" {
-		cases = []string{selected}
+	cases, err := selectedCases(os.Getenv("FENCE_CASE"))
+	if err != nil {
+		return err
 	}
 	for _, name := range cases {
 		if name == "load-failure" {

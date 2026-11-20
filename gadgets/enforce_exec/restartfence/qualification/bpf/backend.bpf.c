@@ -22,6 +22,7 @@ struct {
 SEC("lsm/bprm_check_security")
 long BPF_PROG(backend_check, struct linux_binprm *bprm, int ret)
 {
+	(void)ret; // Preserve the full-width chained result from ctx below.
 	__s64 prior_ret = (__s64)ctx[1];
 	if (prior_ret)
 		return prior_ret;

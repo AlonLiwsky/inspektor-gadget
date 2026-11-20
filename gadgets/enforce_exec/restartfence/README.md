@@ -63,10 +63,15 @@ needs an explicit, separate retired-graph recovery procedure; normal
 ## Build and qualification
 
 The AMD64 object is in `bpf/fence_amd64.elf`. Regenerate with
-`go generate .` in this directory (clang-19, libbpf headers and
-`llvm-strip`; see `bpf/build.sh`). The build is separate from, and
-does not rotate, the product object's pins. Non-AMD64 embedded use
-is currently refused.
+`go generate .` in this directory using the repository-pinned gadget-builder
+image from `Makefile` (`clang`, libbpf headers and `llvm-strip`; see
+`bpf/build.sh`). Build qualification payloads with that same toolchain and
+verify the baseline fence object matches the embedded object byte for byte
+before running the oracle. `CLANG` and `LLVM_STRIP` overrides remain available,
+but changing the toolchain requires regenerating and qualifying the resulting
+exact object; a previous object's qualification does not transfer.
+The build is separate from, and does not rotate, the product object's pins.
+Non-AMD64 embedded use is currently refused.
 
 The VM oracle under `qualification/` uses an independently selective
 fixture backend, not the actual node-agent. It does not qualify product

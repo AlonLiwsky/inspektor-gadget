@@ -2,6 +2,9 @@
 # Copyright 2026 The Inspektor Gadget authors
 # SPDX-License-Identifier: Apache-2.0
 # Host-only compilation. No BPF is loaded by this script.
+# Use the clang/llvm-strip alternatives from the repository-pinned
+# gadget-builder image. A compiler override produces a distinct artifact
+# that must be qualified; host compiler availability is not provenance.
 set -euo pipefail
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../../.." && pwd)
@@ -12,7 +15,7 @@ case $variant in baseline|no-exit-arm|no-nonce|never-move|restart-lift) ;; *) ec
 mkdir -p "$OUT"
 args=(); case $variant in no-exit-arm|no-nonce) args=("$variant");; esac
 "$HERE/../bpf/build.sh" "$OUT/fence.bpf.o" "${args[@]}"
-"${CLANG:-clang-19}" -target bpfel -mcpu=v3 -O2 -g -Wall -Werror \
+"${CLANG:-clang}" -target bpfel -mcpu=v3 -O2 -g -Wall -Werror \
   -D__TARGET_ARCH_x86 -I "$REPO/include/gadget/amd64" -I "$REPO/include/gadget" \
   -c "$HERE/bpf/backend.bpf.c" -o "$OUT/backend.bpf.o"
 gcc -std=c11 -static -O2 -Wall -Wextra -Werror "$HERE/exec_probe.c" -o "$OUT/exec-probe"
@@ -27,7 +30,7 @@ case $variant in
  restart-lift) printf 'graceful\n' ;;
 esac > "$OUT/scenario"
 {
- "${CLANG:-clang-19}" --version | head -n 1
+ "${CLANG:-clang}" --version | head -n 1
  gcc --version | head -n 1
  go version
  git -C "$REPO" rev-parse HEAD
