@@ -22,7 +22,8 @@ barrier denies every `CAP_SYS_ADMIN` use.
 
 The barrier needs every hook, so it needs the `userns_create` LSM hook in
 the kernel BTF (mainline Linux 6.1). It also needs BPF LSM in the active LSM
-list and `kernel.ftrace_enabled=1`.
+list and `kernel.ftrace_enabled=1`. That sysctl exists only with
+`CONFIG_FUNCTION_TRACER`: without it, the attestation fails closed.
 
 ## Using the barrier
 
