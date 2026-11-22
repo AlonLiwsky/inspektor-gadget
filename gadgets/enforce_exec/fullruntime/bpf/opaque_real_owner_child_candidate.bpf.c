@@ -2737,6 +2737,77 @@ static __attribute__((noinline)) int d1_task_in_strict_cgroup(void)
 	bpf_spin_unlock(&a->lock);
 	return strict;
 }
+/* Root barrier (gadgets/common/root_barrier.h, kubescape/inspektor-gadget#26):
+ * a covered task cannot change its root or mount tree (chroot, pivot_root,
+ * a new user or mount namespace, setns into one, mount, move_mount, umount,
+ * the new mount API). Every D1 object of this shared candidate carries it
+ * (its rb_* programs are in the pinned attach set, sharedCandidateAttachSet);
+ * the legacy per-binding Owner (eo_*) does not include it.
+ *
+ * Coverage is the exec verdict's own route state: the current task's cgroup
+ * route, read under the route lock as se_route_claim_locked classifies it,
+ * without taking a claim. An ACTIVE Strict route covers the task (deny); an
+ * Audit route, no route or an unselected one (withdrawn, preparing, another
+ * incarnation or cgroup) does not: Audit never blocks. An adopting or
+ * latched Strict route still covers: its class is known. A locator that
+ * names no route slot, or a route with no valid class, is the route
+ * invariant fault: Strict fault (deny and count). The route is per exact
+ * cgroup, like the exec verdict: a task in another cgroup is not covered
+ * (README, "Scope, runtime helpers and operator consent").
+ *
+ * The node publishes a route from the container hook, after the runtime
+ * set up the container root (pivot_root and its mounts run before it), so
+ * the barrier does not judge that setup. A runtime exec helper that runc
+ * starts inside the cgroup (CLONE_INTO_CGROUP) is covered: it cannot join
+ * the mount namespace. README, "Root barrier".
+ *
+ * Denials are counted (root_barrier_counters), not reported as verdict
+ * events. noinline: off the caller's frame. */
+static __attribute__((noinline)) int real_owner_root_barrier_coverage(void)
+{
+	__u64 cgroup = bpf_get_current_cgroup_id();
+	if (!cgroup)
+		return 0; /* ROOT_BARRIER_TASK_NOT_COVERED */
+	const __u64 *entry = se_opaque_real_route_index(&cgroup);
+	if (!entry)
+		return 0;
+	/* The same single-word atomic read as se_route_admit. */
+	__u64 loc = __sync_val_compare_and_swap((__u64 *)entry, 0, 0);
+	if (!loc)
+		return 0;
+	__u32 slot = (__u32)loc;
+	if (slot >= SE_ROUTE_CAPACITY)
+		return 2; /* ROOT_BARRIER_TASK_FAULT_STRICT */
+	struct se_route_anchor *a = se_opaque_real_route_anchor(&slot);
+	if (!a)
+		return 2;
+	int coverage = 0;
+	bpf_spin_lock(&a->lock);
+	if ((__u32)loc != a->payload_slot ||
+	    (__u32)(loc >> 32) != a->incarnation || !a->incarnation ||
+	    a->cgroup_identity != cgroup || a->phase != SE_ROUTE_ACTIVE)
+		coverage = 0;
+	else if (a->execution_class == 2)
+		coverage = 1; /* ROOT_BARRIER_TASK_COVERED */
+	else if (a->execution_class != 1)
+		coverage = 2;
+	bpf_spin_unlock(&a->lock);
+	return coverage;
+}
+#define ROOT_BARRIER_COVERED(task) real_owner_root_barrier_coverage()
+/* The task_alloc body runs inline in
+ * opaque_real_owner_child_source_candidate, before the product allocates
+ * any state for the child. */
+#define ROOT_BARRIER_NO_TASK_ALLOC_PROGRAM
+#include "../../../common/root_barrier.h"
+/* The barrier's task_alloc body, off the source program's frame: inline,
+ * its locals would push that program's combined stack past 512 bytes.
+ * Returns nonzero when the barrier denies the clone. */
+static __attribute__((noinline)) int
+real_owner_root_barrier_alloc(void *ctx, unsigned long clone_flags)
+{
+	return root_barrier_task_alloc(ctx, clone_flags) != 0;
+}
 /* LSM half of the fork pair: mark the child in its own task storage.
  * noinline: off the task_alloc frame (512-byte combined stack). Returns -1
  * when the storage cannot be created (an allocation failure): S1 review R1,
@@ -3897,6 +3968,14 @@ long BPF_PROG(opaque_real_owner_child_source_candidate,
 	__s64 prior_ret = (__s64)ctx[2];
 	if (prior_ret)
 		return prior_ret;
+#ifdef ENFORCE_EXEC_D1_LSM_ONLY
+	/* Root barrier first (CLONE_NEWNS/CLONE_NEWUSER of a covered task): a
+	 * denied clone never reaches the product's birth claim or allocation.
+	 * The barrier denies with -EPERM; a constant keeps the LSM return range
+	 * visible to the verifier. */
+	if (real_owner_root_barrier_alloc(ctx, clone_flags))
+		return -1; /* -EPERM */
+#endif
 #ifdef ENFORCE_EXEC_D1_LSM_ONLY
 	if (unmarked && d1_task_in_strict_cgroup())
 		return -12; /* -ENOMEM: Strict-bound fork only */

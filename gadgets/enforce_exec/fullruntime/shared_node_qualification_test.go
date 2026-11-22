@@ -20,6 +20,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/spf13/viper"
 
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/common/rootbarrier"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf/nativeattach"
@@ -216,7 +217,7 @@ func TestSharedCandidateMergedMetadataDeclaration(t *testing.T) {
 	for _, target := range sharedCandidateAttachSet {
 		perHook[target]++
 	}
-	if fmt.Sprint(perHook) != fmt.Sprint(candidateAttachPerHook) || len(sharedCandidateAttachSet) != 6 {
+	if fmt.Sprint(perHook) != fmt.Sprint(candidateAttachPerHook) || len(sharedCandidateAttachSet) != 13 {
 		t.Fatalf("product attach set per hook %v, pinned %v", perHook, candidateAttachPerHook)
 	}
 	disabled := candidateDisabled(merged)
@@ -463,6 +464,11 @@ func sharedCandidateFakeManifestWithoutCommands() *operators.NativeResources {
 	maps.Copy(r.Maps, geometry)
 	maps.Copy(r.Maps, sharedExitCreditGeometry(sharedCandidateQualificationProfile()))
 	r.Maps[sharedCapsuleStatsMap] = operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8 * SharedCapsuleCounters, MaxEntries: 1}
+	// The root barrier (every D1 object): its denial and fault counters and
+	// its self-test probe (gadgets/common/root_barrier.h).
+	r.Maps[rootbarrier.CountersMap] = operators.NativeMapResource{Type: uint32(ebpf.PerCPUArray), KeySize: 4, ValueSize: 8, MaxEntries: 11}
+	r.Maps[rootbarrier.FaultsMap] = operators.NativeMapResource{Type: uint32(ebpf.PerCPUArray), KeySize: 4, ValueSize: 8, MaxEntries: 2}
+	r.Maps[rootbarrier.ProbeMap] = operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 40, MaxEntries: 1}
 	return r
 }
 
@@ -503,7 +509,12 @@ type sharedFakeNativeHost struct {
 	failClosedRates    [FailClosedRateCounters]uint64
 	failClosedAttempts [FailClosedRateAttempts]uint64
 	failClosedErr      error
-	failClosedCells    int
+	// The root barrier seams (verifyRootBarrier, rootBarrierFaults).
+	rootBarrierErr      error
+	rootBarrierVerified int
+	barrierFaults       uint64
+	barrierFaultsErr    error
+	failClosedCells     int
 	// block, when set, makes the witness borrow close entered and wait for
 	// block to close.
 	block, entered chan struct{}
@@ -592,6 +603,25 @@ func (h *sharedFakeNativeHost) failClosed(_ operators.GadgetContext, cells int) 
 	}, nil
 }
 
+// verifyRootBarrier stands in for verifySharedRootBarrier: it records the
+// receipts it saw and returns rootBarrierErr.
+func (h *sharedFakeNativeHost) verifyRootBarrier(_ operators.GadgetContext, receipts map[string]*operators.NativeAttachment) error {
+	h.exitMu.Lock()
+	defer h.exitMu.Unlock()
+	h.rootBarrierVerified = len(receipts)
+	return h.rootBarrierErr
+}
+
+// rootBarrierFaults stands in for borrowSharedRootBarrierFaults (under
+// exitMu).
+func (h *sharedFakeNativeHost) rootBarrierFaults(operators.GadgetContext) (sharedRootBarrierFaultRead, error) {
+	return func() (uint64, error) {
+		h.exitMu.Lock()
+		defer h.exitMu.Unlock()
+		return h.barrierFaults, h.barrierFaultsErr
+	}, nil
+}
+
 // setFailClosed changes the fake fail-closed witness under its lock.
 func (h *sharedFakeNativeHost) setFailClosed(f func(*[FailClosedRateCounters]uint64, *[FailClosedRateAttempts]uint64, *error)) {
 	h.exitMu.Lock()
@@ -626,7 +656,7 @@ func (h *sharedFakeNativeHost) newReaper(_ operators.GadgetContext, config Reape
 
 // qualification is the test seam over this host.
 func (h *sharedFakeNativeHost) qualification(publisher func(operators.GadgetContext) (SharedRoutePublisher, error)) SharedNodeQualification {
-	return SharedNodeQualification{Run: h.run, Publisher: publisher, newReaper: h.newReaper, exitCredit: h.exitCredit, capsuleStats: h.capsuleStats, birthParkStats: h.birthParkStats, factStats: h.factStats, failClosed: h.failClosed, verdictCounters: h.verdictCounters}
+	return SharedNodeQualification{Run: h.run, Publisher: publisher, newReaper: h.newReaper, exitCredit: h.exitCredit, capsuleStats: h.capsuleStats, birthParkStats: h.birthParkStats, factStats: h.factStats, failClosed: h.failClosed, verdictCounters: h.verdictCounters, rootBarrier: h.verifyRootBarrier, rootBarrierFaults: h.rootBarrierFaults}
 }
 
 func (h *sharedFakeNativeHost) run(ctx context.Context, opt gadgetcontext.Option) (func(context.Context) error, <-chan error, error) {
@@ -735,7 +765,7 @@ func TestSharedStartNodeQualifiedLoadsOneCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if host.runs != 1 || len(host.attached) != 11 || len(n.host.live.receipts) != 11 { // S1: + the tp_btf/sched_process_fork witness, - the merged failure terminal
+	if host.runs != 1 || len(host.attached) != 18 || len(n.host.live.receipts) != 18 { // S1: + the tp_btf/sched_process_fork witness, - the merged failure terminal; + the 7 root barrier links
 		t.Fatalf("runs=%d attached=%d receipts=%d", host.runs, len(host.attached), len(n.host.live.receipts))
 	}
 	if n.host.live.reaper == nil || n.host.live.reaper.reaper != host.reaper {

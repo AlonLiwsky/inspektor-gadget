@@ -10,9 +10,16 @@
 #
 # Every trampoline program outside the qualified steady-state attach set is
 # listed here. The resulting attach set (G009, pinned by
-# TestCandidateAttachSetObjects in attach_inventory_test.go) is:
-#   bpf_lsm_task_free 1, bpf_lsm_task_alloc 1, bprm_execve 3,
-#   security_bprm_creds_for_exec 1, bpf_lsm_bprm_check_security 1.
+# TestCandidateAttachSetObjects in attach_inventory_test.go, and
+# sharedCandidateAttachSet) is, D1:
+#   bpf_lsm_task_free 2, bpf_lsm_task_alloc 1, bpf_lsm_bprm_creds_for_exec 1,
+#   bpf_lsm_bprm_check_security 1, bpf_lsm_bprm_committed_creds 1, and the
+#   7 root barrier programs (product objects; ../../../common/root_barrier.h):
+#   rb_chroot (path_chroot), rb_pivotroot (sb_pivotroot), rb_userns
+#   (userns_create), rb_capable (capable), rb_sb_mount (sb_mount),
+#   rb_move_mount (move_mount), rb_sb_umount (sb_umount). The barrier's
+#   task_alloc body runs inline in opaque_real_owner_child_source_candidate.
+#   The barrier programs are attached, so none is listed here.
 # A new trampoline program fails that test until it is either listed here or
 # deliberately added to the pinned attach set.
 #

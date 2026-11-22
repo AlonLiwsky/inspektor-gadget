@@ -233,11 +233,22 @@ var (
 		"real_owner_capsule_begin":               "bpf_lsm_bprm_creds_for_exec",
 		"opaque_real_owner_reader_success_probe": "bpf_lsm_bprm_committed_creds",
 		"opaque_real_owner_reader_begin_probe":   "bpf_lsm_bprm_check_security",
+		// The root barrier (its task_alloc body is inline in the source).
+		"rb_chroot":     "bpf_lsm_path_chroot",
+		"rb_pivotroot":  "bpf_lsm_sb_pivotroot",
+		"rb_userns":     "bpf_lsm_userns_create",
+		"rb_capable":    "bpf_lsm_capable",
+		"rb_sb_mount":   "bpf_lsm_sb_mount",
+		"rb_move_mount": "bpf_lsm_move_mount",
+		"rb_sb_umount":  "bpf_lsm_sb_umount",
 	}
 	candidateAttachPerHook = map[string]int{
 		"bpf_lsm_task_free": 2, "bpf_lsm_task_alloc": 1,
 		"bpf_lsm_bprm_creds_for_exec": 1, "bpf_lsm_bprm_check_security": 1,
 		"bpf_lsm_bprm_committed_creds": 1,
+		"bpf_lsm_path_chroot":          1, "bpf_lsm_sb_pivotroot": 1, "bpf_lsm_userns_create": 1,
+		"bpf_lsm_capable": 1, "bpf_lsm_sb_mount": 1, "bpf_lsm_move_mount": 1,
+		"bpf_lsm_sb_umount": 1,
 	}
 )
 

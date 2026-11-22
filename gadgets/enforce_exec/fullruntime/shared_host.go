@@ -128,6 +128,12 @@ type sharedHostState struct {
 	// Tests only override them.
 	failClosed      func(operators.GadgetContext, int) (sharedFailClosedRead, error)
 	failClosedClock func() time.Time
+	// rootBarrier verifies the root barrier of a product node at start;
+	// nil selects verifySharedRootBarrier. rootBarrierFaults borrows its
+	// fault reader; nil selects borrowSharedRootBarrierFaults. Tests only
+	// override them.
+	rootBarrier       func(operators.GadgetContext, map[string]*operators.NativeAttachment) error
+	rootBarrierFaults func(operators.GadgetContext) (sharedRootBarrierFaultRead, error)
 	// newProductPublisher replaces borrowSharedProductPublisher (G1).
 	// Package tests only.
 	newProductPublisher func(operators.GadgetContext, *operators.NativeResources) (SharedRoutePublisher, error)
@@ -187,11 +193,14 @@ type sharedLiveCandidate struct {
 }
 
 // sharedCandidateAttachSet is the pinned steady-state trampoline attach set
-// of the shared candidate, D1 (LSM-only prototype): 6 links, all BPF LSM
+// of the shared candidate, D1 (LSM-only prototype): 13 links, all BPF LSM
 // hooks: task_free 2 (the product release and the exec capsule's death
 // retire), task_alloc 1, bprm_creds_for_exec 1 (the exec frame's begin),
-// bprm_check_security 1. No fentry/fexit program is attached. Every other
-// program of the image must be disabled by its packaged metadata.
+// bprm_check_security 1, bprm_committed_creds 1, and the 7 root barrier
+// programs (gadgets/common/root_barrier.h; its task_alloc body runs inline in
+// the task_alloc source program). No fentry/fexit program is attached.
+// Every other program of the image must be disabled by its packaged
+// metadata.
 var sharedCandidateAttachSet = map[string]string{
 	"opaque_real_owner_child_final_free_candidate": "bpf_lsm_task_free",
 	"opaque_real_owner_child_source_candidate":     "bpf_lsm_task_alloc",
@@ -200,6 +209,14 @@ var sharedCandidateAttachSet = map[string]string{
 	"opaque_real_owner_reader_begin_probe":         "bpf_lsm_bprm_check_security",
 	// The success terminal (was tp_btf/sched_process_exec).
 	"opaque_real_owner_reader_success_probe": "bpf_lsm_bprm_committed_creds",
+	// The root barrier (README, "Root barrier").
+	"rb_chroot":     "bpf_lsm_path_chroot",
+	"rb_pivotroot":  "bpf_lsm_sb_pivotroot",
+	"rb_userns":     "bpf_lsm_userns_create",
+	"rb_capable":    "bpf_lsm_capable",
+	"rb_sb_mount":   "bpf_lsm_sb_mount",
+	"rb_move_mount": "bpf_lsm_move_mount",
+	"rb_sb_umount":  "bpf_lsm_sb_umount",
 }
 
 // sharedCandidateProbeSet is the pinned non-trampoline part of the steady
@@ -1071,7 +1088,7 @@ func (n *NodeEnforcer) ReleaseAfterDetach() error {
 }
 
 // startLiveCandidate borrows exactly the pinned attach set's native receipts
-// (8 trampoline links, task_free 2, plus the 8 pinned kprobe/raw_tp/tp_btf links).
+// (13 trampoline links, task_free 2, plus the 5 pinned raw_tp/tp_btf links).
 // The eBPF operator published them only after the whole transaction attached;
 // their Check is the operator's nativeReadinessCheck (link present by ID,
 // same program). It then starts the product reaper over the borrowed
@@ -1103,6 +1120,18 @@ func (n *NodeEnforcer) startLiveCandidate(gc operators.GadgetContext, admitted *
 	for name, receipt := range receipts {
 		if err := receipt.Check(); err != nil {
 			return fmt.Errorf("shared candidate receipt %s: %w", name, err)
+		}
+	}
+	// The root barrier of a product node: verified once every link is
+	// present, after the kernel gate admitted the build
+	// (admitSharedProductImage). A failure is NotReady.
+	if n.host.product {
+		verify := n.host.rootBarrier
+		if verify == nil {
+			verify = verifySharedRootBarrier
+		}
+		if err := verify(gc, receipts); err != nil {
+			return err
 		}
 	}
 	// D1 objects (the d1_witness map): every attached program must have run
@@ -1739,6 +1768,7 @@ func startLiveSharedNodeOnce(ctx context.Context, config SharedNodeConfig, run f
 	n.host.birthParkStats = q.birthParkStats
 	n.host.factStats = q.factStats
 	n.host.failClosed, n.host.failClosedClock = q.failClosed, q.failClosedClock
+	n.host.rootBarrier, n.host.rootBarrierFaults = q.rootBarrier, q.rootBarrierFaults
 	n.host.newProductPublisher = q.newProductPublisher
 	n.host.verdictCounters, n.host.verdictClock = q.verdictCounters, q.verdictClock
 	n.host.imageSource = q.imageSource

@@ -149,8 +149,8 @@ func TestSharedNodeM2Attached(t *testing.T) {
 		}
 	}()
 	receipts := node.host.live.receipts
-	if len(receipts) != 11 { // S1: 6 BPF LSM links + 5 tracepoint links (+ the sched_process_fork witness, the two sys_exit programs merged into one)
-		t.Fatalf("receipts %d, want 8 trampoline + 8 probe links", len(receipts))
+	if len(receipts) != 18 { // S1: 6 BPF LSM links + 5 tracepoint links (+ the sched_process_fork witness, the two sys_exit programs merged into one), and the 7 root barrier links
+		t.Fatalf("receipts %d, want 13 trampoline + 5 probe links", len(receipts))
 	}
 	// The capsule's death retire (lsm/task_free) attaches before the capsule
 	// terminal, so no capsule exists without its retire.

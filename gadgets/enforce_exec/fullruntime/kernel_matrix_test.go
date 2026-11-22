@@ -50,11 +50,11 @@ func TestSharedCandidateKernelMatrixIsSeparate(t *testing.T) {
 	want := map[string]sharedProductPin{
 		"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": {
 			Release: "6.12.113-138.209.amzn2023.x86_64", BuildID: "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
-			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954": {}, "4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7": {}, "92dc17d870ac543a8aef316a287e06538d503f8f34d293181436fb73caa1742e": {}, "b8fd0637c744a7960b0e6d25f19d3f8b9c461276a43583925e85421d5230552a": {}},
+			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba": {}, "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d": {}, "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e": {}, "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31": {}},
 		},
 		"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
 			Release: "6.18.56-125.164.amzn2023.x86_64", BuildID: "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
-			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954": {}, "4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7": {}, "92dc17d870ac543a8aef316a287e06538d503f8f34d293181436fb73caa1742e": {}, "b8fd0637c744a7960b0e6d25f19d3f8b9c461276a43583925e85421d5230552a": {}},
+			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba": {}, "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d": {}, "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e": {}, "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31": {}},
 		},
 	}
 	if !reflect.DeepEqual(sharedProductPins, want) {

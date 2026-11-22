@@ -12,6 +12,7 @@ import (
 
 	"github.com/cilium/ebpf"
 
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/common/rootbarrier"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
@@ -104,6 +105,9 @@ type SharedFailClosedHealth struct {
 	// Counters and Attempts are the witness deltas since node start.
 	Counters [FailClosedRateCounters]uint64
 	Attempts [FailClosedRateAttempts]uint64
+	// Barrier is the root barrier's fault count since node start (product
+	// objects; FailClosedRootBarrier).
+	Barrier uint64
 }
 
 // sharedFailClosedRead reads the witness: the rate cells (the first 11 of a
@@ -178,14 +182,16 @@ type sharedFailClosedSample struct {
 	at       time.Time
 	rates    [FailClosedRateCounters]uint64
 	attempts [FailClosedRateAttempts]uint64
+	barrier  uint64 // root barrier faults (0 without a barrier reader)
 }
 
 // sharedLiveFailClosed polls the fail-closed rate witness and applies the
 // runtime reporting rule (fail_closed_rate.go) over a bounded ring of
 // samples:
 //   - Degraded: the FailClosedRateDegradedWindow verdict (threshold 0) is
-//     Degraded, i.e. a refusal, an unevaluated child or an ADMISSION fault
-//     within 60 s (ENTRY never degrades). It clears after a quiet window;
+//     Degraded, i.e. a refusal, an unevaluated child, an ADMISSION fault or
+//     a root barrier fault (FailClosedRootBarrier, product objects) within
+//     60 s (ENTRY never degrades). It clears after a quiet window;
 //   - NotReady: the FailClosedRateNotReadyWindow verdict (0.1%) is Degraded;
 //   - Unknown, sticky until node teardown like sharedLiveCapsule's: an
 //     unreadable witness, a counter that moved backwards, or counts that
@@ -203,6 +209,7 @@ type sharedFailClosedSample struct {
 // no owned attempt is in flight.
 type sharedLiveFailClosed struct {
 	read     sharedFailClosedRead
+	barrier  sharedRootBarrierFaultRead // nil: no root barrier class
 	product  bool
 	gated    bool
 	interval time.Duration
@@ -223,11 +230,14 @@ type sharedLiveFailClosed struct {
 
 // newSharedLiveFailClosed takes the node-start baseline: the window opens
 // here.
-func newSharedLiveFailClosed(read sharedFailClosedRead, product, gated bool, interval time.Duration, clock func() time.Time) (*sharedLiveFailClosed, error) {
+func newSharedLiveFailClosed(read sharedFailClosedRead, barrier sharedRootBarrierFaultRead, product, gated bool, interval time.Duration, clock func() time.Time) (*sharedLiveFailClosed, error) {
 	if interval < SharedFailClosedPollMin || interval > SharedFailClosedPollMax {
 		return nil, fmt.Errorf("fail-closed poll interval %s outside [%s, %s]", interval, SharedFailClosedPollMin, SharedFailClosedPollMax)
 	}
-	f := &sharedLiveFailClosed{read: read, product: product, gated: gated, interval: interval, clock: clock, stop: make(chan struct{})}
+	if barrier != nil && !product {
+		return nil, fmt.Errorf("the root barrier fault class needs a product witness")
+	}
+	f := &sharedLiveFailClosed{read: read, barrier: barrier, product: product, gated: gated, interval: interval, clock: clock, stop: make(chan struct{})}
 	// The NotReady window, one sample before it and the latest; twice that
 	// tolerates irregular ticks. Allocated once: the ring never grows.
 	f.limit = 2*int(FailClosedRateNotReadyWindow/interval) + 4
@@ -235,7 +245,13 @@ func newSharedLiveFailClosed(read sharedFailClosedRead, product, gated bool, int
 	if err != nil {
 		return nil, fmt.Errorf("shared candidate fail-closed witness unreadable: %w", err)
 	}
-	f.baseline = sharedFailClosedSample{at: f.now(), rates: rates, attempts: attempts}
+	var faults uint64
+	if barrier != nil {
+		if faults, err = barrier(); err != nil {
+			return nil, fmt.Errorf("shared candidate root barrier fault counter unreadable: %w", err)
+		}
+	}
+	f.baseline = sharedFailClosedSample{at: f.now(), rates: rates, attempts: attempts, barrier: faults}
 	f.samples = append(make([]sharedFailClosedSample, 0, f.limit+1), f.baseline)
 	f.evaluate()
 	return f, nil
@@ -298,8 +314,15 @@ func (f *sharedLiveFailClosed) sample() {
 		f.unknown(err)
 		return
 	}
+	var faults uint64
+	if f.barrier != nil {
+		if faults, err = f.barrier(); err != nil {
+			f.unknown(fmt.Errorf("root barrier fault counter: %w", err))
+			return
+		}
+	}
 	prev := f.samples[len(f.samples)-1]
-	s := sharedFailClosedSample{at: f.now(), rates: rates, attempts: attempts}
+	s := sharedFailClosedSample{at: f.now(), rates: rates, attempts: attempts, barrier: faults}
 	if s.at.Before(prev.at) {
 		s.at = prev.at
 	}
@@ -314,6 +337,10 @@ func (f *sharedLiveFailClosed) sample() {
 			f.unknown(fmt.Errorf("%s[%d] moved backwards (%d -> %d)", sharedFailClosedAttemptsMap, i, prev.attempts[i], s.attempts[i]))
 			return
 		}
+	}
+	if s.barrier < prev.barrier {
+		f.unknown(fmt.Errorf("root barrier fault counter moved backwards (%d -> %d)", prev.barrier, s.barrier))
+		return
 	}
 	f.samples = append(f.samples, s)
 	// Drop what no window needs: the oldest sample, while the third one is
@@ -354,6 +381,17 @@ func (f *sharedLiveFailClosed) window(w time.Duration, threshold float64) (FailC
 	if err != nil {
 		return v, span, fmt.Errorf("%s window: %w", w, err)
 	}
+	if f.barrier != nil {
+		// The same attempts as FailClosedProductRate (checked there: none
+		// moved backwards, no overflow).
+		var attempts uint64
+		for i := range latest.attempts {
+			attempts += latest.attempts[i] - before[i]
+		}
+		if err := FailClosedRootBarrier(&v, f.samples[base].barrier, latest.barrier, attempts, threshold); err != nil {
+			return v, span, fmt.Errorf("%s window: %w", w, err)
+		}
+	}
 	return v, span, nil
 }
 
@@ -367,6 +405,7 @@ func (f *sharedLiveFailClosed) evaluate() {
 	for i := range h.Attempts {
 		h.Attempts[i] = latest.attempts[i] - f.baseline.attempts[i]
 	}
+	h.Barrier = latest.barrier - f.baseline.barrier
 	var errRecent, errSustained error
 	h.Recent, h.RecentSpan, errRecent = f.window(FailClosedRateDegradedWindow, FailClosedRateDegradedThreshold)
 	h.Sustained, h.SustainedSpan, errSustained = f.window(FailClosedRateNotReadyWindow, FailClosedRateNotReadyThreshold)
@@ -405,12 +444,12 @@ func (f *sharedLiveFailClosed) report() (SharedFailClosedHealth, error) {
 		return h, nil
 	case SharedFailClosedNotReady:
 		v := h.Sustained
-		return h, fmt.Errorf("shared candidate fail-closed rate %.4f%% (total=%d admission=%d, %v) over %s exceeds %.1f%%, node NotReady: %w",
-			100*max(v.Rate, v.AdmissionRate), v.Total, v.Admission, v.Failures, h.SustainedSpan.Round(time.Millisecond), 100*FailClosedRateNotReadyThreshold, ErrSharedFailClosedNotReady)
+		return h, fmt.Errorf("shared candidate fail-closed rate %.4f%% (total=%d admission=%d barrier=%d, %v) over %s exceeds %.1f%%, node NotReady: %w",
+			100*max(v.Rate, v.AdmissionRate, v.BarrierRate), v.Total, v.Admission, v.Barrier, v.Failures, h.SustainedSpan.Round(time.Millisecond), 100*FailClosedRateNotReadyThreshold, ErrSharedFailClosedNotReady)
 	case SharedFailClosedDegraded:
 		v := h.Recent
-		return h, fmt.Errorf("shared candidate fail-closed refusals within %s (total=%d admission=%d, %v), node degraded: %w",
-			h.RecentSpan.Round(time.Millisecond), v.Total, v.Admission, v.Failures, ErrSharedFailClosedDegraded)
+		return h, fmt.Errorf("shared candidate fail-closed refusals within %s (total=%d admission=%d barrier=%d, %v), node degraded: %w",
+			h.RecentSpan.Round(time.Millisecond), v.Total, v.Admission, v.Barrier, v.Failures, ErrSharedFailClosedDegraded)
 	}
 	return h, fmt.Errorf("shared candidate legacy fail-closed witness has no attempts denominator (failures within %s: %d): %w",
 		h.RecentSpan.Round(time.Millisecond), h.Recent.Total, ErrSharedFailClosedUnknown)
@@ -461,7 +500,22 @@ func (n *NodeEnforcer) newLiveFailClosed(gc operators.GadgetContext, admitted *o
 	if err != nil || read == nil {
 		return nil, errors.Join(err, fmt.Errorf("shared candidate fail-closed witness unavailable"))
 	}
-	return newSharedLiveFailClosed(read, cells == FailClosedRateCounters, gated, n.config.failClosedPollInterval(), n.host.failClosedClock)
+	// The root barrier fault class: a gated product object must carry the
+	// barrier (its rb_* programs are in the pinned attach set).
+	var barrier sharedRootBarrierFaultRead
+	if gated {
+		if m, ok := admitted.Maps[rootbarrier.FaultsMap]; !ok || m.Type != uint32(ebpf.PerCPUArray) || m.KeySize != 4 || m.ValueSize != 8 || m.MaxEntries != 2 {
+			return nil, fmt.Errorf("shared candidate product object has no root barrier fault counter %s (or it is malformed: %+v)", rootbarrier.FaultsMap, m)
+		}
+		borrowBarrier := n.host.rootBarrierFaults
+		if borrowBarrier == nil {
+			borrowBarrier = borrowSharedRootBarrierFaults
+		}
+		if barrier, err = borrowBarrier(gc); err != nil || barrier == nil {
+			return nil, errors.Join(err, fmt.Errorf("shared candidate root barrier fault counter unavailable"))
+		}
+	}
+	return newSharedLiveFailClosed(read, barrier, cells == FailClosedRateCounters, gated, n.config.failClosedPollInterval(), n.host.failClosedClock)
 }
 
 // FailClosedHealth reports the fail-closed rate witness of the live node

@@ -26,9 +26,11 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"oras.land/oras-go/v2/content/oci"
 
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/common/rootbarrier"
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	apihelpers "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api-helpers"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 	_ "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf/nativeattach"
 	ocihandler "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/oci-handler"
@@ -223,6 +225,17 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 	t.Logf("product-strict-deny A %s, product-audit B %s", aVerdict, bVerdict)
 	if aVerdict != "r0=0 r1000=126" || bVerdict != "r0=0 r1000=0" {
 		t.Fatalf("verdicts: A %q (want r0=0 r1000=126), B %q (want r0=0 r1000=0)", aVerdict, bVerdict)
+	}
+	// The root barrier on this product node (its start check passed in
+	// StartNode): a root chroot in Strict A is denied by the barrier; the
+	// same chroot in Audit B runs (Audit never blocks).
+	chrootsBefore := sharedProductChrootDenials(t, gc)
+	aChroot, _, errA := ia.run(ctx, `chroot / /bin/true; echo "chroot=$?"`)
+	bChroot, _, errB := ib.run(ctx, `chroot / /bin/true; echo "chroot=$?"`)
+	chroots := sharedProductChrootDenials(t, gc) - chrootsBefore
+	t.Logf("product-root-barrier: A %s, B %s, barrier chroot denials +%d", strings.TrimSpace(aChroot), strings.TrimSpace(bChroot), chroots)
+	if errA != nil || errB != nil || strings.TrimSpace(aChroot) == "chroot=0" || strings.TrimSpace(bChroot) != "chroot=0" || chroots != 1 {
+		t.Fatalf("root barrier: A %q (%v), B %q (%v), denials +%d; want A refused, B chroot=0, one denial", aChroot, errA, bChroot, errB, chroots)
 	}
 
 	// Step 4: exec churn in B while sampling Ready and Degraded for at least
@@ -649,8 +662,25 @@ func sharedProductSmokeCodes(out string) (string, string) {
 }
 
 // sharedProductLinks is the product node's link count (S1: 6 BPF LSM + 5
-// tracepoint links; the restart child's check was still the pre-D1 16).
-const sharedProductLinks = 11
+// tracepoint links, and the 7 root barrier links; the restart child's check
+// was still the pre-D1 16).
+const sharedProductLinks = 18
+
+// sharedProductChrootDenials is the root barrier's chroot denial count of the
+// node's collection.
+func sharedProductChrootDenials(t *testing.T, gc operators.GadgetContext) uint64 {
+	t.Helper()
+	value, _ := gc.GetVar(operators.MapPrefix + rootbarrier.CountersMap)
+	m, _ := value.(*ebpf.Map)
+	if m == nil {
+		t.Fatalf("root barrier map %s not published", rootbarrier.CountersMap)
+	}
+	denials, err := rootbarrier.Denials(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return denials[rootbarrier.OpChroot]
+}
 
 // sharedProductRestart starts the node in a child test process, SIGKILLs
 // it, requires its links and programs gone, then starts the node again

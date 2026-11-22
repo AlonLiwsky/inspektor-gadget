@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/common/rootbarrier"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
@@ -54,7 +55,7 @@ func sharedFailClosedQuiet(n uint64) func(*sharedFailClosedFake) {
 func newSharedFailClosedTest(t *testing.T, product, gated bool) (*sharedLiveFailClosed, *sharedFailClosedFake) {
 	t.Helper()
 	w := &sharedFailClosedFake{at: time.Unix(1_000_000, 0)}
-	f, err := newSharedLiveFailClosed(w.read, product, gated, SharedFailClosedPollInterval, w.clock)
+	f, err := newSharedLiveFailClosed(w.read, nil, product, gated, SharedFailClosedPollInterval, w.clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +243,7 @@ func TestSharedFailClosedUnknown(t *testing.T) {
 	})
 	t.Run("unreadable at start", func(t *testing.T) {
 		w := &sharedFailClosedFake{err: syscall.EPERM}
-		if _, err := newSharedLiveFailClosed(w.read, true, true, SharedFailClosedPollInterval, w.clock); !errors.Is(err, syscall.EPERM) {
+		if _, err := newSharedLiveFailClosed(w.read, nil, true, true, SharedFailClosedPollInterval, w.clock); !errors.Is(err, syscall.EPERM) {
 			t.Fatalf("unreadable baseline: %v", err)
 		}
 	})
@@ -295,7 +296,7 @@ func TestSharedFailClosedPollerStops(t *testing.T) {
 		return w.read()
 	}
 	count := func() int { mu.Lock(); defer mu.Unlock(); return reads }
-	f, err := newSharedLiveFailClosed(read, true, true, SharedFailClosedPollMin, nil)
+	f, err := newSharedLiveFailClosed(read, nil, true, true, SharedFailClosedPollMin, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,6 +413,22 @@ func TestSharedNodeFailClosedSelection(t *testing.T) {
 			t.Fatalf("%s: product node started: %v", name, err)
 		}
 	}
+	// A gated product object must carry the root barrier's fault counter,
+	// with its exact shape.
+	for name, mutate := range map[string]func(*operators.NativeResources){
+		"no barrier faults": func(r *operators.NativeResources) { delete(r.Maps, rootbarrier.FaultsMap) },
+		"malformed barrier faults": func(r *operators.NativeResources) {
+			m := r.Maps[rootbarrier.FaultsMap]
+			m.MaxEntries = 3
+			r.Maps[rootbarrier.FaultsMap] = m
+		},
+	} {
+		host := &sharedFakeNativeHost{manifest: sharedProductFakeManifest()}
+		mutate(host.manifest)
+		if _, err := sharedStartProductFakeNode(t, host, 0); err == nil || !strings.Contains(err.Error(), "root barrier fault counter") {
+			t.Fatalf("%s: product node started: %v", name, err)
+		}
+	}
 	legacy := sharedProductFakeManifest()
 	m := legacy.Maps[sharedFailClosedRatesMap]
 	m.MaxEntries = FailClosedRateLegacyCounters
@@ -503,5 +520,53 @@ func TestProductPublisherClassChangeRefusal(t *testing.T) {
 	_, err = p.Publish(t.Context(), 0, 11, SharedBindingPolicy{Class: 2, Fallback: 2, Rules: 1}, false, SharedInitIdentity{})
 	if errors.Is(err, ErrSharedClassChange) || !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), "policy UID") {
 		t.Fatalf("same-class refused revision: %v", err)
+	}
+}
+
+// TestSharedFailClosedRootBarrier: a root barrier fault makes the gated node
+// Degraded (and NotReady above 0.1% over the NotReady window); a barrier
+// counter that moves backwards or cannot be read is a sticky Unknown.
+func TestSharedFailClosedRootBarrier(t *testing.T) {
+	newWith := func(t *testing.T, faults *uint64, readErr *error) (*sharedLiveFailClosed, *sharedFailClosedFake) {
+		t.Helper()
+		w := &sharedFailClosedFake{at: time.Unix(1_000_000, 0)}
+		barrier := func() (uint64, error) { return *faults, *readErr }
+		f, err := newSharedLiveFailClosed(w.read, barrier, true, true, SharedFailClosedPollInterval, w.clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f, w
+	}
+	var faults uint64
+	var readErr error
+	f, w := newWith(t, &faults, &readErr)
+	w.tick(f, sharedFailClosedQuiet(500))
+	requireFailClosedState(t, f, SharedFailClosedHealthy, "quiet")
+	faults = 1
+	w.tick(f, sharedFailClosedQuiet(500))
+	h := requireFailClosedState(t, f, SharedFailClosedDegraded, "one barrier fault")
+	if h.Barrier != 1 || h.Recent.Barrier != 1 || h.Recent.Total != 0 {
+		t.Fatalf("one barrier fault: %+v", h)
+	}
+	faults = 5
+	w.tick(f, sharedFailClosedQuiet(500))
+	requireFailClosedState(t, f, SharedFailClosedNotReady, "barrier rate above 0.1%")
+
+	faults, readErr = 0, nil
+	f, w = newWith(t, &faults, &readErr)
+	faults = 3
+	w.tick(f, sharedFailClosedQuiet(10))
+	faults = 2
+	w.tick(f, sharedFailClosedQuiet(10))
+	requireFailClosedState(t, f, SharedFailClosedUnknown, "barrier counter backwards")
+
+	faults, readErr = 0, nil
+	f, w = newWith(t, &faults, &readErr)
+	readErr = errors.New("unreadable")
+	w.tick(f, sharedFailClosedQuiet(10))
+	requireFailClosedState(t, f, SharedFailClosedUnknown, "barrier counter unreadable")
+
+	if _, err := newSharedLiveFailClosed((&sharedFailClosedFake{}).read, func() (uint64, error) { return 0, nil }, false, false, SharedFailClosedPollInterval, nil); err == nil {
+		t.Fatal("a barrier class on a legacy witness was accepted")
 	}
 }

@@ -248,3 +248,39 @@ func TestFailClosedProductRateAdmission(t *testing.T) {
 		t.Error("Total + ADMISSION above attempts accepted")
 	}
 }
+
+// TestFailClosedRootBarrier: the root barrier class is reported apart (never
+// in Total), degrades by its own rate per attempt, counts each fault as a
+// whole attempt when the window has none, and a counter moving backwards is
+// unknown.
+func TestFailClosedRootBarrier(t *testing.T) {
+	for name, tc := range map[string]struct {
+		before, after, attempts uint64
+		threshold               float64
+		barrier                 uint64
+		rate                    float64
+		degraded                bool
+	}{
+		"no fault":                      {after: 0, attempts: 10, threshold: 0},
+		"one fault degrades at 0":       {after: 1, attempts: 1000, threshold: 0, barrier: 1, rate: 0.001, degraded: true},
+		"at the NotReady threshold":     {after: 1, attempts: 1000, threshold: FailClosedRateNotReadyThreshold, barrier: 1, rate: 0.001},
+		"above the NotReady threshold":  {after: 2, attempts: 1000, threshold: FailClosedRateNotReadyThreshold, barrier: 2, rate: 0.002, degraded: true},
+		"no attempt: a whole attempt":   {before: 5, after: 6, attempts: 0, threshold: FailClosedRateNotReadyThreshold, barrier: 1, rate: 1, degraded: true},
+		"more faults than attempts too": {after: 3, attempts: 1, threshold: FailClosedRateNotReadyThreshold, barrier: 3, rate: 3, degraded: true},
+	} {
+		v := FailClosedRateVerdict{Total: 7}
+		if err := FailClosedRootBarrier(&v, tc.before, tc.after, tc.attempts, tc.threshold); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if v.Barrier != tc.barrier || v.BarrierRate != tc.rate || v.Degraded != tc.degraded || v.Total != 7 {
+			t.Errorf("%s: verdict %+v, want barrier %d rate %v degraded %v, Total unchanged", name, v, tc.barrier, tc.rate, tc.degraded)
+		}
+	}
+	var v FailClosedRateVerdict
+	if err := FailClosedRootBarrier(&v, 2, 1, 10, 0); err == nil {
+		t.Error("a barrier counter moving backwards is not an error")
+	}
+	if err := FailClosedRootBarrier(&v, 0, 1, 10, 2); err == nil {
+		t.Error("a threshold above 1 is not an error")
+	}
+}

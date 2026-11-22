@@ -87,10 +87,10 @@ func (pin sharedProductPin) qualifiesProductObject(digest string) bool {
 // pinned toolchain at the neutral paths; testdata/shared_product_objects.tsv
 // mirrors them.
 var sharedProductObjects = map[string]string{
-	"g19pkg64":  "8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954",
-	"g19pkg128": "4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7",
-	"g19pkg256": "92dc17d870ac543a8aef316a287e06538d503f8f34d293181436fb73caa1742e",
-	"g19pkg512": "b8fd0637c744a7960b0e6d25f19d3f8b9c461276a43583925e85421d5230552a",
+	"g19pkg64":  "f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba",
+	"g19pkg128": "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d",
+	"g19pkg256": "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e",
+	"g19pkg512": "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31",
 }
 
 // sharedProductObject reports whether digest is a product object of this
@@ -110,26 +110,32 @@ var sharedProductPins = map[string]sharedProductPin{
 		Release:      "6.12.113-138.209.amzn2023.x86_64",
 		BuildID:      "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
 		FmodeBacking: sharedFmodeBacking24,
-		// G003 pr35-review-refresh-r1: oracle-al2023-k612 (D3 34, D1 18)
-		// and product-al2023-k612 (9 checks); 0 FAIL, 0 SKIP.
+		// Root barrier requalification (2026-11-22, EC2 on the pinned AMI):
+		// G035 product load run g035-6-12-20261122t094925z (build and 6.12,
+		// all 4 profiles: 74 PASS, 0 FAIL), the task_alloc composition with
+		// the inline barrier, the root barrier kernel test and the D3 core
+		// probe (46 of 46 programs loaded).
 		ProductObjects: map[string]struct{}{
-			"8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954": {}, // g19pkg64
-			"4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7": {}, // g19pkg128
-			"92dc17d870ac543a8aef316a287e06538d503f8f34d293181436fb73caa1742e": {}, // g19pkg256
-			"b8fd0637c744a7960b0e6d25f19d3f8b9c461276a43583925e85421d5230552a": {}, // g19pkg512
+			"f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba": {}, // g19pkg64
+			"fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d": {}, // g19pkg128
+			"a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e": {}, // g19pkg256
+			"3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31": {}, // g19pkg512
 		},
 	},
 	"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
 		Release:      "6.18.56-125.164.amzn2023.x86_64",
 		BuildID:      "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
 		FmodeBacking: sharedFmodeBacking24,
-		// G003 pr35-review-refresh-r1: oracle-al2023-k618 (D3 34, D1 18)
-		// and product-al2023-k618 (9 checks); 0 FAIL, 0 SKIP.
+		// Root barrier requalification (2026-11-22, EC2 on the pinned AMI):
+		// G035 product load run g035-6-18-20261122t094934z (build and 6.18,
+		// all 4 profiles: 74 PASS, 0 FAIL), the task_alloc composition with
+		// the inline barrier, the root barrier kernel test and the D3 core
+		// probe (46 of 46 programs loaded).
 		ProductObjects: map[string]struct{}{
-			"8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954": {}, // g19pkg64
-			"4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7": {}, // g19pkg128
-			"92dc17d870ac543a8aef316a287e06538d503f8f34d293181436fb73caa1742e": {}, // g19pkg256
-			"b8fd0637c744a7960b0e6d25f19d3f8b9c461276a43583925e85421d5230552a": {}, // g19pkg512
+			"f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba": {}, // g19pkg64
+			"fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d": {}, // g19pkg128
+			"a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e": {}, // g19pkg256
+			"3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31": {}, // g19pkg512
 		},
 	},
 }

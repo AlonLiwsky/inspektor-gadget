@@ -486,6 +486,11 @@ type SharedNodeQualification struct {
 	// clock. Package tests only.
 	failClosed      func(gc operators.GadgetContext, cells int) (sharedFailClosedRead, error)
 	failClosedClock func() time.Time
+	// rootBarrier replaces the product node's root barrier start check
+	// (verifySharedRootBarrier), rootBarrierFaults its fault reader
+	// (borrowSharedRootBarrierFaults). Package tests only.
+	rootBarrier       func(gc operators.GadgetContext, receipts map[string]*operators.NativeAttachment) error
+	rootBarrierFaults func(gc operators.GadgetContext) (sharedRootBarrierFaultRead, error)
 	// newProductPublisher replaces the product publisher borrowed from the
 	// host gadget context (borrowSharedProductPublisher). Package tests only.
 	newProductPublisher func(operators.GadgetContext, *operators.NativeResources) (SharedRoutePublisher, error)

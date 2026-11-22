@@ -202,6 +202,13 @@ type FailClosedRateVerdict struct {
 	// Total; an AdmissionRate above the threshold sets Degraded.
 	Admission     uint64
 	AdmissionRate float64
+	// Barrier and BarrierRate are the root barrier's predicate faults
+	// (root_barrier_faults, Strict denied plus Audit allowed) and their rate
+	// per attempt (FailClosedRootBarrier, product objects only). Like
+	// ADMISSION, Barrier is never part of Total and a BarrierRate above the
+	// threshold sets Degraded.
+	Barrier     uint64
+	BarrierRate float64
 }
 
 // FailClosedRate maps two snapshots of the fail-closed rate witness to a
@@ -289,4 +296,36 @@ func FailClosedProductRate(before, after [FailClosedRateCounters]uint64, attempt
 	}
 	v.Degraded = (v.Total > 0 && v.Rate > threshold) || (admission > 0 && v.AdmissionRate > threshold)
 	return v, nil
+}
+
+// FailClosedRootBarrier adds the root barrier class to a product verdict v
+// (a class of its own, like ADMISSION, never added to Total). before and
+// after are two snapshots of the barrier's fault count (root_barrier_faults,
+// both cells), attempts the births plus execs of the same window
+// (opaque_real_attempts, the denominator of FailClosedProductRate). A
+// barrier fault is a route invariant fault of the covered task's cgroup
+// route, judged on a root or mount operation, not on an attempt: it is not
+// bounded by attempts. With no attempt in the window each fault counts as a
+// whole attempt (BarrierRate = Barrier), so it is never diluted to zero. A
+// count that moved backwards is an error: the verdict is unknown.
+func FailClosedRootBarrier(v *FailClosedRateVerdict, before, after, attempts uint64, threshold float64) error {
+	if math.IsNaN(threshold) || threshold < 0 || threshold > 1 {
+		return fmt.Errorf("fail-closed rate threshold %v outside [0, 1]", threshold)
+	}
+	if after < before {
+		return fmt.Errorf("root barrier fault counter moved backwards (%d -> %d)", before, after)
+	}
+	v.Barrier = after - before
+	v.BarrierRate = 0
+	if v.Barrier == 0 {
+		return nil
+	}
+	v.BarrierRate = float64(v.Barrier)
+	if attempts > 0 {
+		v.BarrierRate /= float64(attempts)
+	}
+	if v.BarrierRate > threshold {
+		v.Degraded = true
+	}
+	return nil
 }
