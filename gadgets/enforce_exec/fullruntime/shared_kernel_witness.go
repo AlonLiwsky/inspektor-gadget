@@ -361,7 +361,8 @@ var sharedStartKernelWitness = func(gc operators.GadgetContext, receipts map[str
 // requires each receipt's program run count to have increased. The root
 // barrier's own programs (sharedRootBarrierPrograms) are not waited for:
 // their hooks do not fire during a fork, exec and exit, and the barrier
-// self-test proves them (verifySharedRootBarrier).
+// self-test proves them (verifySharedRootBarrier). Nor is the mapping gate's
+// mprotect program (sharedExecMapMprotect).
 func runSharedAttachCanary(receipts map[string]*operators.NativeAttachment) error {
 	return runSharedAttachCanaryWith(context.Background(), receipts, nil)
 }
@@ -375,7 +376,7 @@ func runSharedAttachCanaryWith(ctx context.Context, receipts map[string]*operato
 	runs := func() (map[string]uint64, error) {
 		out := make(map[string]uint64, len(receipts))
 		for name, r := range receipts {
-			if sharedRootBarrierPrograms[name] {
+			if sharedRootBarrierPrograms[name] || name == sharedExecMapMprotect {
 				continue
 			}
 			p, err := ebpf.NewProgramFromID(ebpf.ProgramID(r.ProgramID))

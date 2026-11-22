@@ -12,10 +12,10 @@ package fullruntime
 // sharedProductManifestMaps and sharedProductManifestPrograms are the exact
 // map and program name sets of the shared product object, generated from
 // the product objects with sha256:
-//   - 3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31
-//   - a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e
-//   - f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba
-//   - fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d
+//   - 6293c0b559b72ee283c05d5ab2bdbf459dad8e5e1a26117953cf5f96588015d4
+//   - 7e479f5d6569cefb0efc2002e7bedc7743d1e4b2907a605e9c01e548d8d0925f
+//   - 9e31954eb33903a0b283c7fc31ac8451bfcb9eaddf897543790b20dfbe6eb481
+//   - f386434da3b943abef86412e0e4122527d4d15d57334fb5946d20508ce893a44
 //
 // Product admission refuses any other name set (validateSharedProductManifest).
 var sharedProductManifestMaps = []string{
@@ -24,6 +24,8 @@ var sharedProductManifestMaps = []string{
 	"d1_exec_marks",
 	"d1_fork_marks",
 	"d1_witness",
+	"exec_map_faults",
+	"exec_map_gate",
 	"opaque_birth_failed_retired",
 	"opaque_birth_outcomes",
 	"opaque_birth_receipt_zero",
@@ -117,6 +119,8 @@ var sharedProductManifestMaps = []string{
 var sharedProductManifestPrograms = []string{
 	"d1_witness_exec",
 	"d1_witness_fork",
+	"em_file_mprotect",
+	"em_mmap_file",
 	"opaque_real_adopt_finish",
 	"opaque_real_adopt_quarantine",
 	"opaque_real_adopt_task",

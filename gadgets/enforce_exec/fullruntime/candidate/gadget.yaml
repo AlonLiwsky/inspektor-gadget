@@ -12,8 +12,9 @@
 # ../bpf/opaque_real_owner_child_candidate.programs.yaml (the trampoline attach
 # declaration). The product object has no TC program, so nothing here
 # disables one; the merged metadata leaves exactly the qualified loader's
-# steady state enabled: the pinned 13 trampoline links (task_free 2, and the
-# 7 root barrier programs) plus 5 link-based raw_tp/tp_btf probes, and
+# steady state enabled: the pinned 15 trampoline links (task_free 2, the 7
+# root barrier programs and the 2 executable-mapping gate programs) plus 5
+# link-based raw_tp/tp_btf probes, and
 # exactly one syscall command,
 # opaque_real_reap (the product reaper's TEST_RUN; it has no entry here, it
 # is never attached and must never be disabled). The protocol command

@@ -217,7 +217,7 @@ func TestSharedCandidateMergedMetadataDeclaration(t *testing.T) {
 	for _, target := range sharedCandidateAttachSet {
 		perHook[target]++
 	}
-	if fmt.Sprint(perHook) != fmt.Sprint(candidateAttachPerHook) || len(sharedCandidateAttachSet) != 13 {
+	if fmt.Sprint(perHook) != fmt.Sprint(candidateAttachPerHook) || len(sharedCandidateAttachSet) != 15 {
 		t.Fatalf("product attach set per hook %v, pinned %v", perHook, candidateAttachPerHook)
 	}
 	disabled := candidateDisabled(merged)
@@ -765,7 +765,7 @@ func TestSharedStartNodeQualifiedLoadsOneCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if host.runs != 1 || len(host.attached) != 18 || len(n.host.live.receipts) != 18 { // S1: + the tp_btf/sched_process_fork witness, - the merged failure terminal; + the 7 root barrier links
+	if host.runs != 1 || len(host.attached) != 20 || len(n.host.live.receipts) != 20 { // S1: + the tp_btf/sched_process_fork witness, - the merged failure terminal; + the 7 root barrier links; + the 2 mapping gate links
 		t.Fatalf("runs=%d attached=%d receipts=%d", host.runs, len(host.attached), len(n.host.live.receipts))
 	}
 	if n.host.live.reaper == nil || n.host.live.reaper.reaper != host.reaper {

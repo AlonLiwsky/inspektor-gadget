@@ -19,7 +19,10 @@
 #   (userns_create), rb_capable (capable), rb_sb_mount (sb_mount),
 #   rb_move_mount (move_mount), rb_sb_umount (sb_umount). The barrier's
 #   task_alloc body runs inline in opaque_real_owner_child_source_candidate.
-#   The barrier programs are attached, so none is listed here.
+#   The barrier programs are attached, so none is listed here. The 2
+#   programs of the executable-mapping gate (product objects;
+#   ../../full/shared_exec_map.h): em_mmap_file (mmap_file) and
+#   em_file_mprotect (file_mprotect). They are attached too.
 # A new trampoline program fails that test until it is either listed here or
 # deliberately added to the pinned attach set.
 #

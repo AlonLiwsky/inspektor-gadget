@@ -662,9 +662,9 @@ func sharedProductSmokeCodes(out string) (string, string) {
 }
 
 // sharedProductLinks is the product node's link count (S1: 6 BPF LSM + 5
-// tracepoint links, and the 7 root barrier links; the restart child's check
-// was still the pre-D1 16).
-const sharedProductLinks = 18
+// tracepoint links, the 7 root barrier links and the 2 mapping gate links;
+// the restart child's check was still the pre-D1 16).
+const sharedProductLinks = 20
 
 // sharedProductChrootDenials is the root barrier's chroot denial count of the
 // node's collection.

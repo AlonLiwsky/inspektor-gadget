@@ -241,6 +241,9 @@ var (
 		"rb_sb_mount":   "bpf_lsm_sb_mount",
 		"rb_move_mount": "bpf_lsm_move_mount",
 		"rb_sb_umount":  "bpf_lsm_sb_umount",
+		// The executable-mapping gate (product objects).
+		"em_mmap_file":     "bpf_lsm_mmap_file",
+		"em_file_mprotect": "bpf_lsm_file_mprotect",
 	}
 	candidateAttachPerHook = map[string]int{
 		"bpf_lsm_task_free": 2, "bpf_lsm_task_alloc": 1,
@@ -248,7 +251,7 @@ var (
 		"bpf_lsm_bprm_committed_creds": 1,
 		"bpf_lsm_path_chroot":          1, "bpf_lsm_sb_pivotroot": 1, "bpf_lsm_userns_create": 1,
 		"bpf_lsm_capable": 1, "bpf_lsm_sb_mount": 1, "bpf_lsm_move_mount": 1,
-		"bpf_lsm_sb_umount": 1,
+		"bpf_lsm_sb_umount": 1, "bpf_lsm_mmap_file": 1, "bpf_lsm_file_mprotect": 1,
 	}
 )
 

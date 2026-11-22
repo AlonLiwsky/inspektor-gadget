@@ -193,12 +193,14 @@ type sharedLiveCandidate struct {
 }
 
 // sharedCandidateAttachSet is the pinned steady-state trampoline attach set
-// of the shared candidate, D1 (LSM-only prototype): 13 links, all BPF LSM
+// of the shared candidate, D1 (LSM-only prototype): 15 links, all BPF LSM
 // hooks: task_free 2 (the product release and the exec capsule's death
 // retire), task_alloc 1, bprm_creds_for_exec 1 (the exec frame's begin),
-// bprm_check_security 1, bprm_committed_creds 1, and the 7 root barrier
+// bprm_check_security 1, bprm_committed_creds 1, the 7 root barrier
 // programs (gadgets/common/root_barrier.h; its task_alloc body runs inline in
-// the task_alloc source program). No fentry/fexit program is attached.
+// the task_alloc source program) and the 2 programs of the executable-mapping
+// gate (full/shared_exec_map.h): mmap_file 1, file_mprotect 1. No
+// fentry/fexit program is attached.
 // Every other program of the image must be disabled by its packaged
 // metadata.
 var sharedCandidateAttachSet = map[string]string{
@@ -217,6 +219,9 @@ var sharedCandidateAttachSet = map[string]string{
 	"rb_sb_mount":   "bpf_lsm_sb_mount",
 	"rb_move_mount": "bpf_lsm_move_mount",
 	"rb_sb_umount":  "bpf_lsm_sb_umount",
+	// The executable-mapping gate (full/shared_exec_map.h).
+	sharedExecMapMmap:     "bpf_lsm_mmap_file",
+	sharedExecMapMprotect: "bpf_lsm_file_mprotect",
 }
 
 // sharedCandidateProbeSet is the pinned non-trampoline part of the steady
@@ -1088,7 +1093,7 @@ func (n *NodeEnforcer) ReleaseAfterDetach() error {
 }
 
 // startLiveCandidate borrows exactly the pinned attach set's native receipts
-// (13 trampoline links, task_free 2, plus the 5 pinned raw_tp/tp_btf links).
+// (15 trampoline links, task_free 2, plus the 5 pinned raw_tp/tp_btf links).
 // The eBPF operator published them only after the whole transaction attached;
 // their Check is the operator's nativeReadinessCheck (link present by ID,
 // same program). It then starts the product reaper over the borrowed
