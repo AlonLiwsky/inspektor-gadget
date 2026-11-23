@@ -33,7 +33,7 @@ func mountNamespaceIdentity(file *os.File) ([2]uint64, error) {
 
 // Scope facts are file/kernel identities, never a cgroup-name heuristic or an
 // inferred exemption. Host identity is supplied/authenticated by the trusted
-// runtime lease; the native owner independently rejects equal host/workload NS.
+// runtime lease; the binding independently rejects equal host/workload NS.
 func checkBindingScope(proc *os.File, lease BindingLease, cgroupID uint64) error {
 	cg := lease.Cgroup()
 	if cg == nil || proc == nil {

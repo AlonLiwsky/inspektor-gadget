@@ -36,10 +36,9 @@ func (h *countingProductHost) host() SharedNodeHost {
 	}}
 }
 
-// TestSharedProductStartNodeKernelGate (plan 3.1, StartNode part): on each
-// kernel the gate admits (a pinned AL2023 build or any other build) the
-// host's Run is reached exactly once; on every refused kernel, pinned or
-// not, it is never reached and the error is ErrSharedNativeUnavailable.
+// TestSharedProductStartNodeKernelGate (StartNode part): on each kernel the
+// gate admits the host's Run is reached exactly once; on every refused
+// kernel it is never reached and the error is ErrSharedNativeUnavailable.
 func TestSharedProductStartNodeKernelGate(t *testing.T) {
 	sharedProductBuild(t)
 	kernels := productGateKernels()
@@ -74,10 +73,10 @@ func TestSharedProductStartNodeKernelGate(t *testing.T) {
 }
 
 // TestSharedProductHostExclusiveWithQualification (plan 3.2): a
-// qualification build refuses the product host even on a pinned kernel; a
+// qualification build refuses the product host on any kernel; a
 // product build ignores the qualification seam.
 func TestSharedProductHostExclusiveWithQualification(t *testing.T) {
-	useProductKernel(t, pinnedProductKernel(sharedProductPinDigests()[0]))
+	useProductKernel(t, arbitraryProductKernel())
 	old := sharedQualificationBuild
 	t.Cleanup(func() { sharedQualificationBuild = old })
 	sharedQualificationBuild = true

@@ -49,8 +49,8 @@ func TestOpaqueSourceModeHeaderlessMigrationContract(t *testing.T) {
 	// Deliberately RED: a sticky original-route latch is a publication
 	// barrier, not a way to identify a headerless migrated physical exec.
 	// The replacement original-class authority is the source-only exec
-	// capsule (TestOpaqueExecCapsuleContract, scenario headerless-migrated,
-	// plus the exact-kernel test/al2023-exec-capsule fixture). It is not yet
+	// capsule (TestOpaqueExecCapsuleContract, scenario headerless-migrated).
+	// It is not yet
 	// wired into the verdict candidate, so the same-bprm compile prohibition
 	// must remain until that integration is qualified.
 	runOpaqueSourceModeHeaderless(t, "headerless-migrated")

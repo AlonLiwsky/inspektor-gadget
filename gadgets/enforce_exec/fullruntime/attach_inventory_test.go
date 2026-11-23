@@ -5,14 +5,8 @@ package fullruntime
 
 import (
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
-	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -136,79 +130,6 @@ func TestTrampolineInventoryObjects(t *testing.T) {
 			t.Errorf("%s: inventory changed: got %v, golden %v", label, inventories[label], golden)
 		}
 	}
-}
-
-// TestLegacyOwnerTrampolineSource derives, for documentation only, the
-// per-Owner trampoline link count from ownerHooks in owner.go and the SEC()
-// of each hook in the full/ sources. Every legacy Owner attaches its own
-// copy of each hook.
-func TestLegacyOwnerTrampolineSource(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "owner.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var hooks []string
-	ast.Inspect(file, func(n ast.Node) bool {
-		spec, ok := n.(*ast.ValueSpec)
-		if !ok || len(spec.Names) != 1 || spec.Names[0].Name != "ownerHooks" {
-			return true
-		}
-		for _, elt := range spec.Values[0].(*ast.CompositeLit).Elts {
-			key, err := strconv.Unquote(elt.(*ast.KeyValueExpr).Key.(*ast.BasicLit).Value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			hooks = append(hooks, key)
-		}
-		return false
-	})
-	if len(hooks) == 0 {
-		t.Fatal("ownerHooks not found in owner.go")
-	}
-	sections := map[string]string{}
-	re := regexp.MustCompile(`SEC\("([^"]+)"\)[\s\S]{0,120}?BPF_PROG\(\s*(\w+)`)
-	for _, name := range []string{"program.bpf.c", "owner_control.h", "owner_roles.h"} {
-		data, err := os.ReadFile(filepath.Join("..", "full", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, m := range re.FindAllStringSubmatch(string(data), -1) {
-			if prev, ok := sections[m[2]]; ok && prev != m[1] {
-				t.Fatalf("%s has sections %s and %s", m[2], prev, m[1])
-			}
-			sections[m[2]] = m[1]
-		}
-	}
-	perTarget := map[string]int{}
-	total := 0
-	for _, hook := range hooks {
-		section, ok := sections[hook]
-		if !ok {
-			t.Fatalf("no SEC() for owner hook %s", hook)
-		}
-		kind, target, _ := strings.Cut(section, "/")
-		switch kind {
-		case "lsm", "lsm.s":
-			target = "bpf_lsm_" + target
-		case "fentry", "fexit", "fmod_ret":
-		default:
-			continue
-		}
-		perTarget[target]++
-		total++
-	}
-	sorted := make([]string, 0, len(perTarget))
-	for target := range perTarget {
-		sorted = append(sorted, target)
-	}
-	sort.Strings(sorted)
-	var b strings.Builder
-	for _, target := range sorted {
-		fmt.Fprintf(&b, "%-36s %d\n", target, perTarget[target])
-	}
-	t.Logf("legacy Owner (source, per owner; documentation only): %d hooks, %d trampoline links:\n%s",
-		len(hooks), total, b.String())
 }
 
 // G009 packaging: the candidate's attach set is the ELF minus the programs its

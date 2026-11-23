@@ -1564,15 +1564,10 @@ jobs:
           ./gadgets/enforce_exec/runtime
           ./gadgets/enforce_exec/fullruntime
           ./gadgets/enforce_exec/test/enterprise
-          ./gadgets/enforce_exec/test/al2023-native-kfunc-primitive/runner
-          ./gadgets/enforce_exec/test/al2023-route-pin-verifier/runner
-          ./gadgets/enforce_exec/test/al2023-trampoline-cap/runner
-          ./gadgets/enforce_exec/test/al2023-product-load/judge
+          ./gadgets/enforce_exec/test/product-load/judge
         )
         go test -race -count=1 -timeout=20m "${packages[@]}"
         go vet "${packages[@]}"
-    - name: Offline module structure regressions
-      run: python3 gadgets/enforce_exec/test/al2023-native-kfunc-primitive/test_module_structure.py
 
   test-enforce-exec-product-objects:
     name: Exec enforcement product objects match their pins
@@ -1583,8 +1578,9 @@ jobs:
     # sharedProductObjects, then packages each object into its
     # kernel-neutral product gadget image (cmd/productimages) and compares the
     # manifest and index digests with SharedProductImagePins. Build only:
-    # loading the objects on the AL2023 kernels stays a manual EC2 gate, and
-    # the images are never pushed (node-agent rebuilds them into tracers.tar).
+    # loading the objects on a kernel is the manual product-load run
+    # (gadgets/enforce_exec/test/product-load), and the images are never
+    # pushed (node-agent rebuilds them into tracers.tar).
     runs-on: ubuntu-22.04
     container: debian@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 # trixie
     permissions:

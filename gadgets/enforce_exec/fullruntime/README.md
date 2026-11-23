@@ -1,32 +1,14 @@
-# Experimental persistent exec owner
+# Shared exec enforcement engine
 
-## Legacy ABI2 reference and shared Go boundary
+This package is the shared CO-RE exec enforcement engine: one node-wide
+`NodeEnforcer` per node, started with `StartNode`, that loads one product
+object per profile (`g19pkg64/128/256/512`, one CO-RE object for every
+kernel), binds up to two containers and publishes their compiled policies.
+`New()` is the data operator (`enforce-exec-owner`) that claims the shared
+node's host gadget; every other gadget gets no instance from it.
 
-**The legacy per-binding ABI2 lifecycle below is not the shared-node activation
-contract.** [Commit `dabee7d08`](https://github.com/kubescape/inspektor-gadget/commit/dabee7d08345752cada90c326e25cd7b6855d62d)
-publishes ordinary-Go shared preparation, ownership/accounting, receipt cleanup
-and bounded clean retry. Those paths and their selected Go tests do not establish
-kernel reclamation, accepted-generation publication/reload or native withdrawal
-integration for the shared replacement.
-
-The published [`StartNode`](https://github.com/kubescape/inspektor-gadget/blob/dabee7d08345752cada90c326e25cd7b6855d62d/gadgets/enforce_exec/fullruntime/shared_node.go#L67-L72)
-refuses startup; binding inspection cannot report protection.
-[Full-image admission and `Ready`](https://github.com/kubescape/inspektor-gadget/blob/dabee7d08345752cada90c326e25cd7b6855d62d/gadgets/enforce_exec/fullruntime/shared_host.go#L64-L74)
-also refuse shared activation (`Ready` is defined at
-[lines 191–199](https://github.com/kubescape/inspektor-gadget/blob/dabee7d08345752cada90c326e25cd7b6855d62d/gadgets/enforce_exec/fullruntime/shared_host.go#L191-L199)).
-The [legacy publisher](https://github.com/kubescape/inspektor-gadget/blob/dabee7d08345752cada90c326e25cd7b6855d62d/gadgets/enforce_exec/fullruntime/publication.go#L70-L74)
-rejects development ABI3 activation rather than treating ABI2 publication as a
-shared receipt. This boundary defines no new wire ABI. Shared native integration,
-physical Ready and kernel qualification remain unavailable or unproved; the
-legacy isolated matrix and lifetime-credit rules below do not qualify them.
-
-This package contains the **legacy per-binding `Owner` profile** and the unfinished
-shared-node `NodeEnforcer` replacement. The legacy profile provides the native
-persistent owner, bounded whole-exec gate, publication coordinator and isolated
-tests for frozen policy-map revisions. Its embedding supplies authenticated
-runtime leases and public event provenance; readiness requires the explicitly
-supported kernel/runtime environment. Its proofs do not qualify the shared-node
-replacement.
+Every kernel is admitted the same way, on probes run at start and while the
+node runs (see [Shared engine: supported kernels](#shared-engine-supported-kernels)).
 
 ## Shared-node implementation status and API contracts
 
@@ -77,9 +59,7 @@ epoch authority. Shared exec
 reads `se_epoch_bank` through the kernel-owned `se_epoch_index`. `SE_ARM_BIND`
 reserves that index on an earlier barrier; commit only accepts an index that
 already names the cell. The unread `se_accepted_epochs` hash is not that
-catalogue. An isolated Clang 19 load of the arm, including index bind and bank lookup,
-was accepted by local kernel `7.1.13+parrot7-amd64`. That is not the admitted
-BTF/Clang 21.1.8 matrix, not Ready, reload integration, or kernel qualification.
+catalogue.
 
 - Private shared-object preparation uploads compiler-owned content only. It
   grants no root, snapshot or image qualification.
@@ -103,9 +83,7 @@ every rule and exception against one table, `SharedProductFactSupport`
 (`shared_product_facts.go`), before compiling anything. It refuses the first
 unsupported predicate with `ErrSharedPredicateUnsupported`. The wrapped
 `*SharedPredicateUnsupportedError` names the policy, the rule index (and the
-exception index, if the predicate is in one) and the predicate kind. The
-legacy per-binding engine (`fullpolicy.CompileKernel`, `Owner`) does not use
-this table.
+exception index, if the predicate is in one) and the predicate kind.
 
 | Predicate (kind) | Kernel fact | Product support |
 |---|---|---|
@@ -219,86 +197,52 @@ instantiation): `bpf` in the active LSM list, `ftrace_enabled=1`, no
 livepatch (`TAINT_LIVEPATCH` clear), and a readable identity (a
 lowercase-hex vmlinux BTF sha256, a non-empty release, a lowercase-hex GNU
 build-id). Anything else is refused. No kernel build list takes part in the
-admission.
+admission: the node reads the identity of every kernel (the BTF sha256 of
+`/sys/kernel/btf/vmlinux`, the GNU build-id from `/sys/kernel/notes` and the
+release from `uname -r`), refuses one it cannot read, and reports it (status
+and logs); it never matches it against a list.
 
 What is proved on every admitted kernel, at start and while it runs:
 
 - the product object's own load checks every type, field, kfunc and attach
   target it uses (CO-RE relocation and the verifier);
 - `FMODE_BACKING` and the overlay `private_data` layout are probed live; a
-  failed `FMODE_BACKING` probe refuses (it is never cached, and no kernel
-  has a pinned fallback any more);
+  failed `FMODE_BACKING` probe refuses (FromImage facts are unavailable and
+  the node is Degraded); it is never cached;
 - the startup canary proves every attached program runs;
 - the live witness latches NotReady when an exec or fork reaches its
   tracepoint without its LSM hook's mark, or when ftrace goes off.
 
-What is not proved by a suite on a kernel the suites did not run on: hook
-ordering and verdict semantics across the exec paths (see
-[What the probes cannot prove](#what-the-probes-cannot-prove)). There is no
-startup deny self-test: a test binding would hold one of the node's two
-route slots until teardown.
+What is not proved: hook ordering and verdict semantics across the exec
+paths (see [What the probes cannot prove](#what-the-probes-cannot-prove)).
+There is no startup deny self-test: a test binding would hold one of the
+node's two route slots until teardown.
 
-The kernels the suites ran on (the qualification record: `QualifiedKernels`,
-`testdata/shared_product_pins.tsv`; the product gate does not consult it):
+Ftrace and livepatch are re-read at every `Ready` (`CheckKernelRuntime`).
+Ftrace is detected, not guarded: `sysctl kernel.ftrace_enabled=0` is
+accepted while the node runs, and `Ready` reports NotReady ("ftrace is not
+enabled") at its next call. With ftrace off the BPF trampolines stop, so a
+Strict deny can become an allow; treat a NotReady node as unprotected. Only
+root can change the sysctl.
 
-| Release | vmlinux BTF sha256 | GNU build-id | Failure-frame symbols |
-|---|---|---|---|
-| `6.12.113-138.209.amzn2023.x86_64` | `0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82` | `1d135d67e6d0ea8f77d60a2984915eadd28a5fcf` | `do_execveat_common.isra.0`, `search_binary_handler` |
-| `6.18.56-125.164.amzn2023.x86_64` | `d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee` | `884ed4548406a1461ac5fb658c0dffdd87f1b3b2` | `do_execveat_common.isra.0`, `exec_binprm` |
-
-Sources: the build-ids come from the vmlinux of the AL2023 repo kernel RPMs
-(the same packages the qualified AMIs carry); they were confirmed live from
-`/sys/kernel/notes` in G011 pass 2 (plain AMIs) and pass 2b (EKS AMIs). The handler symbols come from the pass-1
-runner. The outer symbol `do_execveat_common.isra.0` was first recorded by the 2026-11-09 preflight on the same AMIs (pass 1 resolved it from `/proc/kallsyms` without logging it). It was then confirmed in the kallsyms symbol list on both pinned kernels: the `outer-symbol` PASS rows in G011 pass 2, and the identity `symbols` rows in G011 pass 2b.
-
-These builds ship in these AMI releases (the AMI IDs are the ones the
-qualification runs used; IDs differ per region, the release names do not):
-
-- plain AL2023 `al2023-ami-2023.12.20261026.1-kernel-6.12-x86_64`
-  (`ami-0e8550404ae6ca4c6`) and `al2023-ami-2023.12.20261102.0-kernel-6.18-x86_64`
-  (`ami-0516089d963059a51`): qualified (G011 pass 1, with the qualification
-  build); product-build admission and Ready on both pinned kernels are proven
-  (G011 pass 2, run g011p2-20261115t143731-5a41, 116 PASS / 0 FAIL);
-- EKS-optimized `amazon-eks-node-al2023-x86_64-standard-1.35-v20261031`
-  (`ami-0c50b8c0d6d72c152`, 6.12) and
-  `amazon-eks-node-al2023-x86_64-standard-1.36-v20261031`
-  (`ami-07ef7f0d9b6d0f123`, 6.18): the same kernel builds as qualified (the
-  same BTF was recorded on both; G011 pass 2b checked the build-id and
-  release live). **EKS product Ready is proven** (G011 pass 2b, run g011eks-20261115t163442-6da1, 120 PASS / 0 FAIL):
-  a default-build node-agent (one DaemonSet, then with a per-kernel image map) reached
-  product Ready True ("Selected containers have active enforcement") on both
-  AMIs. The EKS AMIs carry taint 12288 (out-of-tree or unsigned modules),
-  which is allowed: only the livepatch bit is gated.
-
-The node reads the identity of every kernel (the BTF sha256, the GNU
-build-id from `/sys/kernel/notes` and the release from `uname -r`) and
-refuses one it cannot read; it reports the identity, it does not match it
-against a list. The node also requires x86_64, `bpf` in the active LSM list,
-`ftrace_enabled=1` and no livepatch (`TAINT_LIVEPATCH` clear). Ftrace and
-livepatch are re-read at every `Ready`. Ftrace is detected, not guarded: on both pinned kernels
-`sysctl kernel.ftrace_enabled=0` is accepted while the node runs (no EBUSY),
-and `Ready` reports NotReady ("ftrace is not enabled") at its next call
-(G011 pass 2). On both pinned kernels, under a Strict Deny policy, a uid-1000
-exec that returns 126 with ftrace on returned 0 (allowed) after
-`ftrace_enabled=0`, and returned 126 again once ftrace was re-enabled and
-Ready was nil (G011 pass 2, run g011p2-20261115t160735-f9e2). Ready had
-already gone NotReady before that exec. Only this one exec was measured
-(uid 1000, Deny fallback); nothing else about enforcement with ftrace off is
-known, so treat a NotReady node as unprotected. This is an accepted, detected
-limitation: only root can change the sysctl. **D1 (LSM-only prototype, this
-branch):** the image carries no failure-frame `attach_to` target; the exec
-frame is `lsm/bprm_creds_for_exec` .. `lsm/bprm_committed_creds` (success) or
-`tp_btf/sys_exit` (failure) on every kernel, an `attach_to` override on any
-probe is refused, and the failure-frame symbol columns of the table above
-are historical (the pins no longer hold them). The loaded eBPF object's
-sha256 (recorded by the eBPF operator for native owners,
+**D1 (LSM-only exec outcome).** The image carries no failure-frame
+`attach_to` target; the exec frame is `lsm/bprm_creds_for_exec` ..
+`lsm/bprm_committed_creds` (success) or `tp_btf/sys_exit` (failure) on every
+kernel, and an `attach_to` override on any probe is refused. The loaded
+eBPF object's sha256 (recorded by the eBPF operator for native owners,
 `operators.NativeProgramDigestKey`) must be one of this release's product
 objects (`sharedProductObjects`, `testdata/shared_product_objects.tsv`), on
 every kernel alike; a rebuilt object with another digest is refused. Every
 other kernel or image is refused at agent start (`StartNode`) with an error
-that wraps `ErrSharedNativeUnavailable` and names the reason. The
-qualification record lives in `kernel_matrix.go` (`sharedProductPins`) and
-`testdata/shared_product_pins.tsv`.
+that wraps `ErrSharedNativeUnavailable` and names the reason.
+
+**Qualification builds.** A build with the `enforce_exec_shared_qualification`
+tag admits the qualified candidate (`WithSharedNodeQualification`) on the
+same checks (`verifySharedCandidateKernel`). There,
+`IG_ENFORCE_EXEC_SKIP_LSM_LIST_GATE=1` skips only the LSM-list check, so the
+canary negative test shows that the startup canary alone refuses a kernel
+without the bpf LSM. A shared node that is neither a product nor a
+qualification node is refused at instantiation.
 
 **Kernel witness and startup canary (stage 1, `shared_kernel_witness.go`).**
 StartNode makes every attached program prove it runs (the canary forks, execs
@@ -319,7 +263,7 @@ ksym unresolved or a failed mark creation is not retryable for this boot.
 
 **Witness memory (DaemonSet sizing).** A mark lives in BPF task storage,
 allocated with `GFP_ATOMIC` from the BPF memory allocator and charged to the
-agent's memory cgroup. On 6.12 an element is `sizeof(struct
+agent's memory cgroup. On a 6.12 kernel an element is `sizeof(struct
 bpf_local_storage_elem)` (128 bytes, cache-line aligned) plus the 16-byte mark,
 taken from the 192-byte size class; a task's first task-storage element also
 allocates its `struct bpf_local_storage` (about 176 bytes, 192-byte class),
@@ -340,26 +284,19 @@ capsule terminal (there were two `sys_exit` programs). Every syscall of every
 task on the node still pays for the syscall-tracepoint slow path that any
 `sys_exit` program enables.
 
-**One CO-RE object per profile (universal-kernel spike, direction D3; not
-qualified).** The product objects are no longer built per kernel: the
-per-kernel builds had identical instructions after CO-RE relocation and
-differed only in unrelocated placeholders and in the BTF/DWARF copied from
-each kernel's `vmlinux.h`. `sharedProductObjects` (`kernel_matrix.go`,
+**One CO-RE object per profile.** The product objects are not built per
+kernel: per-kernel builds had identical instructions after CO-RE relocation
+and differed only in unrelocated placeholders and in the BTF/DWARF copied
+from each kernel's `vmlinux.h`. `sharedProductObjects` (`kernel_matrix.go`,
 `testdata/shared_product_objects.tsv`) pins four sha256 per release
 (`g19pkg64/128/256/512`), for every kernel. The overlay `private_data`
 layout is derived from the overlay BTF shape and relocated by the object
 (`struct ovl_file___se_image`), and `FMODE_BACKING`, a preprocessor constant
 that BTF does not carry and that changed inside the 6.12 stable series, is
-probed live (`kernel_probe.go`) on every kernel, the AL2023 builds included:
-a failed probe refuses. The product gate admits every x86_64 kernel that
-passes its probes (`verifySharedProductKernel`) with any product object of
-this release. The shared candidate path of a qualification build still needs its
-matrix unless the test-only `IG_ENFORCE_EXEC_PROBED_KERNEL=1` is set
-(`kernel_probe_override_tag.go`). Every path still refuses a kernel without
-the bpf LSM, with ftrace off, or livepatched. Stage 1 combines this with D1 (the
-objects are built with `ENFORCE_EXEC_D1_LSM_ONLY`): there are no
-failure-frame symbols to resolve, and D1's own test override is folded into
-this one.
+probed live (`kernel_probe.go`) on every kernel: a failed probe refuses.
+Every path refuses a kernel without the bpf LSM, with ftrace off, or
+livepatched. The objects are built with `ENFORCE_EXEC_D1_LSM_ONLY`: there are
+no failure-frame symbols to resolve.
 
 After ftrace has been disabled, even briefly, the node can stay Degraded until
 the agent restarts. While ftrace was off the `lsm/task_free` trampolines did
@@ -373,11 +310,11 @@ degraded", `stale=N`) and `StopNode` reports the same error after a complete
 teardown. This is expected and fail closed (task tracking is incomplete after
 an ftrace-off window); recovery is to restart the node-agent. It does not
 always happen: it needs an address freed in the window to be reused before
-the node stops (in about a quarter of the G035 QEMU runs).
+the node stops.
 
 **Rebuilding the pinned objects.** `bpf/build-product.sh`
-rebuilds the four product objects (`g19pkg64/128/256/512`; stage 1: one
-CO-RE object per profile for every kernel) with the exact flag set of the
+rebuilds the four product objects (`g19pkg64/128/256/512`; one CO-RE
+object per profile for every kernel) with the exact flag set of the
 qualification build plus `ENFORCE_EXEC_D1_LSM_ONLY` (at neutral paths, see
 below), and `--check` compares
 each sha256 with `testdata/shared_product_objects.tsv`. Build it in the pinned
@@ -388,34 +325,25 @@ package from one snapshot.debian.org timestamp, and checks the packages
 that decide the bytes against `bpf/product-toolchain-debs.sha256`:
 `clang-21` `1:21.1.8-3~bpo13+2` (its version string is in the object) and
 its libraries, and `libbpf-dev`/`libbpf1` `1:1.5.0-3` (the headers).
-`build-product.sh` refuses another Clang or libbpf-dev version. The
-`vmlinux.h` of each kernel is committed xz-compressed in
-`testdata/al2023-vmlinux/`; the decompressed sha256 is checked.
+`build-product.sh` refuses another Clang or libbpf-dev version. The one
+CO-RE `vmlinux.h` (a `bpftool btf dump` of a 6.18 kernel BTF; only its types
+are used, every access is relocated at load) is committed xz-compressed as
+`testdata/core-vmlinux/vmlinux.h.xz`; the decompressed sha256 is checked.
 
 **Neutral build paths (pinset p1).** The objects carry, in DWARF and BTF,
 the absolute paths of the build (the BTF line text and FWD type order depend
 on them). The script therefore always compiles at fixed real directories it
 creates in the container, `/src/inspektor-gadget` (a copy of the BPF sources)
-and `/src/btf/<kernel>`, never at the checkout path, and refuses an object
+and `/src/btf/6.18` (the header directory name is part of the object bytes), never at the checkout path, and refuses an object
 that embeds `/home/`, `/root/` or the checkout path. The objects are
 byte-identical from any checkout path (measured for stage 1: the pinned
 toolchain image and the CI image with `install-product-toolchain.sh`, at two
 checkout paths, built the same four sha256). Prefix maps are not used: a
-measured `-fdebug-prefix-map` build changed the FWD order of the 6.12 objects.
-
-> **Qualification (stage 1).** The four objects in
-> `testdata/shared_product_objects.tsv` ran on both AL2023 builds (recorded
-> in `sharedProductPin.ProductObjects`, the last column of
-> `testdata/shared_product_pins.tsv`; the product admission does not read
-> it): the stage-1 oracle (D3 34 steps and
-> D1 18 tests, Strict and Audit) and the product StartNode attached test ran
-> on both pinned kernels with these exact objects, 0 FAIL and 0 SKIP. The
-> G011 evidence below was produced with the earlier per-kernel objects.
+measured `-fdebug-prefix-map` build changed the FWD order of the objects.
 
 ### Product images
 
-Each pinned object is packaged into one kernel-neutral product gadget
-image per profile, built in the default build by `BuildSharedProductImage`
+Each pinned object is packaged into one product gadget image per profile, built in the default build by `BuildSharedProductImage`
 (`shared_product_oci.go`): an index holding exactly one `linux/amd64`
 manifest, whose config is the merged product metadata
 (`candidate/gadget.yaml`, the packaged attach declaration, the geometry
@@ -434,8 +362,7 @@ image runs on every kernel the product gate admits.
 | `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:b65fc46b646442d746eb46cade87eda3a6d33144651e92e066adb9e7559e1bf0` | `sha256:f58271b21e84dc06d97b9345288020ad278874935e18e840b11d70e3ae8b761c` |
 | `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:3b5bd67827694a55b8e7de90cedf12142d1d02b67ecce1bc92f893e3fb67c3ec` | `sha256:60609bd695295bf01fd1a4f6924953c65fcc17269d26ab572044a113d0c0639f` |
 
-The digests are those the per-kernel references of pinset p1 carried: the
-reference (tag) is not part of either digest.
+The reference (tag) is not part of either digest.
 
 - **Pins.** `testdata/shared_product_images.tsv` (profile, image, object
   sha256, manifest and index digest) mirrors `sharedProductImagePins`
@@ -481,9 +408,9 @@ reference (tag) is not part of either digest.
   the built digests from the FAIL lines or `product-images.json`) and a
   requalification.
 
-The job only builds: **loading the objects on the two AL2023 kernels stays
-a manual EC2 gate** (the product attached tests with
-`IG_SHARED_PRODUCT_OBJECT`), because there are no AL2023 CI runners.
+The job only builds: loading the objects on a kernel is the manual
+product-load run (`test/product-load`: build a bundle on a workstation, run
+its guest script as root on any machine, judge the results).
 
 ### Exported kernel check (other enforcement sections)
 
@@ -500,32 +427,17 @@ The product kernel gate is exported for other BPF LSM sections
   run the same gate.
 - `AdmitKernel() (KernelIdentity, error)`: the same checks, for the other
   BPF LSM sections; a refusal is a bare `*KernelCheckError` (it does not
-  wrap `ErrSharedNativeUnavailable`). There is no list parameter: every
-  kernel is admitted the same way.
+  wrap `ErrSharedNativeUnavailable`). Every kernel is admitted the same way.
 - `CheckKernelRuntime() error`: re-reads ftrace and the livepatch taint.
   Call it at every status computation; it is never cached.
 
-The qualification record API is unchanged and does not take part in the
-product admission:
-
-- `QualifiedKernels() []KernelIdentity`: the builds the suites ran on (the
-  table above: `Arch`, `Release`, `BTF`, `BuildID`), sorted by release.
-- `VerifyKernel(qualified []KernelIdentity) (KernelIdentity, error)`: an
-  exact-build check for a caller that wants one. It admits the running
-  kernel only if it is exactly one entry of `qualified` (architecture, BTF
-  sha256, release and GNU build-id) and passes the same controls. It refuses
-  an empty list, a malformed entry (an empty field, a BTF digest that is not
-  64 lowercase hex characters such as `"*"`, a non-hex build-id) or a BTF
-  digest listed twice (`qualified-list`); there is no wildcard, and
-  configuration must never add an entry.
-
 Every failure is a `*KernelCheckError` whose `Check` names the failed check
-(`arch`, `btf`, `release`, `build-id`, `bpf-lsm`, `ftrace`, `livepatch`, and
-`qualified-list` for `VerifyKernel` only) and whose message gives the reason.
-A read failure is a failed check, never a pass. If `AdmitKernel` fails, the
-section must not load. If `CheckKernelRuntime` fails, the section is
-NotReady and counts as unprotected: ftrace off stops BPF trampolines, so it
-is detected, not guarded (see the measurement above).
+(`arch`, `btf`, `release`, `build-id`, `bpf-lsm`, `ftrace`, `livepatch`)
+and whose message gives the reason. A read failure is a failed check, never
+a pass. If `AdmitKernel` fails, the section must not load. If
+`CheckKernelRuntime` fails, the section is NotReady and counts as
+unprotected: ftrace off stops BPF trampolines, so it is detected, not
+guarded.
 
 ### What the probes cannot prove
 
@@ -536,39 +448,35 @@ object, but neither can verify:
 - exec-path behaviour changed by distribution backports under the same
   version string.
 
-The costs are asymmetric. On a kernel no suite ran on, Strict either fails
-closed node-wide (an exec outage) or silently misses an exec path while
-reporting Ready. The startup canary and the live witness reduce that risk
-(an unattached or silent hook refuses the start or latches NotReady) but do
-not remove it: they prove the hooks run, not that the verdicts are right.
-The AL2023 builds above are the kernels on which the kernel suites proved
-the verdicts.
+The costs are asymmetric: if a kernel changed hook semantics or ordering,
+Strict either fails closed node-wide (an exec outage) or silently misses an
+exec path while reporting Ready. The startup canary and the live witness
+reduce that risk (an unattached or silent hook refuses the start or latches
+NotReady) but do not remove it: they prove the hooks run, not that the
+verdicts are right. The product-load run (`test/product-load`) checks the
+verdicts (Strict 126, Audit 0) on a given kernel.
 
-### Support window and AMI pinning
+### Support window
 
 The rule, not a calendar date: every kernel that passes the product gate is
-admitted, on every AMI. Suite evidence covers exactly the builds above; a
-node that moves to any other kernel build runs on the probes alone until a
-suite runs on that build. A livepatch, a missing bpf LSM, ftrace off, an
-unreadable identity or a failed `FMODE_BACKING` probe is refused on every
-build.
+admitted. A livepatch, a missing bpf LSM, ftrace off or an unreadable
+identity is refused on every build. A failed `FMODE_BACKING` probe does not
+refuse the node: image-origin facts are then unavailable (the node reports
+image facts Degraded and `fromImage` policies are refused), while exec
+allow and deny by path keep working.
 
 ### Operational facts and unproven items
 
 - An agent crash or restart leaves enforcement **off until the agent is
   restarted**: the in-kernel state dies with the agent's BPF objects. The gap
   is reported as Ready False. Enforcement is off between agent processes during
-  a restart: about 85 s (6.12) and 88 s (6.18) observed on EKS (G011 pass 2b; the new agent needed about 77-78 s to reach Ready). A graceful stop reports `AgentStopping`; a crash restart was not exercised.
-- **Unproven:** SELinux enforcing (the qualification ran Permissive);
-  lockdown modes other than none; other BPF users beyond the synthetic
-  coexistence tests; unsigned or out-of-tree kernel modules beyond the EKS AMIs'
-  taint 12288 (allowed); arm64; any other AMI.
+  a restart. A graceful stop reports `AgentStopping`.
+- Out-of-tree or unsigned module taints are allowed: only the livepatch bit
+  is gated.
+- **Unproven:** SELinux enforcing; lockdown modes other than none; other BPF
+  users beyond the synthetic coexistence tests; arm64.
 - Argv predicates are refused (D1). The AT_EXECVE_CHECK and RETIRING residuals
   (D3/D4) and the migration-out residual (`MigrationOutUnenforced`) apply.
-- Limits of the G011 evidence: in-pod reads cover verdicts and self-status
-  only, facts are shown by outcome, and the default build has no fact counters.
-  The restart ordering of Ready versus re-protection is ordered by code but not
-  decidable from the evidence at 1 s resolution. SELinux was Permissive. G011 still used a per-kernel image map: its selection was evidenced only through the wrong-digest negative (the images are now one per profile).
 
 ### Geometry limits
 
@@ -591,8 +499,8 @@ product object, new pins and a new qualification.
   is recycled (its TASK credits returned), so a slot can be busy for a short
   time after `Remove`.
 - **TASK and WORK per binding**: `g19pkg64` 64 / 8, `g19pkg128` 128 / 32,
-  `g19pkg256` 256 / 32, `g19pkg512` 512 / 16. The manual EC2 product runs
-  used `g19pkg128`. WORK bounds concurrent evaluations: 32 WORK give a burst of
+  `g19pkg256` 256 / 32, `g19pkg512` 512 / 16. node-agent uses
+  `g19pkg128`. WORK bounds concurrent evaluations: 32 WORK give a burst of
   15 concurrent births without a fail-closed refusal
   (`ConcurrentBirthCapacity`).
 - **A TASK is one task, so threads count.** Adoption adopts every thread
@@ -641,12 +549,13 @@ Every host must follow these rules; the node enforces them by refusal.
 
 ### Future work (not implemented)
 
-1. **Startup self-test on a kernel no suite ran on:** load, probe execs, check hook
-   firing and ordering, then enable.
+1. **Startup self-test:** load, probe execs, check hook firing and ordering,
+   then enable.
    - Pro: broad coverage.
    - Cons: proves only the exercised paths (races, binfmt_misc, ptrace and rare
      paths stay unproven); needs a test cgroup on production nodes; adds startup
-     latency; a false pass is a silent bypass.
+     latency; a false pass is a silent bypass; a test binding would hold one
+     of the node's two route slots.
 2. **Audit-first, promoted to Strict after a clean period.**
    - Pro: no outage risk; reuses the fail-closed witness thresholds.
    - Cons: missed hooks look clean; the clean period is arbitrary; no protection
@@ -656,288 +565,12 @@ Every host must follow these rules; the node enforces them by refusal.
    - Pro: survives unrelated backports.
    - Cons: types do not prove semantics or call order; the dependency set must
      be complete and maintained; a gap is a silent bypass.
-4. **Bulk kernel-family qualification** (stock-kernel matrix,
-   kubescape/inspektor-gadget#27).
-   - Pro: today's proof strength.
-   - Cons: about an hour of EC2 per kernel; needs a pipeline that tracks vendor
-     updates; the qualification record lags new AMIs.
+4. **Kernel-family suite runs** (kubescape/inspektor-gadget#27): run the
+   product-load suite per kernel family.
+   - Pro: proves verdicts on the kernels that ran.
+   - Cons: needs a pipeline that tracks vendor updates.
 
-The likely combination is (4) for support claims, with (3) and (1) only as a
-pre-check, never as a Ready claim.
-
-The remaining sections describe the **legacy per-binding `Owner` profile**,
-including its lifecycle and historical isolated proofs, not `NodeEnforcer`.
-
-## Legacy per-binding Owner support and security limits
-
-This is the **legacy full persistent-owner profile**, not the
-[simple path-only engine](../README.md). It currently admits only the two exact
-custom **amd64** kernel artifacts in [KERNEL-MATRIX.md](KERNEL-MATRIX.md). Stock
-distribution kernels and arm64 are not supported by this profile. BPF LSM and
-ftrace availability alone do not satisfy its admission checks.
-
-**The legacy owner does not target AL2023.** Its kernel matrix
-(`SupportedKernelBTF`, `SupportedKubernetesKernelBTF`) and the archive
-builder (`full/owner/build-archive.sh`) list only those two custom proof
-kernels. On AL2023, or any other kernel, `NewOwner` still returns a handle,
-but the owner refuses the gadget at start (`verifySupportedKernel`, before
-it claims the binding), so the run fails and nothing is enforced: it fails
-closed. AL2023 is served only by the shared product node (`StartNode` with
-`WithSharedNodeHost`). A host that selects the legacy owner on AL2023 gets
-that refusal. The legacy matrix will not be widened without qualifying the
-legacy owner on those kernels.
-
-### Audit never blocks once the binding is classified
-
-**Audit never blocks once the generation is known.** After admission, the owner
-classifies the exec by its generation's policies (`fe_execution_class`). For an
-Audit-only generation, an evaluator error, a role-proposal error or a
-post-admission observation fault never denies that exec. The verdict comes from
-`fe_lsm_verdict`, the same rule as the ABI3 owner and the shared node. A fault
-never trusts the partially merged decision mode. Audit also never grants
-uncertain roles and keeps earlier LSM denials.
-
-Every such fault is counted (`count(2)`). For an evaluator or proposal error, the
-verdict event is a would-deny operational error: `error` is nonzero, `deny` is 1
-and `mode` is 1. An observation-allocation fault emits no event. What happens
-next depends on the fault:
-
-- **Recorded against the generation; admission stays open.** An evaluator error,
-  an observation fault, an errored decision and an authored role conflict are
-  data faults: they set a bit in the generation's fault row. `Owner.Check` then
-  reports the binding NotReady until a new generation is published, but the
-  owner-wide fault stays clear and later execs are still admitted.
-- **Counted and evented only.** Proposal work-buffer exhaustion (no `eo_work`
-  buffer), or a missing task record at proposal time (practically unreachable
-  after admission found the task), records no generation fault, so it causes
-  no NotReady.
-- **Owner-wide fault; admission closes.** A proposal state inconsistency
-  quarantines the task and sets `EO_FAULT_STATE`. A failure to store the
-  generation fault row sets `EO_FAULT_STORAGE`. The faulting Audit exec still
-  runs, but admission closes for the owner until recovery, so later execs deny.
-
-**Admission failures before the generation is known still deny.** Examples are
-tracking, gate or storage faults, an owner-wide fault, and closed admission
-during a publication (`Activate`, `Update`, `Resume`) or retirement. An
-owner-wide fault set by an earlier
-proposal quarantine or by a failure to store a generation fault (above) is one
-such cause of later denials. With no generation there is no class, so these
-stay fail-closed, even for an Audit-only binding. Strict, mixed and
-unclassifiable (invalid header or policy) generations remain fail-closed on
-every fault. The shared product node applies two rules instead. A
-route-invariant fault (`SE_ROUTE_INVARIANT_FAULT`,
-`full/shared_route.h`: a route class other than 1 or 2, or a violated index or
-ARRAY invariant) denies before classification in every mode. Every other fault
-follows the route's class: any other route admission fault (an adopting,
-reserved or latched route, saturated claim or serial counters, or an identity
-mismatch for a frozen class) returns `SE_ROUTE_AUDIT_FAULT` or
-`SE_ROUTE_STRICT_FAULT`, and a later fault (no TASK, exhausted storage) takes
-`fe_lsm_verdict(class, 0, 1, ...)`. In both cases Strict denies and Audit
-allows. A later fault also emits a fault event (`error` 1, `deny` 1, `mode`
-the class: 2 for a Strict fault, which is a real denial, and 1 for an Audit
-fault, which allowed the exec; `full/shared_verdict_event.h`
-`se_verdict_event_fill`);
-a route admission fault is counted in the admission fail-closed rate and emits
-no verdict event. Do not fall open to hide an operational
-fault.
-
-**The heartbeat never closes admission.** In the legacy owner, `Owner.Check` is
-read-only: it never closes the gate and never re-attests. A closed gate denies a not-yet-owned exec
-and fails a fork in the bound cgroup with `EAGAIN` in every mode, Audit
-included, so a same-plan refresh must not close it. `Check` re-verifies the
-lease, pins, hooks and root, and reads the kernel state. It reports NotReady
-on an owner-wide or generation fault, a movement-observer fault, a lost
-readiness generation, a non-idle publication phase or a closed gate. The
-movement receipt goes stale on any cgroup migration on the node; that is not
-drift and `Check` does not renew it. No admission hook reads the receipt: exec
-and fork in the bound cgroup validate the task's roles on every operation, and
-an invalid task is denied and quarantined, which sets the owner-wide fault.
-Physical re-attestation, under a drained gate, runs only inside a publication:
-before the commit and again after the swap.
-
-Follow-ups:
-
-- Tests that need a new test binary and a VM run: a mixed Audit/Strict
-  proposal-error case, an `Owner.Check` NotReady assertion after a data fault,
-  and an injected observation-allocation fault.
-- Classification timing: the legacy owner classifies after `eo_exec_begin`, in a
-  separate read of the generation's policies. Classify inside `eo_exec_begin`, as
-  ABI3 does, so one read admits and classifies.
-- Work-buffer exhaustion and a missing task record at proposal time should
-  record a generation fault. That is a BPF change
-  and needs new archives and a VM run.
-
-On a precommit candidate refusal, retain the last-good active policy and accepted
-history. The embedding must report failure/NotReady rather than advertise the
-rejected revision as active. Reopen admission only after safe rollback and phase
-cleanup; failed rollback retains pending ownership and the closed gate until
-recovery. Do not discard trusted state to force admission. A postcommit error
-requires resuming the same committed generation, not rolling back to the old
-policy.
-
-The legacy mocked Go regression `TestLegacyOwnerUpdateBestEffortAdmission`
-covers precommit refusal, drain cancellation and rollback failure/recovery
-through `Owner.Update` with fake maps/control and a heap admission word. This is
-protocol coverage, not native bootstrap, ABI3/shared activation, physical Ready,
-Kubernetes status propagation or kernel qualification.
-
-### Scope, runtime helpers and operator consent
-
-An owner covers one **exact cgroup**, not its descendants. Creating or moving
-into a child cgroup does not extend policy coverage. A trusted embedding must
-exclude unsupported cgroup delegation and authenticate its runtime lease; the
-node-agent strict admission contract includes cgroup-mount, capability,
-namespace and seccomp restrictions. Movement observation detects changes and
-invalidates the publication receipt; it is not a general mechanism that
-prevents migration.
-
-This profile has no `BindRestricted` host-namespace exception and no inferred
-runtime-helper exemption. A `kubectl exec`/`docker exec` helper entering from an
-unobserved creator can fail lineage checks and leave the owner NotReady once it
-execs or forks, or refuse the next publication. A dormant one is not reported
-by the read-only heartbeat. A closed gate can also reject exec or fork during
-publication and retirement, never during a heartbeat. Allowing a
-`/runc` path does not establish creator lineage or authenticate that binary.
-Treat helper disruption as an explicit cost of opting into strict enforcement,
-not as a reason to infer an exemption or reset trusted state.
-
-Enforcement consent belongs to the host operator: global
-`operator.oci.allow-enforcement` defaults to false. Image behavior metadata
-declares what an image requests; it cannot enable that host setting. Image
-verification, runtime admission and policy validation remain separate checks.
-
-### Role-entry authoring and isolation
-
-The current compiler requires a `setRole` rule to be an allow, but does **not**
-require an actor constraint. An omitted actor (or an empty actor object) places
-no restriction on who may enter the role: any matching successful exec can
-propose that transition. For example, a rule targeting `bwrap` and assigning
-`sandbox-helper` without an actor restriction can let the agent launch `bwrap`
-itself to obtain that role. The executable's name is not an authorization proof.
-
-Review each role-entry rule as a grant of future authority. Constrain the actual
-authorized actor using meaningful role/path/image predicates where appropriate,
-and check that untrusted code cannot first enter or control that actor. An empty
-actor object is not a mitigation. This is authoring guidance, not a claim that
-the current validator rejects broad grants. Role changes are policy-local and
-commit only after successful exec; role labels received through telemetry do
-not grant authority.
-
-A constrained grant in the native `fullpolicy` Go IR can look like this (not CLI
-YAML or a complete deployment policy):
-
-```go
-fromImage := true
-policy := fullpolicy.Policy{
-    ID: "sandbox-policy", Revision: "1", Mode: fullpolicy.Enforce,
-    RootRole: "agent", Default: fullpolicy.Deny,
-    Rules: []fullpolicy.Rule{{
-        Name: "enter-sandbox-helper", Action: fullpolicy.Allow,
-        Actor: fullpolicy.Actor{
-            Role: []string{"trusted-launcher"},
-            Path: []string{"/usr/libexec/sandbox-launcher"},
-            FromImage: &fromImage,
-        },
-        Target: fullpolicy.Target{
-            Path: []string{"/usr/bin/bwrap"}, FromImage: &fromImage,
-            SetRole: "sandbox-helper",
-        },
-    }},
-}
-```
-
-All three actor constraints must match. This assumes the launcher already has
-authenticated `trusted-launcher` role history in this policy and cannot be
-controlled or invoked as a confused deputy by untrusted code. The example does
-not grant that initial role: its default root role stays `agent`, and missing
-history is not authority. The image-origin predicate describes admitted backing
-files; it does not prove that the process or its inputs are trustworthy. Review
-how the launcher role is established and what it permits before using the grant.
-A wildcard-only actor such as `Path: []string{"/**"}` still admits arbitrary
-actor paths; its mere presence is not meaningful authorization.
-
-The compiler currently accepts broad grants without an actor-warning API.
-`TestRoleEntryAuthoring` and the ordinary Go/C parity cases document this behavior,
-including deny/conflict suppression. They are not proof of kernel fact acquisition
-or of the runtime's successful-exec role commit.
-
-Roles are **not hostile-code isolation boundaries**. Processes can delegate work
-through shared files, IPC, signals or services; containers in a pod commonly
-share networking and may share storage. The combined authority reachable through
-those channels is a threat-model upper bound, not a literal union performed by
-the rule evaluator. Separate pods are a starting point for stronger separation,
-but also require appropriate network, storage and service-access controls.
-
-### Restart and recovery
-
-Policy reload retains the same live owner's hooks and history; restarting the
-gadget or its owning process does not. Maps and links are not pinned for crash
-persistence. Once those resources close, enforcement and retained role history
-are lost; a fresh owner cannot reconstruct them from event labels or current
-cgroup membership.
-
-Fresh bootstrap authorizes the exact trusted init threadgroup and descendants
-whose creator lineage the owner actually observed. Arbitrary already-running
-multiprocess containers are not generally re-adoptable; unknown pre-existing
-tasks refuse readiness rather than receive inferred root roles. See the
-[conservative lineage contract](OWNER-ABI.md#conservative-lineage-boundary).
-Withdrawing a faulted owner removes protection; it is not recovery of protected
-state. Pinning alone would not supply the missing recovery protocol.
-
-## Word and ownership
-
-One aligned 64-bit word in a writable `BPF_F_MMAPABLE` ARRAY holds a closed high
-bit and a low-bit admission count (maximum 4,096). The map has 65,536 lifetime
-slots. `GateMap` allocates monotonically; retired slots stay closed and are never
-reused. At most 1,024 allocated, nonretired slots may coexist. Exhaustion is an
-explicit refusal, not recycling: this avoids a stale pre-admission reader
-admitting against a different binding after slot ABA.
-
-Use one Go allocator/publisher owner per map. No ordinary store or
-`bpf_map_update_elem` may replace an activated word. Both BPF and Go use aligned
-64-bit atomic operations. The first actual BPF exec transaction calls `fg_enter`,
-then latches its original binding, slot and transaction identity before looking
-up policy. A successful admission owns exactly one release. Do not copy admission
-or pending-transition ownership to forked/cloned children.
-
-`BeginUpdate(ctx)` atomically closes admission while retaining the count, waits
-for zero and returns an exclusive publication lease. Publish a fully prepared,
-frozen inner map before `Reopen`; on precommit preparation/publication failure,
-retain the old map and reopen only after safe candidate cleanup. A timeout reopens
-only the closure this owner acquired, preserving outstanding admissions. A stale
-lease cannot reopen a later
-publisher's closure. `Retire` permanently closes a drained slot. `GateMap.Close`
-refuses unmapping until all slots have been retired.
-
-Admission and the generic `Leave` helper use bounded CAS loops (64 attempts).
-Contention is explicit: failed admission grants nothing; failed generic release
-retains ownership/count and must be retried or reported stuck. The role-lifecycle
-fixture instead uses `fg_leave_owned`: it claims and clears transaction ownership
-under the task lock, finishes all owned writes, then performs one final atomic
-subtraction. Duplicate cleanup without a claim never subtracts. Underflow is a
-sticky corruption fault, never a reset or compensating write.
-
-## Whole-exec integration boundary
-
-The caller must commit roles and clear pending transaction state **before** its
-final count decrement. It must match completion to the original `bprm` and slot,
-not the current PID/cgroup (nonleader exec and migration can change these).
-
-Syscall-exit cleanup alone is insufficient: failed `kernel_execve` can return to
-a kernel caller without a syscall-exit event. The proposed full runtime requires
-verified `fexit/bprm_execve` completion plus task-exit fallback, attached before
-admitting LSM transactions. Successful `sched_process_exec` can commit roles, but
-release must follow all transaction-owned writes. A separate isolated role fixture has passed all five required hook attachments
-and 14 lifecycle cases on the pinned custom kernel, including scripts, failures,
-nonleader exec, fork/vfork and an explicitly injected missing-fexit task-exit
-fallback. This does not prove persistent production-owner publication, bootstrap
-lineage, cgroup migration during active admission, ptrace drain behavior, or
-production shutdown ordering. This package does not supply that owner.
-
-Closed-gate exec attempts need an explicit, observable operational failure policy;
-never bypass authored enforcement while publication is underway. This can disrupt
-runtime helpers and even explicitly audited workloads during a reload. The gate
-library does not silently choose this product behavior or claim that it is wired.
+## Fail-closed accounting, capacity, adoption and publication
 
 The opaque verdict candidate fails closed when a bounded TASK or WORK quota
 (`SE_PROFILE_TASK_QUOTA`, `SE_PROFILE_SCRATCH_QUOTA`), the deferred storage, or
@@ -981,13 +614,14 @@ The G019 M0 classes count the outcomes G025 excluded:
   with the same verdict and cleanup, counted once as QUALIFY `[6]` or
   PENDING `[7]` like a first pass, never also here. Before gap 4 that exec was refused as a pending receipt
   (`[7]`); a real pending receipt still is. Residual by construction: an
-  `AT_EXECVE_CHECK` (6.18) runs no `bprm_check` and is never evaluated (user
+  `AT_EXECVE_CHECK` (6.14 and later) runs no `bprm_check` and is never evaluated (user
   decision D4, a documented residual: the flag only asks whether the file
   could be executed, nothing runs; `execveat(AT_EXECVE_CHECK)` returns what
   the kernel says, 0 for an executable file even when a Strict policy
   denies it, with no event and no counter; the real exec of the same file
-  is evaluated and denied as usual: EPERM and one decision event. 6.12
-  rejects the flag with `EINVAL`. Live:
+  is evaluated and denied as usual: EPERM and one decision event. A kernel
+  without the flag (`linux_binprm` has no `is_check`) rejects it with
+  `EINVAL`. Live:
   `TestSharedNodeExecveCheckAttached`); a
   binfmt_misc `F` (fix-binary) interpreter, opened at registration and
   possibly outside the container's mount namespace, is evaluated like any
@@ -1041,7 +675,7 @@ User-approved G025 capacity thresholds:
   no stack and at most +15 static instructions per root.
 - **Steady-state gate** (test reaper at 2 ms): 0 Strict fail-closed refusals
   and 0 Audit unevaluated children at a sustained 400 births/s per node,
-  3 streams, at least 10,000 paced births per exact kernel and class, at
+  3 streams, at least 10,000 paced births per kernel and class, at
   128/16. 800/s and 1600/s are exploratory ceiling points only.
 - **Burst gate** (G019/G020, product reaper; user decision "gate at
   capacity"). The burst capacity of a binding is
@@ -1064,7 +698,7 @@ User-approved G025 capacity thresholds:
     through the product reaper and nothing throttles forks meanwhile; the
     capacity reserves one late child. Refusals at 6 streams still happened
     under reaper stalls (G019 chain7: 1 of 48; chain15 fs6x20: 4 of 160 on
-    both kernels at 1-3 ms reap latency), so it is advisory and test only
+    the test kernels at 1-3 ms reap latency), so it is advisory and test only
     (lead decision (b)): the product object requires the synchronous return
     (`#error` + NEG `pkg-without-sync-return`, and product admission refuses
     an image without `opaque_real_work_sync`), and non-sync bursts are
@@ -1074,7 +708,7 @@ User-approved G025 capacity thresholds:
     are still in the reaper).
   - At or below capacity: 0 refusals for 1,000 back-to-back births (witness
     `fail_closed=0`, evaluated == births, no reaper `Faulted`), Strict and
-    Audit, on both kernels. With the synchronous return at 3, 6 and 7
+    Audit, on the test kernels. With the synchronous return at 3, 6 and 7
     streams, plus: every settled WORK `returned` or `claim-lost`, no
     synchronous slow path (pending, fault, stuck), settled birth WORKs ==
     constructed births and settled evaluation WORKs == completed execs, and
@@ -1139,7 +773,7 @@ User-approved G025 capacity thresholds:
     burst; mean ns per run, synchronous return on vs off, the high-water
     objects `g19dec2sync128` vs `g19dec2hw128`):
 
-    | Settle program | 6.12 / 6.18, on | 6.12 / 6.18, off |
+    | Settle program | on | off |
     |---|---|---|
     | `child_exit_candidate` (death) | ≈ 3.8k | 3.7k–3.8k |
     | `child_final_free_candidate` (`task_free`) | 0.7k–1.0k | 0.6k–0.8k |
@@ -1169,7 +803,7 @@ User-approved G025 capacity thresholds:
     non-synchronous object; the product objects already had the reuse-aware
     branches): the reserve cookie-order race in `se_owk_begin`, established
     by elimination plus the post-fix fault-site witness run
-    (`run-g19dec2.sh` `ONLY=fs6x20`: `burst-nosync-s6` ×20 on both kernels,
+    (`run-g19dec2.sh` `ONLY=fs6x20`: `burst-nosync-s6` ×20 on the test kernels,
     0 faults and a zero witness expected; any site that fires is a second
     bug).
   - The IDENT baselines were refreshed once for this change, with evidence
@@ -1274,7 +908,7 @@ User-approved G025 capacity thresholds:
     commit requires only the candidate record free of holders; the previous
     record turns RETIRING and keeps its holders, which validate, read and
     release against it. Fresh claims always stamp the ACTIVE record and the
-    identity (unpinned) re-claim requires it, so a RETIRING record's holder
+    identity (non-pinned) re-claim requires it, so a RETIRING record's holder
     set only shrinks. Readers may release on RETIRING; a claim bound to a
     RETIRING record transfers to a reader of it. The birth constructor
     builds from the RETIRING record of its claim's identity.
@@ -1323,7 +957,7 @@ User-approved G025 capacity thresholds:
     `se_objects` entry and 256 288-byte `se_arena` cells: +74,836 bytes of
     map keys and values (g19pkg128: 2,375,132 -> 2,449,968), independent of
     the TASK/WORK profile; every program of every product object still
-    loads under the verifier budget on both AL2023 kernels.
+    loads under the verifier budget.
   - Open point (to verify on the VM): a reader of the RETIRING record
     evaluates under its own snapshot while the accepted-epoch catalogue may
     already carry the next generation's root epoch (the catalogue invariant
@@ -1576,19 +1210,6 @@ it):
 
 ## Verification
 
-Ordinary tests exercise concurrency, timeout preservation, publisher ownership,
-limits, slot retirement and BPF compilation. Privileged testing is opt-in:
-
-```sh
-IG_EXEC_GATE_KERNEL_TEST=1 \
-IG_EXEC_GATE_BPF_SOURCE=/absolute/path/bpf/gate_test.bpf.c \
-./sandbox-exec-gate-kernel.test -test.run '^TestGateKernel$' -test.v
-```
-
-Run only on the explicitly selected disposable x86_64 fixture. The kernel test
-loads a socket-filter program and uses `BPF_PROG_TEST_RUN`; it attaches nothing.
-It tests actual mmap/BPF atomic interoperability, not LSM facts or full exec roles.
-
 **Fork transaction next to another task_alloc program.**
 `TestSharedNodeTaskAllocCompositionAttached` (qualification build,
 `-tags enforce_exec_shared_qualification`, VM only, the environment of
@@ -1604,129 +1225,18 @@ product source must run before the denier in exactly one of the two orders
 (read from `opaque_real_attempts[0]`, which counts every owned birth claim
 whatever the class), and in that order the target must have taken the
 parked claim, i.e. constructed the child TASK that the cleanup must
-release. It passed on EC2 on both pinned AL2023 kernels (6.12.113-138.209
-and 6.18.56-125.164), 4/4 leaves on each kernel (EC2 run `a3-20261115t215407-70bd`). It remains a manual EC2 gate because CI
-has no AL2023 runners.
+release. It is a manual VM test: CI has no BPF LSM runners.
 
-## Historical identities
+## Attach capacity and readiness
 
-`IdentityRegistry` reserves compiler-validated policy/role hashes before any
-candidate seeding or publication. It retains successful reservations even when
-subsequent publication fails. Older task state may still carry those hashes;
-policy deletion and reload must never free or rename them. Collision and lifetime
-capacity failures leave the registry unchanged. The registry is scoped to one
-persistent task-state owner and must not be recreated on every revision. It is
-not a substitute for production bootstrap, admission, or publication wiring.
-
-## Prepared program publication
-
-`ProgramSlot` is the native frozen-map publication building block for one future
-persistent binding owner. `Begin` drains the shared gate and exposes immutable
-staging slot1. Native bootstrap must establish its own proof before `Commit`
-atomically replaces active slot0 and permanently records successful UID epochs.
-Admission remains closed until native phase cleanup and `Finish`. Precommit
-`Abort` preserves the last-good map. Failed staging/epoch cleanup is retained and
-blocks new allocation, without restarting the old program. Shared handles cannot
-complete another publisher's transaction. Every candidate attempt is monotonic;
-removed/re-added UIDs retain their original successful epoch.
-
-The native owner must exclusively control the borrowed maps/gate, enforce
-aggregate budgets and retain the binding identity leases. It must clear bootstrap
-phase before Finish/Abort, drain before StopGadget, and call CloseAfterDetach only
-after actual runtime teardown. This building block neither attaches hooks nor
-authorizes lineage or reports a production binding Ready. Its ordinary tests use
-failure-injected maps; real map-in-map/freeze proof is separately opt-in.
-
-`epoch_roles.h` is the work-copy merge helper, not a task-storage owner. Its caller
-provides complete immutable accepted history and verified lineage, and publishes
-only under the task lock after both task and authority versions still match.
-Accepted scalar roles are not rerooted, and unactivated failed epochs cannot
-become authoritative in another attempt. Kernel socket parity proof is separate
-from the native C matrix and from production lifecycle wiring.
-
-## Experimental assembled owner and native publication coordinator
-
-**Legacy ABI2 reference:** this section and the native OCI lifecycle below do not
-implement or qualify the shared-node replacement; see the
-[shared Go boundary](#legacy-abi2-reference-and-shared-go-boundary).
-
-The shared full source now has an explicit `ENFORCE_EXEC_PERSISTENT_OWNER`
-profile. `../full/owner/Makefile` packages it separately; its metadata does **not**
-advertise the incompatible immutable full-runtime capability. The profile shares
-actual fact acquisition with the immutable evaluator, uses active frozen slot0,
-and includes persistent role/control hooks. Compilation/BTF checks are not
-verifier acceptance or a production activation claim.
-
-`OwnerControl` borrows loaded maps and the operator's `program/eo_command` handle.
-It freezes kernel-owned identity maps before activating the exact configuration,
-and runs nonce-qualified commands on one dedicated OS thread. Accepted commands
-are joined even when their context is canceled. Closing the worker joins calls
-and destroys that physical thread; it never detaches hooks or releases pins.
-The rejected negative-PID cgroup.procs write must produce both EINVAL and an
-authenticated movement-arm receipt. A path parsing error alone proves nothing.
-
-`Publisher` composes the shared gate, A/B inventory, root-group continuity checks,
-immutable slot replacement, successful-only epoch flush, committed revalidation,
-and phase clear. First startup must call ProgramSlot.Begin **before** activating
-configuration, retain that prepared handle, authorize the exact root, then pass
-it to NewPublisher and Resume. It must not briefly reopen an empty active slot.
-Precommit refusals attempt bounded rollback; failed rollback retains the closed
-handle. A map swap is irreversible even if history flush or a command's result
-fails. Resume inspects kernel phase receipts and completes the same generation;
-it never reroots accepted state or starts a replacement owner.
-
-PublicationResult.Committed refers to the attempted revision, while Generation
-identifies the currently active revision (which can still be last-good on a
-refused attempt). Admitting means the gate is open, **not** production Ready.
-Runtime leases, hook coverage, image evidence, aggregate budgets, OCI startup and
-shutdown integration, and public decoder provenance remain native-owner duties.
-Retire must succeed before StopGadget; identity pins remain held until confirmed
-teardown. The opt-in assembled-kernel fixture is separate from OCI integration.
-
-The assembled fixture has now passed with real hooks and the qualified worker,
-including retained-role capacity refusal/last-good and postcommit recovery. It
-also verifies native UAPI write/delete refusal on physical IDs and state. The
-kernel does not support Freeze on a TASK_STORAGE value containing a spin lock;
-see OWNER-ABI.md for the frozen-cookie + read-only-native-hash layout and its
-lifetime/privileged-handle assumptions. Native OCI integration and the embedding's persistent backend are now connected
-and have isolated pinned-kernel proof; production/general-environment readiness
-is not implied.
-
-## Native OCI lifecycle (isolated pinned-environment proof)
-
-`NewOwner` reserves a **shared** aggregate Budget and exclusive cgroup scope
-before the OCI collection can load. All owners in one embedding must share that
-budget. Native owner images must contain exactly one eBPF layer and no WASM or other
-layers. OCI admission enforces this before initializing any image operators,
-including when a supplied native owner encounters missing/rewritten ABI metadata.
-Additional collections (including duplicate names) also invalidate native resource
-admission.
-Resource manifests are checked both at admission and again immediately before
-allocation, after parameter, context-variable and enricher rewrites:
-map payload capacities,
-physical local-storage credits, encoded instruction ceilings and two frozen
-program slots are accounted. This is bounded capacity accounting, **not** a
-measurement or guarantee of kernel/Go RSS, allocator overhead or JIT expansion.
-Reservations remain held until confirmed teardown, including failed startup.
-
-### Attach capacity, readiness and the owner cap (G009)
-
-There is no source-derived owner ceiling. The capacity is the measured
-per-trampoline link limit, probed with no-op fillers on both exact AL2023
-kernels (`test/al2023-trampoline-cap`):
-
-| hook (trampoline) | kind | 6.12.113-138.209 | 6.18.56-125.164 | preexisting |
-|---|---|---|---|---|
-| bprm_check_security, task_alloc, task_free, socket_connect, inode_init_security_anon | LSM | 38 | 38 | 0 |
-| file_open | LSM | 37 | 37 | 1 (stock VM) |
-| bprm_execve, cgroup_migrate, copy_process | fentry, fexit | 38 | 38 | 0 |
-| bprm_execve, bprm_check_security | mixed fentry/fexit(/LSM) | 38 | 38 | 0 |
-
-That is **38 links per hook on both kernels** (`BPF_MAX_TRAMP_LINKS`; the
-limit hit is `E2BIG` from the link count, not the trampoline image size),
+The capacity is the per-trampoline link limit: **38 links per hook** on
+x86_64 (`BPF_MAX_TRAMP_LINKS`; the limit hit is `E2BIG` from the link count,
+not the trampoline image size), measured with no-op fillers on LSM,
+fentry/fexit and mixed trampolines,
 shared by fentry, fexit, fmod_ret and LSM programs on the same trampoline (an
 LSM hook `X` uses the trampoline of `bpf_lsm_X`). The 38 is shared with every
-other BPF consumer on the node, as the preexisting `file_open` link shows.
+other BPF consumer on the node (a stock VM already had one `file_open`
+link).
 
 * **K/R policy.** Each enforcement family may use at most `K` links per hook
   and must leave `R` free for third parties. `R` defaults to **8**
@@ -1791,17 +1301,7 @@ other BPF consumer on the node, as the preexisting `file_open` link shows.
   and `TestSharedCandidateMergedMetadataObjects` on product objects (no
   SchedCLS program, no `se_rm_*`, no `se_pool_reap*`). The product object
   needs syscall programs that take spin locks (`opaque_real_reap`), so it
-  needs kernel ≥ 5.14 (qualified on AL2023 6.12 and 6.18); stock Rocky 4.18
-  is not supported by it.
-* **Legacy Owner cap.** `NewBudget` refuses more than `LegacyOwnerHardCap`
-  (**2**) owners and `NewOwner` refuses a third owner, both with
-  `ErrLegacyOwnerCap`, before anything of it is loaded or attached. Each
-  owner attaches 10 trampoline links of its own. One Budget must be shared
-  per node.
-* **No support claim for owner concurrency.** Neither the legacy Owner cap nor
-  the 38-link measurement is a supported concurrency figure. Running more
-  than one owner per node, or any number of owners next to other BPF
-  consumers, is not claimed to be supported; per-owner concurrency is G019.
+  needs kernel ≥ 5.14; stock Rocky 4.18 is not supported by it.
 * **Transactional attach.** Every collection admitted by a native resource
   validator (and only those; ordinary gadgets are unchanged) is attached by
   `pkg/operators/ebpf/nativeattach`: in a fixed order (`nativeattach.Rank`:
@@ -1864,16 +1364,13 @@ other BPF consumer on the node, as the preexisting `file_open` link shows.
   targets the gadget ID, so a refused attempt's `stop` could tear down the
   other caller's live gadget. `stop` should be a no-op when its own
   `StartGadget` failed.
-* **Legacy Owner refuses at once.** `WithOwner` sets
-  `operators.NativeAttachRetryKey` to `false`: the legacy per-cgroup Owner
-  does not retry and its Start returns the capacity refusal immediately.
 * **Link-based programs only.** Rollback closes bpf links only. A native
   family is therefore refused, before anything is attached and without
   retry, if an enabled program would attach without a bpf link or with side
   effects rollback cannot undo (kprobes/uprobes, tracepoints, perf events,
   socket filters, TC, sockmap programs, iterators). Admitted are LSM and
   fentry/fexit/tp_btf links, syscall commands and admitted recovery TEST_RUN
-  programs, which covers the exec candidate and owner families.
+  programs, which covers the exec candidate family.
 * **Readiness component.** In the native path each receipt's `Check` also
   verifies, by link ID, that the link still exists and references the same
   program. A missing or replaced link returns `*nativeattach.ErrNotReady`
@@ -1881,73 +1378,7 @@ other BPF consumer on the node, as the preexisting `file_open` link shows.
   check of the product node's `Ready` (a failed receipt fails it with
   `ErrSharedNodeNotReady`); a qualification node's `Ready` stays unavailable.
 
-The native data operator verifies live, operator-owned attachment receipts for
-all required hooks, not just image annotations/program FDs. It validates the
-trusted transferred lease's proc/cgroup/namespace pins, independently refuses a
-root cgroup or the host mount namespace, initializes immutable origins and probes
-its own filesystem marker before activating scope. The lease must authenticate
-runtime ownership, genuine host identity, stable root/mount constraints and any
-complete image-origin evidence. It must not reenter Owner methods.
-
-The exact x86_64 kernel matrix retains the original archived BTF digest
-`12f7d6270d8090e944941d3ff77c13339cebe1c394f4ef0d27be1bff0d09561b`.
-The additional individually proved artifact has BTF digest
-`759807546ae2feaf616dc65c73167439867bb393dc468a4bd39c0ab1bc267d51`:
-same Linux source `6b4b543fa18757297ac756a6fe6e64f506b7844a`, with fanotify,
-redirect/NAT and CPU bandwidth configuration needed by Kubernetes, plus a
-separate local version. Its complete isolated upstream proof and artifact hashes
-are recorded in [KERNEL-MATRIX.md](KERNEL-MATRIX.md); private Kubernetes/OTLP
-integration remains separate and pending. Both exact gates require
-active BPF LSM and enabled ftrace. Unknown digests refuse; neither a matching
-release string nor the same source commit establishes support. No general
-released-kernel or arm64 support is claimed.
-
-Lifecycle ordering is deliberate:
-1. Construct Owner; pass WithOwner and the native data operator to the manager.
-2. StartGadget prepares only: scope remains gated and no policy is committed.
-3. **After StartGadget succeeds**, explicitly Activate and verify Owner.Check.
-4. Update/Resume use the same hooks/maps/task histories, never ReplaceGadget.
-5. **Before StopGadget**, successfully drain/retire with BeforeStop. A timeout
-   retains old admission/enforcement; do not cancel the runtime in that case.
-6. Wait for manager teardown, then ReleaseAfterDetach. Operator Close joins the
-   qualified command thread but intentionally does not release identity pins or
-   the reservation before eBPF FDs/links are confirmed closed.
-
-Internal owner ABI **2** adds active-only, same-generation physical re-attestation.
-ABI1 development artifacts are rejected; the chart version is unchanged.
-Movement invalidates the inventory receipt. Only a publication renews it, behind
-a closed/drained gate, with no new roots or epoch writes; unknown ingress refuses
-that publication. `Owner.Check` is read-only and does not renew or require it
-(see "The heartbeat never closes admission"). Publication pauses can disrupt
-exec/runtime helpers; there are no inferred exemptions. The native Owner no
-longer issues `EO_REATTEST`; the command stays in the ABI.
-The native OCI fixture and ABI2 re-attestation passed isolated runs (before the
-read-only heartbeat change) with controlled synthetic leases, real datasource
-bitmaps and confirmed teardown. After the change, the OCI fixture's new
-expectations and the heartbeat churn test passed on the k8s proof kernel
-(2026-11-16); the other owner kernel suites passed on the same change before the
-heartbeat test's fork count was reduced.
-This is not proof of containerd/CRI authenticity, all persistent-profile predicate
-combinations, real runtime-helper churn, or the connected node-agent backend.
-Those integration prerequisites remain before default activation.
-
-## Reproducible supported owner artifact
-
-The default upstream builder is not proof for this experimental profile. Build an
-explicit amd64 archive with the tested compiler and exact supported kernel BTF:
-
-```sh
-make -C gadgets/enforce_exec/full/owner archive \
-  VMLINUX_BTF=/trusted/vmlinux.btf CLANG=clang-21 BPFTOOL=bpftool \
-  IMAGE=localhost/enforce-exec-owner:abi2 ARCHIVE=/tmp/owner.tar
-```
-
-This requires Clang 21.1.8 and an exact admitted BTF digest; it never loads BPF.
-The archive contains the unchanged owner metadata and a single amd64 platform.
-Its compiler/BTF/input bytes are trusted build inputs, not policy-provided code.
-Compilation alone is not verifier proof: Clang 19 produced a refused object on
-the tested kernel. The embedding's combined fixture accepts the resulting archive
-through the same native ORAS tar path as its service configuration.
+## Accepted residuals: root anchor and mounts
 
 **H1 root anchor recorded at Bind (accepted residual, review 2026-11-13).**
 Every path fact is anchored to the binding's root, recorded by the kernel at
@@ -1970,11 +1401,9 @@ Precondition: `CAP_SYS_ADMIN` over the container's mount namespace (a
 privileged container, or one granted `CAP_SYS_ADMIN`). A new mount
 namespace does not help the workload: it differs from the anchor, so every
 path fact of its execs is UNKNOWN. Accepted for now: run enforced
-containers without `CAP_SYS_ADMIN`. The legacy owner delegates the same
-question to the pod's seccomp profile (its root contract). Follow-up:
-accept an attested shared root barrier (kubescape/inspektor-gadget#26) as
-an input on both paths,
-so the host can drop the seccomp and capability preconditions.
+containers without `CAP_SYS_ADMIN`. Follow-up: accept an attested shared
+root barrier (kubescape/inspektor-gadget#26) as an input, so the host can
+drop the capability precondition.
 
 ## Shared-node live health: fail-closed rate witness and accepted G019 residuals
 
@@ -2010,8 +1439,8 @@ refused). An object behind a qualification publisher override (the bootstrap
 publisher, whose untracked tasks are refused by design) is reported only, and
 a legacy 11-cell witness has no denominator: its failures are reported and its
 state is Unknown, never a node health input. A refusal rate is never a teardown
-failure; only a sticky Unknown is. `NodeEnforcer.Ready` still returns
-`ErrSharedNativeUnavailable`.
+failure; only a sticky Unknown is. A qualification node's
+`NodeEnforcer.Ready` still returns `ErrSharedNativeUnavailable`.
 
 Class [9] (GAP) counts only the interpreter continuation's refusals (G019
 gap 4, H1): `REAL_OWNER_RATE_GAP` is incremented at the one continuation

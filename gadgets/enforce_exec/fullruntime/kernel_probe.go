@@ -19,12 +19,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// D3 (universal kernel): runtime feature probing for the single CO-RE
-// product object. The product gate (verifySharedProductKernel) admits every
-// x86_64 kernel the same way, on its probes; the pinned AL2023 builds are
-// only the qualification record. The shared candidate path of a
-// qualification build still requires its matrix, unless the explicit
-// test-only override is set (kernel_probe_override_tag.go).
+// Runtime feature probing for the single CO-RE product object. The product
+// gate (verifySharedProductKernel) admits every x86_64 kernel the same way,
+// on its probes; the shared candidate path of a qualification build runs the
+// same checks (verifySharedCandidateKernel).
 //
 // What the probes cover, and what they cannot:
 //   - every kernel type, field, kfunc and BTF attach target the object needs
@@ -61,9 +59,9 @@ var (
 )
 
 // sharedFmodeBacking is the FMODE_BACKING bit for the running kernel: the
-// live probe always decides, on every kernel (the pinned AL2023 builds
-// included), and a failed probe refuses. Only a success is cached; a refusal
-// is never cached, so the next constants computation probes again.
+// live probe always decides, on every kernel. A failed probe returns an
+// error (image-origin facts are then unavailable, not the node); only a
+// success is cached, so the next constants computation probes again.
 func sharedFmodeBacking(layout uint32) (uint32, error) {
 	sharedFmodeBackingMu.Lock()
 	defer sharedFmodeBackingMu.Unlock()
@@ -393,53 +391,12 @@ func readFileMode(f *os.File, pidOff, modeOff, privOff, realOff, layout uint32, 
 	return uint32(value), nil
 }
 
-// sharedProbedKernelOverride reports whether a kernel outside the pinned
-// matrix may be admitted on its probes. It is false in every default build;
-// only a qualification build can set it (kernel_probe_override_tag.go), and
-// only with an explicit environment opt-in. TEST ONLY.
-var sharedProbedKernelOverride = func() bool { return false }
-
-// sharedSkipLSMListGate skips the probed admission's LSM-list check, so a
-// test can show that the startup canary alone refuses a kernel whose BPF LSM
-// programs never run. TEST ONLY: set only in qualification builds
+// sharedSkipLSMListGate makes the qualified candidate's kernel admission
+// (verifySharedCandidateKernel) skip its LSM-list check, so a test can show
+// that the startup canary alone refuses a kernel whose BPF LSM programs
+// never run. TEST ONLY: set only in qualification builds
 // (kernel_probe_override_tag.go); the product gate never consults it.
 var sharedSkipLSMListGate = func() bool { return false }
-
-// ErrSharedKernelProbe marks a refusal of the probed-kernel admission.
-var ErrSharedKernelProbe = errors.New("shared kernel probe refused")
-
-// verifySharedProbedKernel is the admission of a kernel that is not an exact
-// pinned build (TEST ONLY, behind sharedProbedKernelOverride). It still
-// refuses, in this order: a non-x86_64 kernel, no bpf LSM, ftrace off and a
-// livepatched kernel. Everything
-// typed (fields, kfuncs, BTF attach targets) is then checked by the object's
-// own load. It does NOT prove hook ordering or semantics.
-func verifySharedProbedKernel(p sharedProductKernelProbe) error {
-	refuse := func(err error) error {
-		return fmt.Errorf("%w: %w", ErrSharedKernelProbe, err)
-	}
-	if !sharedProbedKernelOverride() {
-		return refuse(fmt.Errorf("probed-kernel admission is not enabled (test-only override)"))
-	}
-	if arch := p.arch(); arch != "amd64" {
-		return refuse(fmt.Errorf("x86_64 required, running on %s", arch))
-	}
-	lsm, err := p.lsm()
-	if err != nil {
-		return refuse(fmt.Errorf("LSM list: %w", err))
-	}
-	// The canary negative test (qualification builds only) bypasses this
-	// userspace check to prove that the startup canary refuses on its own.
-	if !sharedSkipLSMListGate() {
-		if err = requireBPFLSM(lsm); err != nil {
-			return refuse(err)
-		}
-	}
-	if err = checkSharedProductKernelRuntime(p); err != nil {
-		return refuse(err)
-	}
-	return nil
-}
 
 // SharedKernelProbeReport is the read-only result of every runtime probe on
 // the running kernel (diagnostics and the D3 evidence tables). It admits
@@ -449,14 +406,10 @@ type SharedKernelProbeReport struct {
 	LSM                               string
 	BPFLSM                            bool
 	Ftrace, Tainted                   string
-	// Qualified is the release of the qualification-record build this kernel
-	// is (sharedProductPins: where the kernel suites ran), or "". Diagnostic
-	// only: admission does not consult it.
-	Qualified         string
-	OverlayLayout     uint32
-	OverlayError      string
-	FmodeBacking      uint32
-	FmodeBackingError string
+	OverlayLayout                     uint32
+	OverlayError                      string
+	FmodeBacking                      uint32
+	FmodeBackingError                 string
 	// FmodeBackingNote: the live probe's outcome.
 	FmodeBackingNote string
 }
@@ -474,9 +427,6 @@ func ProbeSharedKernel() SharedKernelProbeReport {
 	}
 	r := SharedKernelProbeReport{Arch: p.arch(), Release: str(p.release), BTFDigest: str(p.btfDigest), BuildID: str(p.buildID), LSM: str(p.lsm), Ftrace: str(p.ftrace), Tainted: str(p.tainted)}
 	r.BPFLSM = requireBPFLSM(r.LSM) == nil
-	if pin, ok := sharedProductPins[r.BTFDigest]; ok && pin.Release == r.Release && pin.BuildID == r.BuildID {
-		r.Qualified = pin.Release
-	}
 	layout, err := resolveSharedImageOverlayLayout()
 	if err != nil {
 		r.OverlayError = err.Error()

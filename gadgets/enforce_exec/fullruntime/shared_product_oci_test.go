@@ -140,8 +140,8 @@ func TestSharedProductImagePinsMatchTestdata(t *testing.T) {
 }
 
 // TestSharedProductImageProfileMatchesQualification: the compiled-in
-// profile of each product object is the geometry the AL2023 qualification
-// ran with (sharedProductAttachedProfile).
+// profile of each product object is the geometry the attached product tests
+// run with (sharedProductAttachedProfile).
 func TestSharedProductImageProfileMatchesQualification(t *testing.T) {
 	for _, q := range sharedProductProfiles {
 		want := sharedProductProfileFor(q.Task, q.Work)
@@ -194,7 +194,7 @@ func TestBuildSharedProductImage(t *testing.T) {
 		}
 	}
 	if _, err := BuildSharedProductImage(t.Context(), memory.New(), elf, pin.Profile); err == nil || errors.Is(err, ErrSharedProductImageMismatch) {
-		t.Fatalf("unpinned object: %v", err)
+		t.Fatalf("object outside the image pins: %v", err)
 	}
 	if _, err := buildSharedProductImage(t.Context(), memory.New(), elf, "g19pkg1024"); err == nil {
 		t.Fatal("unknown profile built")

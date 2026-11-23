@@ -26,10 +26,10 @@ Status: draft PR (branch `universal/stage1-pr`, on main). It is qualified but no
   - StartNode refuses when the `ftrace_enabled` ksym does not resolve.
   - A mark that cannot be allocated refuses only Strict-bound forks/execs (`-ENOMEM`) and latches the node NotReady (Audit and unbound tasks are never blocked).
   - A startup canary must see every program run.
-- **Admission:** exact per (kernel, object) pair. Each pinned kernel lists the product objects qualified on it. The probed-kernel override exists only in qualification builds (`enforce_exec_shared_qualification`).
+- **Admission:** every x86_64 kernel on its probes (`SharedProductKernel`): a readable identity (BTF sha256, release, build-id; reported, never matched against a list), `bpf` in the active LSM list, ftrace on and no livepatch, with any product object of this release. Qualification builds (`enforce_exec_shared_qualification`) admit the qualified candidate on the same checks.
 - **Requirements:** `bpf` in the active LSM list (`/sys/kernel/security/lsm`), BTF, x86_64. The BPF source refuses to build for other architectures.
-- **Cost:** about +63 ns per syscall node-wide over the base engine (AL2023 6.12, getppid median); fork+exec median measured +3.6% (337,401 vs 325,739 ns).
-- **Qualified on** Fedora 43 6.17 and AL2023 6.12/6.18 in Strict and Audit; on Debian 13 6.12 and Rocky 10 6.12, exec allow/deny is qualified and image-origin facts are refused (fail closed because the `FMODE_BACKING` probe fails).
+- **Cost:** about +63 ns per syscall node-wide over the base engine (a 6.12 kernel, getppid median); fork+exec median measured +3.6% (337,401 vs 325,739 ns).
+- **Run on** Fedora 43 6.17 and two other x86_64 kernels in Strict and Audit; on Debian 13 6.12 and Rocky 10 6.12, exec allow/deny was checked and image-origin facts are refused (fail closed because the `FMODE_BACKING` probe fails).
 - **Known limits:**
   - the attach-order change in `nativeattach` is global;
   - a fork can get EPERM after a recursion-skipped sys_exit (Strict bindings only; Audit and unbound tasks never get EPERM). `NodeEnforcer.SysExitRecursionMisses` exports the kernel `RecursionMisses` counter;

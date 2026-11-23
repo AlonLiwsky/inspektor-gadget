@@ -144,41 +144,24 @@ func withProbeTarget(r *operators.NativeResources, name, target string) *operato
 
 // TestSharedProductImageObjectAdmission: the loaded object must be one of
 // this release's product objects (sharedProductObjects), on every kernel
-// alike: each is admitted on every pinned AL2023 build and on an arbitrary
-// other kernel, also when the pins' recorded ProductObjects are empty (the
-// qualification record never enters the admission); an unknown digest is
-// refused everywhere; a kernel the gate refuses is refused whatever the
-// object.
+// alike; an unknown digest is refused everywhere; a kernel the gate refuses
+// is refused whatever the object.
 func TestSharedProductImageObjectAdmission(t *testing.T) {
-	saved := sharedProductPins
-	t.Cleanup(func() { sharedProductPins = saved })
-	empty := make(map[string]sharedProductPin, len(saved))
-	for d, pin := range saved {
-		pin.ProductObjects = map[string]struct{}{}
-		empty[d] = pin
-	}
-	kernels := []*fakeProductKernel{arbitraryProductKernel()}
-	for _, d := range sharedProductPinDigests() {
-		kernels = append(kernels, pinnedProductKernel(d))
-	}
-	for _, pins := range []map[string]sharedProductPin{saved, empty} {
-		sharedProductPins = pins
-		for _, k := range kernels {
-			useProductKernel(t, k)
-			for profile, obj := range sharedProductObjects {
-				if err := admitSharedProductImage(sharedProductImageContext(obj), sharedProductImageMetadata(), sharedProductResources()); err != nil {
-					t.Fatalf("%s: product object %s refused: %v", k.release, profile, err)
-				}
-			}
-			err := admitSharedProductImage(sharedProductImageContext(strings.Repeat("cd", 32)), sharedProductImageMetadata(), sharedProductResources())
-			if !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), "not a product object of this release") {
-				t.Fatalf("%s: unknown object: %v", k.release, err)
+	kernels := []*fakeProductKernel{arbitraryProductKernel(), otherProductKernel()}
+	for _, k := range kernels {
+		useProductKernel(t, k)
+		for profile, obj := range sharedProductObjects {
+			if err := admitSharedProductImage(sharedProductImageContext(obj), sharedProductImageMetadata(), sharedProductResources()); err != nil {
+				t.Fatalf("%s: product object %s refused: %v", k.release, profile, err)
 			}
 		}
+		err := admitSharedProductImage(sharedProductImageContext(strings.Repeat("cd", 32)), sharedProductImageMetadata(), sharedProductResources())
+		if !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), "not a product object of this release") {
+			t.Fatalf("%s: unknown object: %v", k.release, err)
+		}
 	}
-	sharedProductPins = saved
 	// A kernel without the bpf LSM: refused by the gate and by the image
-	// admission, pinned or not.
+	// admission.
 	for _, healthy := range kernels {
 		k := *healthy
 		k.lsm = "lockdown,capability,selinux"
@@ -190,10 +173,6 @@ func TestSharedProductImageObjectAdmission(t *testing.T) {
 		if !errors.Is(err, ErrSharedNativeUnavailable) {
 			t.Fatalf("product image admitted on %s without the bpf LSM: %v", k.release, err)
 		}
-	}
-	// In a default build the candidate gate's override cannot be enabled.
-	if !sharedQualificationBuild && sharedProbedKernelOverride() {
-		t.Fatal("probed-kernel override enabled in a default build")
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,7 +44,7 @@ import (
 //   IG_SHARED_PRODUCT_OBJECT   the product object that image carries
 //   IG_SHARED_PRODUCT_PROFILE  64, 128 (default), 256 or 512
 //   IG_SHARED_PRODUCT_CGROUP_A, IG_SHARED_PRODUCT_CGROUP_B
-//                              two dedicated ig15-g011-prod-* cgroups
+//                              two dedicated ig-product-load-* cgroups
 //   IG_SHARED_PRODUCT_FTRACE_NEG=1  required by TestSharedProductNodeFtraceNegativeAttached
 //                              (it flips kernel.ftrace_enabled to 0 and back on
 //                              its own node; the Ready test never touches ftrace)
@@ -144,8 +143,8 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 	}
 	layout, image, profile := sharedProductAttachedEnv(t)
 	cgroupA, cgroupB := os.Getenv("IG_SHARED_PRODUCT_CGROUP_A"), os.Getenv("IG_SHARED_PRODUCT_CGROUP_B")
-	if !strings.HasPrefix(filepath.Base(cgroupA), "ig15-g011-prod-") || !strings.HasPrefix(filepath.Base(cgroupB), "ig15-g011-prod-") || cgroupA == cgroupB {
-		t.Fatal("two dedicated ig15-g011-prod-* cgroups required")
+	if !strings.HasPrefix(filepath.Base(cgroupA), "ig-product-load-") || !strings.HasPrefix(filepath.Base(cgroupB), "ig-product-load-") || cgroupA == cgroupB {
+		t.Fatal("two dedicated ig-product-load-* cgroups required")
 	}
 	if err := checkSharedInitNamespaces(); err != nil {
 		t.Fatalf("design 13.8: %v", err)
@@ -166,6 +165,7 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 		t.Fatalf("object sha256 %s is not a product ELF of this release", elf)
 	}
 	t.Logf("identity: release %s btf %s build-id %s elf-sha256 %s", id.Release, id.BTF, id.BuildID, elf)
+	t.Logf("product-kernel-admitted: arch=%s release=%s btf=%s build-id=%s", id.Arch, id.Release, id.BTF, id.BuildID)
 
 	// Step 2: StartNode through the product host; Ready with zero bindings.
 	host, gcOf := sharedProductHost(t, layout, image)
@@ -197,7 +197,7 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 	expected := sharedProductExpectedLinks(node)
 
 	// Step 3: A Strict (deny), B Audit; the per-binding contract.
-	ia, ib := startSharedPipeInit(t, cgroupA, "ig15-g011-prod-init-a"), startSharedPipeInit(t, cgroupB, "ig15-g011-prod-init-b")
+	ia, ib := startSharedPipeInit(t, cgroupA, "ig-product-load-init-a"), startSharedPipeInit(t, cgroupB, "ig-product-load-init-b")
 	a, err := node.Bind(ctx, SharedBindingConfig{CgroupID: ia.ino, InitHostPID: uint32(ia.cmd.Process.Pid), Acquire: ia.acquire})
 	if err != nil {
 		t.Fatalf("Bind A: %v", err)
@@ -547,8 +547,8 @@ func TestSharedProductNodeFtraceNegativeAttached(t *testing.T) {
 	}
 	layout, image, profile := sharedProductAttachedEnv(t)
 	cgroupA := os.Getenv("IG_SHARED_PRODUCT_CGROUP_A")
-	if !strings.HasPrefix(filepath.Base(cgroupA), "ig15-g011-prod-") {
-		t.Fatal("a dedicated ig15-g011-prod-* cgroup A required")
+	if !strings.HasPrefix(filepath.Base(cgroupA), "ig-product-load-") {
+		t.Fatal("a dedicated ig-product-load-* cgroup A required")
 	}
 	if err := checkSharedInitNamespaces(); err != nil {
 		t.Fatalf("design 13.8: %v", err)
@@ -574,7 +574,7 @@ func TestSharedProductNodeFtraceNegativeAttached(t *testing.T) {
 		t.Fatalf("Ready with zero bindings: %v", err)
 	}
 	expected := sharedProductExpectedLinks(node)
-	ia := startSharedPipeInit(t, cgroupA, "ig15-g011-prod-init-f")
+	ia := startSharedPipeInit(t, cgroupA, "ig-product-load-init-f")
 	a, err := node.Bind(ctx, SharedBindingConfig{CgroupID: ia.ino, InitHostPID: uint32(ia.cmd.Process.Pid), Acquire: ia.acquire})
 	if err != nil {
 		t.Fatalf("Bind A: %v", err)
@@ -709,7 +709,7 @@ func sharedProductRestart(t *testing.T, ctx context.Context, host SharedNodeHost
 	if err := node.Ready(gc); err != nil {
 		t.Fatalf("product-restart: Ready after restart: %v", err)
 	}
-	ia := startSharedPipeInit(t, os.Getenv("IG_SHARED_PRODUCT_CGROUP_A"), "ig15-g011-prod-init-r")
+	ia := startSharedPipeInit(t, os.Getenv("IG_SHARED_PRODUCT_CGROUP_A"), "ig-product-load-init-r")
 	a, err := node.Bind(ctx, SharedBindingConfig{CgroupID: ia.ino, InitHostPID: uint32(ia.cmd.Process.Pid), Acquire: ia.acquire})
 	if err != nil {
 		t.Fatalf("product-restart: Bind: %v", err)
@@ -754,38 +754,15 @@ func sharedProductChild(t *testing.T) {
 	<-t.Context().Done() // SIGKILLed by the parent
 }
 
-// TestSharedProductNodeNegativesAttached (plan section 5, negatives and the
-// unpinned instance): every image of IG_SHARED_PRODUCT_NEG_IMAGES (comma
-// separated references in IG_SHARED_PRODUCT_LAYOUT, for example the
-// diagnostic twin) is refused with
-// ErrSharedNativeUnavailable; the qualification seam is ignored; with
-// IG_SHARED_PRODUCT_UNPINNED=1 (a kernel that is none of the pinned AL2023
-// builds) the product gate admits it like any other kernel and StartNode
-// reaches the host.
+// TestSharedProductNodeNegativesAttached (plan section 5, negatives):
+// every image of IG_SHARED_PRODUCT_NEG_IMAGES (comma separated references
+// in IG_SHARED_PRODUCT_LAYOUT, for example the diagnostic twin) is refused
+// with ErrSharedNativeUnavailable, and the qualification seam is ignored.
 func TestSharedProductNodeNegativesAttached(t *testing.T) {
 	layout, image, profile := sharedProductAttachedEnv(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 	config := SharedNodeConfig{Profile: profile, ABI3Development: true, Image: image}
-	if os.Getenv("IG_SHARED_PRODUCT_UNPINNED") == "1" {
-		id, err := SharedProductKernel()
-		if err != nil {
-			t.Fatalf("unpinned-admitted: product gate: %v", err)
-		}
-		if slices.Contains(QualifiedKernels(), id) {
-			t.Fatalf("unpinned-admitted: %+v is a pinned AL2023 build", id)
-		}
-		runs := 0
-		run := func(context.Context, gadgetcontext.Option) (func(context.Context) error, <-chan error, error) {
-			runs++
-			return func(context.Context) error { return nil }, make(chan error), errors.New("host reached")
-		}
-		if _, err := StartNode(WithSharedNodeHost(ctx, SharedNodeHost{Run: run}), config); runs != 1 {
-			t.Fatalf("unpinned-admitted: StartNode did not reach the host: err=%v runs=%d", err, runs)
-		}
-		t.Logf("unpinned-admitted: release %s btf %s build-id %s, StartNode reached the host", id.Release, id.BTF, id.BuildID)
-		return
-	}
 	qruns := 0
 	qrun := func(context.Context, gadgetcontext.Option) (func(context.Context) error, <-chan error, error) {
 		qruns++

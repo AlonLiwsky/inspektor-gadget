@@ -3,8 +3,8 @@
 /* Host contract for the default-off source-only physical-exec capsule. It
  * drives the ACTUAL shared_exec_capsule.h adapter and shared_route.h helpers
  * with fixed arrays standing in for the preallocated BPF ARRAY maps. Kernel
- * hook ordering and serialization are premises proved separately on the
- * exact AL2023 kernels; this fixture proves the state machine under them. */
+ * hook ordering and serialization are premises this fixture does not prove;
+ * it proves the state machine under them. */
 #include <linux/bpf.h>
 #include <assert.h>
 #include <errno.h>

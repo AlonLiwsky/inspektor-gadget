@@ -1,20 +1,20 @@
 # enforce_exec
 
-This page describes the **simple path-only engine**. The separate experimental
-[full engine and legacy per-binding `Owner`](fullruntime/README.md) add richer
-predicates and role history, with different admission, reload and failure
-behavior. The simple engine's kernel baseline and `BindRestricted` support do
-**not** establish full-engine support: the legacy owner currently admits only two
-exact custom amd64 kernel artifacts, not stock kernels or arm64. Its isolated
-proofs do not qualify the [shared-node replacement](fullruntime/README.md#shared-node-implementation-status-and-api-contracts).
-The shared node's product node (`WithSharedNodeHost`) reports `NodeEnforcer.Ready` on the
-pinned kernels when healthy (`sharedProductReady`, `fullruntime/shared_host.go`);
-the qualification node never reports Ready.
+This page describes the **simple path-only engine**. The separate
+[shared exec engine](fullruntime/README.md) (one node-wide CO-RE engine,
+`fullruntime.StartNode`) adds richer predicates and role history, with
+different admission, reload and failure behavior. The simple engine's kernel
+baseline and `BindRestricted` support do **not** establish shared-engine
+support: the shared engine admits a kernel on its own probes (see
+[Shared engine: supported kernels](fullruntime/README.md#shared-engine-supported-kernels)).
+The shared node's product node (`WithSharedNodeHost`) reports
+`NodeEnforcer.Ready` when healthy (`sharedProductReady`,
+`fullruntime/shared_host.go`); the qualification node never reports Ready.
 
 The shared-node Go compiler/worker accounting and source-checking tools are
 implemented only within the [conditional worker qualification scope](fullruntime/README.md#conditional-shared-worker-qualification).
 They do not produce complete worker evidence or qualify native activation; the
-legacy proofs and simple-engine behavior below do not fill those gaps.
+simple-engine behavior below does not fill those gaps.
 
 Container execution enforcement using BPF LSM. The gadget image contains a fixed
 BPF program; a native Go controller supplies compiled rules and manages container
@@ -299,15 +299,14 @@ second; saturation loses reports while enforcement continues. Overlap temporaril
 loads both instances and their resources. These are explicit map/rule limits,
 not a total memory budget.
 
-Every BPF trampoline accepts at most 38 links on both exact AL2023 kernels,
+Every BPF trampoline accepts at most 38 links (`BPF_MAX_TRAMP_LINKS`),
 shared by fentry, fexit and LSM programs and by every BPF consumer on the node
 (one stock link already sits on `file_open`). Enforcement families attach
 all-or-nothing, may use at most 8 links per hook (the exec family needs at
 most 3) and leave 8 free for third parties. On exhaustion the whole family
 refuses with an error naming the hook, stays NotReady and retries
-automatically (by default) once capacity frees. The legacy per-cgroup owner
-does not retry, refuses at once and is capped at 2 per node. There is no support claim for owner
-concurrency. See [attach capacity](fullruntime/README.md#attach-capacity-readiness-and-the-owner-cap-g009).
+automatically (by default) once capacity frees. See
+[attach capacity](fullruntime/README.md#attach-capacity-and-readiness).
 
 No programs or maps are pinned. Stopping or killing the owning IG/node-agent
 releases enforcement; workloads continue. Removing a binding intentionally

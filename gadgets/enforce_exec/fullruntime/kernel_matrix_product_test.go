@@ -4,7 +4,6 @@
 package fullruntime
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -17,54 +16,6 @@ import (
 	"strings"
 	"testing"
 )
-
-// TestSharedProductPinsMatchTestdata: the compiled pins equal the step-0
-// record in testdata/shared_product_pins.tsv, field by field.
-func TestSharedProductPinsMatchTestdata(t *testing.T) {
-	f, err := os.Open("testdata/shared_product_pins.tsv")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	seen := map[string]bool{}
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 4096), 1<<16)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Split(line, "\t")
-		if len(fields) != 4 {
-			t.Fatalf("testdata line %q: %d fields, want 4", line, len(fields))
-		}
-		release, digest, buildID := fields[0], fields[1], fields[2]
-		pin, ok := sharedProductPins[digest]
-		if !ok {
-			t.Fatalf("testdata BTF %s (%s) is not pinned", digest, release)
-		}
-		seen[digest] = true
-		if pin.Release != release || pin.BuildID != buildID {
-			t.Errorf("pin %s = %+v, testdata %q", digest, pin, fields)
-		}
-		// The qualified objects, in profile order (the stage-1 objects).
-		qualified := strings.Split(fields[3], ",")
-		if len(qualified) != len(pin.ProductObjects) {
-			t.Errorf("pin %s: testdata qualifies %d objects, ProductObjects %d", release, len(qualified), len(pin.ProductObjects))
-		}
-		for i, obj := range qualified {
-			if _, ok := pin.ProductObjects[obj]; !ok || obj != sharedProductObjects[sharedProductProfiles[i].Name] {
-				t.Errorf("pin %s: testdata object %d %s is not ProductObjects' %s object", release, i, obj, sharedProductProfiles[i].Name)
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if len(seen) != len(sharedProductPins) {
-		t.Fatalf("testdata covers %d of %d pins", len(seen), len(sharedProductPins))
-	}
-}
 
 // TestSharedProductObjectsMatchTestdata (D3): sharedProductObjects equals
 // testdata/shared_product_objects.tsv, one object per profile for every
@@ -95,7 +46,7 @@ func TestSharedProductObjectsMatchTestdata(t *testing.T) {
 	}
 }
 
-// fakeProductKernel is a pinned kernel's identity as the probe reads it.
+// fakeProductKernel is a kernel identity as the probe reads it.
 type fakeProductKernel struct {
 	arch, digest, release, buildID, lsm, ftrace, tainted             string
 	digestErr, releaseErr, buildIDErr, lsmErr, ftraceErr, taintedErr error
@@ -113,15 +64,6 @@ func (k *fakeProductKernel) probe() sharedProductKernelProbe {
 	}
 }
 
-// pinnedProductKernel is a healthy fake of the pinned build digest.
-func pinnedProductKernel(digest string) *fakeProductKernel {
-	pin := sharedProductPins[digest]
-	return &fakeProductKernel{
-		arch: "amd64", digest: digest, release: pin.Release, buildID: pin.BuildID,
-		lsm: "lockdown,capability,landlock,yama,safesetid,selinux,bpf,ima\n", ftrace: "1\n", tainted: "0\n",
-	}
-}
-
 // useProductKernel installs k as the product kernel probe for the test.
 func useProductKernel(t *testing.T, k *fakeProductKernel) {
 	t.Helper()
@@ -130,17 +72,7 @@ func useProductKernel(t *testing.T, k *fakeProductKernel) {
 	t.Cleanup(func() { sharedProductKernelProbes = old })
 }
 
-func sharedProductPinDigests() []string {
-	var out []string
-	for digest := range sharedProductPins {
-		out = append(out, digest)
-	}
-	slices.Sort(out)
-	return out
-}
-
-// arbitraryProductKernel is a healthy fake of a kernel that is none of the
-// pinned AL2023 builds (an Ubuntu build).
+// arbitraryProductKernel is a healthy fake kernel build (an Ubuntu build).
 func arbitraryProductKernel() *fakeProductKernel {
 	return &fakeProductKernel{
 		arch: "amd64", digest: strings.Repeat("e1", 32), release: "7.0.0-43-generic", buildID: strings.Repeat("5a", 20),
@@ -148,36 +80,25 @@ func arbitraryProductKernel() *fakeProductKernel {
 	}
 }
 
-// productGateKernels are the kernels the gate tests run on: every pinned
-// AL2023 build, an arbitrary other build, and builds that share a pinned
-// BTF with another release or build-id (or a persistent-owner BTF).
-func productGateKernels() map[string]*fakeProductKernel {
-	digests := sharedProductPinDigests()
-	out := map[string]*fakeProductKernel{"arbitrary build": arbitraryProductKernel()}
-	for _, digest := range digests {
-		out["pinned "+sharedProductPins[digest].Release] = pinnedProductKernel(digest)
+// otherProductKernel is another healthy fake kernel build (a Debian build),
+// with a different identity and LSM list.
+func otherProductKernel() *fakeProductKernel {
+	return &fakeProductKernel{
+		arch: "amd64", digest: strings.Repeat("0d", 32), release: "6.12.48+deb13-amd64", buildID: strings.Repeat("1d", 20),
+		lsm: "lockdown,capability,landlock,yama,safesetid,selinux,bpf,ima\n", ftrace: "1\n", tainted: "0\n",
 	}
-	for name, mutate := range map[string]func(*fakeProductKernel){
-		"persistent-owner BTF":     func(k *fakeProductKernel) { k.digest = SupportedKernelBTF },
-		"persistent-owner k8s BTF": func(k *fakeProductKernel) { k.digest = SupportedKubernetesKernelBTF },
-		"pinned BTF, other release": func(k *fakeProductKernel) {
-			k.release = sharedProductPins[digests[1]].Release
-		},
-		"pinned BTF, release suffix": func(k *fakeProductKernel) { k.release += "+" },
-		"pinned BTF, other build-id": func(k *fakeProductKernel) {
-			k.buildID = sharedProductPins[digests[1]].BuildID
-		},
-	} {
-		k := pinnedProductKernel(digests[0])
-		mutate(k)
-		out[name] = k
-	}
-	return out
 }
 
-// TestSharedProductKernelGate (plan 3.1, gate part): every kernel goes
-// through the same checks. Each healthy kernel (a pinned AL2023 build or
-// any other build) is admitted with its own identity; on each of them a
+// productGateKernels are the kernels the gate tests run on: two healthy
+// builds and one whose release carries a suffix.
+func productGateKernels() map[string]*fakeProductKernel {
+	suffix := otherProductKernel()
+	suffix.release += "+"
+	return map[string]*fakeProductKernel{"ubuntu build": arbitraryProductKernel(), "debian build": otherProductKernel(), "release suffix": suffix}
+}
+
+// TestSharedProductKernelGate: every kernel goes through the same checks.
+// Each healthy kernel is admitted with its own identity; on each of them a
 // wrong architecture, an unreadable or malformed identity and every failed
 // control is refused with the same check, wrapping both the
 // *KernelCheckError and ErrSharedNativeUnavailable.
@@ -227,7 +148,7 @@ func TestSharedProductKernelGate(t *testing.T) {
 		}
 	}
 	// A tainted bit other than TAINT_LIVEPATCH is not this gate's concern.
-	k := pinnedProductKernel(sharedProductPinDigests()[0])
+	k := arbitraryProductKernel()
 	k.tainted = fmt.Sprint(1 << 12)
 	useProductKernel(t, k)
 	if _, err := verifySharedProductKernel(); err != nil {
@@ -235,13 +156,13 @@ func TestSharedProductKernelGate(t *testing.T) {
 	}
 }
 
-// TestSharedProductKernelPinnedAndArbitraryIdentical: a pinned AL2023 build
-// and an arbitrary other kernel go through the identical path. With the same
-// controls they get the same outcome from SharedProductKernel, AdmitKernel,
-// the FMODE_BACKING bit (the live probe on both, a failed probe refusing on
-// both) and the product image admission (the same product objects on both,
-// an unknown object refused on both); the pins never enter the decision.
-func TestSharedProductKernelPinnedAndArbitraryIdentical(t *testing.T) {
+// TestSharedProductKernelBuildsIdentical: two different kernel builds go
+// through the identical path. With the same controls they get the same
+// outcome from SharedProductKernel, AdmitKernel, the FMODE_BACKING bit (the
+// live probe on both, a failed probe refusing on both) and the product
+// image admission (the same product objects on both, an unknown object
+// refused on both); the kernel identity never enters the decision.
+func TestSharedProductKernelBuildsIdentical(t *testing.T) {
 	type outcome struct {
 		gate, admit, fmodeOK, fmodeFail string
 		images                          []string
@@ -294,12 +215,10 @@ func TestSharedProductKernelPinnedAndArbitraryIdentical(t *testing.T) {
 		arbitrary := arbitraryProductKernel()
 		mutate(arbitrary)
 		want := run(arbitrary)
-		for _, digest := range sharedProductPinDigests() {
-			pinned := pinnedProductKernel(digest)
-			mutate(pinned)
-			if got := run(pinned); !reflect.DeepEqual(got, want) {
-				t.Errorf("%s: pinned %s %+v, arbitrary %+v", name, sharedProductPins[digest].Release, got, want)
-			}
+		other := otherProductKernel()
+		mutate(other)
+		if got := run(other); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: %s %+v, %s %+v", name, other.release, got, arbitrary.release, want)
 		}
 		if name == "healthy" && (want.gate != "ok" || want.admit != "ok" || want.fmodeOK != "0x2000000 <nil>" || want.fmodeFail == "0x0 <nil>" ||
 			!reflect.DeepEqual(want.images, []string{"ok", "ok", "refused"})) {
@@ -418,7 +337,7 @@ func TestReadProcSysRequiresProcfs(t *testing.T) {
 		t.Fatal("missing control accepted")
 	}
 	// Through the gate, a non-procfs ftrace control is a typed refusal.
-	k := pinnedProductKernel(sharedProductPinDigests()[0])
+	k := arbitraryProductKernel()
 	useProductKernel(t, k)
 	sharedProductKernelProbes.ftrace = func() (string, error) { return readProcSys(fake) }
 	if _, err := verifySharedProductKernel(); !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), "not on procfs") {

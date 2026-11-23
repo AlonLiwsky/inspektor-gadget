@@ -142,7 +142,7 @@ var sharedProductProfiles = []struct {
 // work) object. Its geometry is compiled into the object and annotated on
 // the image (two bindings, the product policy objects 4/0/0/0, 8 accepted
 // UIDs, 2/1 inode facts, 128 image roots per binding, 8192 exit tombstones),
-// as the AL2023 qualification ran it. The budget fields (CompileBytes 8 MiB,
+// as the attached product tests run it. The budget fields (CompileBytes 8 MiB,
 // CompileConcurrency 2, TelemetryBytes 4096, RolloutBytes 4096,
 // CandidateBytes 1 MiB, PossibleCPUs 64) are host-side runtime limits, not in
 // the object or the image digests: these values are the qualification
