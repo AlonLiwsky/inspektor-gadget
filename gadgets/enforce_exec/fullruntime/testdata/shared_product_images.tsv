@@ -1,24 +1,22 @@
-# Shared product images (pinset p1). One line per pinned kernel x product
-# profile, in pin order; TestSharedProductImagePinsMatchTestdata requires
+# Shared product images (pinset p1). One line per product profile, in
+# profile order; TestSharedProductImagePinsMatchTestdata requires
 # sharedProductImagePins to equal these lines exactly.
 #
 # Built by fullruntime.BuildSharedProductImage (cmd/productimages) from the
 # objects build-product.sh rebuilds at the neutral paths /src/inspektor-gadget
-# and /src/btf (stage 1: one CO-RE object per profile, shared_product_objects.tsv;
-# qualified on both pins, shared_product_pins.tsv). The images are
-# never pushed to a registry: node-agent rebuilds them from source into
-# tracers.tar and must reproduce these digests. The manifest is the
-# linux/amd64 manifest the agent pins; the index holds only that manifest.
+# and /src/btf (stage 1: one CO-RE object per profile,
+# shared_product_objects.tsv). The images are never pushed to a registry:
+# node-agent rebuilds them from source into tracers.tar and must reproduce
+# these digests. The manifest is the linux/amd64 manifest the agent pins; the
+# index holds only that manifest.
 #
-# Stage 1: the image metadata has no per-kernel failure-frame target, so a
-# profile's image (and its digests) is the same on both kernels.
+# The images are kernel-neutral: the same image runs on every kernel the
+# product kernel gate admits. The image reference (its tag) is not part of
+# either digest; these are the digests the per-kernel references of pinset p1
+# carried.
 #
-# release	profile	image	object-sha256	manifest-digest	index-digest
-6.12.113-138.209.amzn2023.x86_64	g19pkg64	enforce-exec-shared:g19pkg64-al2023-6.12.113-138.209	8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954	sha256:2f161cc1edcbcd42fdfdce3c7ea746b260dfd071955d7fb25fab341ee32ee124	sha256:1397ee56fd71995e95fc6ae610c0c9b07d23d26e2a5110b1d6006bba308743fe
-6.12.113-138.209.amzn2023.x86_64	g19pkg128	enforce-exec-shared:g19pkg128-al2023-6.12.113-138.209	4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7	sha256:036e99e41408b669b879f925a942af68689c1734c2d9b0d8033207387f25de6a	sha256:e67bd898e7e9cf9e53d4c298ab018009357174f4ae1c8e903540088829cb1114
-6.12.113-138.209.amzn2023.x86_64	g19pkg256	enforce-exec-shared:g19pkg256-al2023-6.12.113-138.209	92dc17d870ac543a8aef316a287e06538d503f8f34d293181436fb73caa1742e	sha256:b65fc46b646442d746eb46cade87eda3a6d33144651e92e066adb9e7559e1bf0	sha256:f58271b21e84dc06d97b9345288020ad278874935e18e840b11d70e3ae8b761c
-6.12.113-138.209.amzn2023.x86_64	g19pkg512	enforce-exec-shared:g19pkg512-al2023-6.12.113-138.209	b8fd0637c744a7960b0e6d25f19d3f8b9c461276a43583925e85421d5230552a	sha256:3b5bd67827694a55b8e7de90cedf12142d1d02b67ecce1bc92f893e3fb67c3ec	sha256:60609bd695295bf01fd1a4f6924953c65fcc17269d26ab572044a113d0c0639f
-6.18.56-125.164.amzn2023.x86_64	g19pkg64	enforce-exec-shared:g19pkg64-al2023-6.18.56-125.164	8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954	sha256:2f161cc1edcbcd42fdfdce3c7ea746b260dfd071955d7fb25fab341ee32ee124	sha256:1397ee56fd71995e95fc6ae610c0c9b07d23d26e2a5110b1d6006bba308743fe
-6.18.56-125.164.amzn2023.x86_64	g19pkg128	enforce-exec-shared:g19pkg128-al2023-6.18.56-125.164	4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7	sha256:036e99e41408b669b879f925a942af68689c1734c2d9b0d8033207387f25de6a	sha256:e67bd898e7e9cf9e53d4c298ab018009357174f4ae1c8e903540088829cb1114
-6.18.56-125.164.amzn2023.x86_64	g19pkg256	enforce-exec-shared:g19pkg256-al2023-6.18.56-125.164	92dc17d870ac543a8aef316a287e06538d503f8f34d293181436fb73caa1742e	sha256:b65fc46b646442d746eb46cade87eda3a6d33144651e92e066adb9e7559e1bf0	sha256:f58271b21e84dc06d97b9345288020ad278874935e18e840b11d70e3ae8b761c
-6.18.56-125.164.amzn2023.x86_64	g19pkg512	enforce-exec-shared:g19pkg512-al2023-6.18.56-125.164	b8fd0637c744a7960b0e6d25f19d3f8b9c461276a43583925e85421d5230552a	sha256:3b5bd67827694a55b8e7de90cedf12142d1d02b67ecce1bc92f893e3fb67c3ec	sha256:60609bd695295bf01fd1a4f6924953c65fcc17269d26ab572044a113d0c0639f
+# profile	image	object-sha256	manifest-digest	index-digest
+g19pkg64	enforce-exec-shared:g19pkg64	8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954	sha256:2f161cc1edcbcd42fdfdce3c7ea746b260dfd071955d7fb25fab341ee32ee124	sha256:1397ee56fd71995e95fc6ae610c0c9b07d23d26e2a5110b1d6006bba308743fe
+g19pkg128	enforce-exec-shared:g19pkg128	4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7	sha256:036e99e41408b669b879f925a942af68689c1734c2d9b0d8033207387f25de6a	sha256:e67bd898e7e9cf9e53d4c298ab018009357174f4ae1c8e903540088829cb1114
+g19pkg256	enforce-exec-shared:g19pkg256	92dc17d870ac543a8aef316a287e06538d503f8f34d293181436fb73caa1742e	sha256:b65fc46b646442d746eb46cade87eda3a6d33144651e92e066adb9e7559e1bf0	sha256:f58271b21e84dc06d97b9345288020ad278874935e18e840b11d70e3ae8b761c
+g19pkg512	enforce-exec-shared:g19pkg512	b8fd0637c744a7960b0e6d25f19d3f8b9c461276a43583925e85421d5230552a	sha256:3b5bd67827694a55b8e7de90cedf12142d1d02b67ecce1bc92f893e3fb67c3ec	sha256:60609bd695295bf01fd1a4f6924953c65fcc17269d26ab572044a113d0c0639f

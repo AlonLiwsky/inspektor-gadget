@@ -266,14 +266,12 @@ func TestSharedNodeImageFactsAttached(t *testing.T) {
 	sharedTestQualification = func(q *SharedNodeQualification) { q.imageSource = source }
 	t.Cleanup(func() { sharedTestQualification = nil })
 	// The classifier's layout is this kernel's own, never a fake: the
-	// exact kernel's source-verified layout from its live module BTF.
-	digest, err := kernelBTFDigest()
-	if err != nil {
-		t.Fatal(err)
+	// layout read from its live module BTF (IG_SHARED_LIVE_KERNEL=1).
+	if !sharedLiveKernelTest() {
+		t.Fatal("IG_SHARED_LIVE_KERNEL=1 required: the classifier needs this kernel's own overlay layout")
 	}
-	wantLayout, pinned := sharedImageOverlayLayoutsPinned[sharedCandidateKernelBTF[digest]]
-	if layout, err := overlayLayoutReader(); err != nil || layout == sharedImageOverlayLayoutUnset || (pinned && layout != wantLayout) || (!pinned && !sharedProbedKernelOverride()) {
-		t.Fatalf("overlay layout %d (%v), want %s's %d", layout, err, sharedCandidateKernelBTF[digest], wantLayout)
+	if layout, err := overlayLayoutReader(); err != nil || layout == sharedImageOverlayLayoutUnset {
+		t.Fatalf("overlay layout %d (%v)", layout, err)
 	}
 	node, gc, ctx := startSharedCandidateNode(t, object, "IG_SHARED_M4_HANDLER_SYMBOL", nil, nil)
 	defer func() { _ = node.StopNode(context.WithoutCancel(ctx)) }()

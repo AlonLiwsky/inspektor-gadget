@@ -541,8 +541,8 @@ type SharedNodeHost struct {
 }
 
 // WithSharedNodeHost selects the product StartNode path. StartNode then
-// admits only an exact pinned kernel build (sharedProductPins) and the
-// pinned product image; anything else is refused with
+// admits a kernel that passes the product kernel gate (SharedProductKernel)
+// and a product image of this release; anything else is refused with
 // ErrSharedNativeUnavailable. A qualification build refuses it.
 func WithSharedNodeHost(ctx context.Context, h SharedNodeHost) context.Context {
 	return context.WithValue(ctx, sharedNodeHostKey{}, h)
@@ -556,8 +556,9 @@ func sharedNodeHostFrom(ctx context.Context) (SharedNodeHost, bool) {
 // StartNode starts the node-wide shared collection. A qualification build
 // with WithSharedNodeQualification loads the shared candidate collection;
 // that node never reports Ready. Otherwise WithSharedNodeHost loads the
-// product image, only in a product build and only on an exact pinned kernel
-// build (verifySharedProductKernel, checked before the host runs anything).
+// product image, only in a product build and only on a kernel the product
+// kernel gate admits (SharedProductKernel, checked before the host runs
+// anything).
 // Without either StartNode refuses with ErrSharedNativeUnavailable.
 //
 // When config.CanaryCommand is empty, the startup attach canary execs
@@ -574,7 +575,7 @@ func StartNode(ctx context.Context, config SharedNodeConfig) (*NodeEnforcer, err
 		if sharedQualificationBuild {
 			return nil, fmt.Errorf("shared product node refused: qualification build: %w", ErrSharedNativeUnavailable)
 		}
-		if _, _, err := sharedProductKernelCheck(); err != nil {
+		if _, err := sharedProductKernelCheck(); err != nil {
 			return nil, err
 		}
 		return startProductSharedNode(ctx, config, h)
@@ -582,30 +583,6 @@ func StartNode(ctx context.Context, config SharedNodeConfig) (*NodeEnforcer, err
 	return startSharedNode(ctx, config, func(context.Context, SharedNodeConfig, SharedAdmission) (sharedCollection, error) {
 		return nil, ErrSharedNativeUnavailable
 	})
-}
-
-// SelectSharedProductImage selects the agent's product image entry for the
-// running kernel at agent start (node-agent: kernel BTF sha256 -> image,
-// profile, expected manifest digest). It runs the full product kernel gate
-// (verifySharedProductKernel: pinned BTF, release, build-id, bpf LSM,
-// ftrace, no livepatch) and returns the running BTF sha256 and its entry. An
-// empty table, a refused kernel or no entry for the running digest is an
-// error wrapping ErrSharedNativeUnavailable with the reason; there is no
-// fallback entry.
-func SelectSharedProductImage[T any](entries map[string]T) (string, T, error) {
-	var zero T
-	if len(entries) == 0 {
-		return "", zero, fmt.Errorf("shared product image selection: no image entries: %w", ErrSharedNativeUnavailable)
-	}
-	digest, pin, err := sharedProductKernelCheck()
-	if err != nil {
-		return "", zero, err
-	}
-	entry, ok := entries[digest]
-	if !ok {
-		return "", zero, fmt.Errorf("shared product image selection: no image entry for kernel %s (BTF sha256 %s): %w", pin.Release, digest, ErrSharedNativeUnavailable)
-	}
-	return digest, entry, nil
 }
 
 func startSharedNode(ctx context.Context, config SharedNodeConfig, start func(context.Context, SharedNodeConfig, SharedAdmission) (sharedCollection, error)) (*NodeEnforcer, error) {

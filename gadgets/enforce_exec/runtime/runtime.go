@@ -811,22 +811,6 @@ func (b *Bindings) PostStop(operators.GadgetContext) error {
 
 func (b *Bindings) Close(gc operators.GadgetContext) error { return b.Stop(gc) }
 
-// InitializeImageOrigins is for a trusted native persistent owner, before scope
-// activation. It shares the immutable reader's validation and freeze contract.
-func InitializeImageOrigins(origins, ready *ebpf.Map, snapshot *ImageOriginSnapshot) error {
-	if origins == nil || ready == nil {
-		return fmt.Errorf("image-origin maps required")
-	}
-	if err := validateImageOrigins(snapshot); err != nil {
-		return err
-	}
-	maps := imageMaps{origins: origins, ready: ready}
-	if err := maps.validate(); err != nil {
-		return err
-	}
-	return maps.populate(snapshot)
-}
-
 // ValidateImageOriginSnapshot validates trusted native input without touching
 // maps. Complete is an owner attestation, never a policy-provided assertion.
 func ValidateImageOriginSnapshot(snapshot *ImageOriginSnapshot) error {

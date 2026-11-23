@@ -351,7 +351,7 @@ profile for every kernel;
 `gadgets/enforce_exec/fullruntime/bpf/build-product.sh --check`) at the
 neutral paths `/src/inspektor-gadget` and `/src/btf`, and compares each
 sha256 with `fullruntime/testdata/shared_product_objects.tsv`. It then
-packages each object into the product gadget image of each pinned kernel
+packages each object into the product gadget image of its profile
 (`go run ./gadgets/enforce_exec/fullruntime/cmd/productimages`) and
 compares the manifest and index digests with
 `fullruntime/testdata/shared_product_images.tsv`
@@ -363,8 +363,8 @@ per image with the built and pinned digests) are uploaded as the artifact
 A change to the BPF sources, the image metadata (`candidate/gadget.yaml`,
 the packaged attach declaration, the verdict emitter switch, the geometry
 annotations) or the packager fails this job until both pin tables are
-updated. New pins need a new AL2023 qualification on EC2 (the job only
-builds). Run the same steps locally with `make enforce-exec-product-images`
+updated. New pins need a new manual product-load run
+(`gadgets/enforce_exec/test/product-load`; the job only builds). Run the same steps locally with `make enforce-exec-product-images`
 (needs docker and Go).
 
 The images are not published to a registry: node-agent rebuilds them from

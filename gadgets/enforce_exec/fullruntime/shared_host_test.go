@@ -589,3 +589,20 @@ func TestCheckSharedPossibleCPUs(t *testing.T) {
 		}
 	}
 }
+
+// An image annotated with an owner ABI but no shared node and no shared
+// profile is refused, never loaded as an ordinary gadget; an image without
+// enforce_exec annotations gets no instance.
+func TestSharedOperatorRefusesOwnerImageWithoutNode(t *testing.T) {
+	gc := &sharedHostContext{vars: map[string]any{}, image: "local/owner:legacy"}
+	metadata := viper.New()
+	metadata.Set("annotations.enforce-exec-owner-abi", "2")
+	gc.vars["config"] = metadata
+	if inst, err := New().InstantiateDataOperator(gc, nil); err == nil || inst != nil {
+		t.Fatalf("owner image without a shared node: instance %v, err %v", inst, err)
+	}
+	gc.vars["config"] = viper.New()
+	if inst, err := New().InstantiateDataOperator(gc, nil); err != nil || inst != nil {
+		t.Fatalf("plain gadget: instance %v, err %v", inst, err)
+	}
+}

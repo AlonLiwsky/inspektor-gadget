@@ -99,13 +99,8 @@ func TestSharedNodeM2Attached(t *testing.T) {
 		}
 		profile.ExitTombstones = n
 	}
-	digest, err := kernelBTFDigest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	store := memory.New()
 	image, err := BuildSharedCandidateImage(t.Context(), store, elf, KernelMatrixEntry{
-		Release: sharedCandidateKernelBTF[digest],
 		Profile: profile, Diagnostic: os.Getenv("IG_SHARED_M2_DIAGNOSTIC") == "1",
 	})
 	if err != nil {

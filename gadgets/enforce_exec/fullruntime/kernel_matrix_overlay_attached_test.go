@@ -12,36 +12,40 @@ import (
 	"testing"
 )
 
-// TestSharedImageOverlayLayoutLiveModuleBTF asserts that on an exact matrix
-// kernel with the overlay module loaded, the vmlinux digest + overlay module
-// BTF shape selects the expected layout (6.12 realfile, 6.18 ovl_file) and
-// that the production constants carry it. Gate: IG_SHARED_OVL_BTF=1 (VM).
+// TestSharedImageOverlayLayoutLiveModuleBTF asserts that with the overlay
+// module loaded, the overlay module BTF shape selects a layout (realfile
+// before v6.13, ovl_file from v6.13: struct ovl_file exists iff the kernel
+// has it) and that the production constants carry it. Gate:
+// IG_SHARED_OVL_BTF=1 (VM).
 func TestSharedImageOverlayLayoutLiveModuleBTF(t *testing.T) {
 	if os.Getenv("IG_SHARED_OVL_BTF") != "1" {
-		t.Skip("set IG_SHARED_OVL_BTF=1 on an exact-kernel VM with the overlay module loaded")
+		t.Skip("set IG_SHARED_OVL_BTF=1 on a VM with the overlay module loaded")
 	}
 	digest, err := kernelBTFDigest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	release := sharedCandidateKernelBTF[digest]
-	want := sharedImageOverlayLayoutsPinned[release]
+	release, err := kernelRelease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := overlayTypesSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := btfStructs(overlay, "ovl_file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sharedImageOverlayLayoutRealFile
+	if len(files) != 0 {
+		want = sharedImageOverlayLayoutOvlFile
+	}
 	got, err := liveSharedImageOverlayLayout()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want == sharedImageOverlayLayoutUnset {
-		// D3: off the pinned matrix only the test-only probed-kernel
-		// override admits the kernel; the layout is then the derived one.
-		if !sharedProbedKernelOverride() {
-			t.Fatalf("kernel BTF %s outside the shared candidate matrix", digest)
-		}
-		if release, err = kernelRelease(); err != nil {
-			t.Fatal(err)
-		}
-		want = got
-	}
-	if got != want || got == sharedImageOverlayLayoutUnset {
+	if got != want {
 		t.Fatalf("%s: live layout %d, want %d", release, got, want)
 	}
 	constants, err := sharedImageOverlayConstants()

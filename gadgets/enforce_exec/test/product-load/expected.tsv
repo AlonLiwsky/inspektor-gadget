@@ -1,0 +1,93 @@
+# Expected rows of the product object-load run (README.md).
+# group	step	test	profile
+#
+# Rebuilt from the test sources: shared_product_node_attached_test.go,
+# build-product.sh, verdict-load and the identity and hygiene rows of
+# guest.sh. One stream per (group, step, profile):
+# results/<group>/<step>__<profile>.json. The judge keeps the rows of the
+# -profiles set; a "-" profile is always kept. Each row needs exactly one
+# pass and no skip or fail; anything not listed here is an unexpected row
+# and fails the run.
+#
+# build: the workstation that builds the bundle, no special kernel.
+build	objects	pin/g19pkg64	-
+build	objects	pin/g19pkg128	-
+build	objects	pin/g19pkg256	-
+build	objects	pin/g19pkg512	-
+build	layout	TestBuildSharedProductLayout	-
+build	layout-repro	rebuild_identical	-
+build	userspace	TestSharedProductManifestMatchesObjects	-
+build	userspace	TestCandidateAttachSetObjects	-
+build	userspace	TestSharedCandidateMergedMetadataObjects	-
+#
+# kernel: the test machine's own kernel (any kernel the product gate
+# admits), as root. The identity rows record the kernel; none compares it
+# with a pinned build.
+kernel	identity	bundle_manifest	-
+kernel	identity	uname_r	-
+kernel	identity	btf_sha256	-
+kernel	identity	build_id	-
+kernel	identity	lsm_bpf	-
+kernel	identity	ftrace_enabled	-
+kernel	identity	livepatch_clear	-
+kernel	raw-load	verdict_load/g19pkg64	-
+kernel	raw-load	verdict_load/g19pkg128	-
+kernel	raw-load	verdict_load/g19pkg256	-
+kernel	raw-load	verdict_load/g19pkg512	-
+kernel	ready	TestSharedProductNodeReadyAttached	64
+kernel	restart-exit	TestSharedProductNodeReadyAttached	64
+kernel	negatives	TestSharedProductNodeNegativesAttached	64
+kernel	evidence	kernel_admitted	64
+kernel	evidence	strict_deny_126	64
+kernel	evidence	in_test_restart	64
+kernel	evidence	restart_child_ready	64
+kernel	evidence	restart_child_visible	64
+kernel	evidence	restart_child_killed	64
+kernel	evidence	restart_no_leftover	64
+kernel	evidence	restart_exit_ready	64
+kernel	evidence	neg_qualification_seam_refused	64
+kernel	ready	TestSharedProductNodeReadyAttached	128
+kernel	restart-exit	TestSharedProductNodeReadyAttached	128
+kernel	negatives	TestSharedProductNodeNegativesAttached	128
+kernel	evidence	kernel_admitted	128
+kernel	evidence	strict_deny_126	128
+kernel	evidence	in_test_restart	128
+kernel	evidence	restart_child_ready	128
+kernel	evidence	restart_child_visible	128
+kernel	evidence	restart_child_killed	128
+kernel	evidence	restart_no_leftover	128
+kernel	evidence	restart_exit_ready	128
+kernel	evidence	neg_qualification_seam_refused	128
+kernel	ready	TestSharedProductNodeReadyAttached	256
+kernel	restart-exit	TestSharedProductNodeReadyAttached	256
+kernel	negatives	TestSharedProductNodeNegativesAttached	256
+kernel	evidence	kernel_admitted	256
+kernel	evidence	strict_deny_126	256
+kernel	evidence	in_test_restart	256
+kernel	evidence	restart_child_ready	256
+kernel	evidence	restart_child_visible	256
+kernel	evidence	restart_child_killed	256
+kernel	evidence	restart_no_leftover	256
+kernel	evidence	restart_exit_ready	256
+kernel	evidence	neg_qualification_seam_refused	256
+kernel	ready	TestSharedProductNodeReadyAttached	512
+kernel	restart-exit	TestSharedProductNodeReadyAttached	512
+kernel	negatives	TestSharedProductNodeNegativesAttached	512
+kernel	evidence	kernel_admitted	512
+kernel	evidence	strict_deny_126	512
+kernel	evidence	in_test_restart	512
+kernel	evidence	restart_child_ready	512
+kernel	evidence	restart_child_visible	512
+kernel	evidence	restart_child_killed	512
+kernel	evidence	restart_no_leftover	512
+kernel	evidence	restart_exit_ready	512
+kernel	evidence	neg_qualification_seam_refused	512
+kernel	ftrace	TestSharedProductNodeFtraceNegativeAttached	128
+kernel	ftrace-evidence	ftrace_notready	128
+kernel	ftrace-evidence	ftrace_restore_126	128
+kernel	ftrace-evidence	ftrace_outcome	128
+kernel	hygiene	no_se_pins	-
+kernel	hygiene	no_enforce_progs	-
+kernel	hygiene	no_new_links	-
+kernel	hygiene	cgroups_removed	-
+kernel	hygiene	dmesg_clean	-

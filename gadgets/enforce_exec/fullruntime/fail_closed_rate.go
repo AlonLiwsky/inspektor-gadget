@@ -153,7 +153,7 @@ const (
 //     asynchronously through the product reaper and nothing throttles forks
 //     meanwhile. Non-sync bursts are measured (every refusal counted in its
 //     class), never zero-gated: chain15 fs6x20 refused at (W-3)/2 in 4 of
-//     160 runs on both kernels under 1-3 ms reap latency. Measured back to back (G019 chain6/chain7, 128/16) refusals
+//     160 runs on the test kernels under 1-3 ms reap latency. Measured back to back (G019 chain6/chain7, 128/16) refusals
 //     came from reaper stalls; the capacity reserves one late child,
 //     (W-3)/2: 2 at 64/8, 6 at 128/16, 14 at 256/32 (0 for W < 5). It is a
 //     measured claim, not a guarantee: reaper scheduling latency has no

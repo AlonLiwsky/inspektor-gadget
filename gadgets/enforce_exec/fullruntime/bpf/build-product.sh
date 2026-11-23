@@ -2,9 +2,9 @@
 # Copyright 2026 The Inspektor Gadget authors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Builds the shared product objects g19pkg{64,128,256,512}.bpf.o: stage 1,
-# ONE CO-RE object per profile for every kernel (compiled against the
-# AL2023 6.18 vmlinux.h, relocated at load), with the LSM-only exec outcome
+# Builds the shared product objects g19pkg{64,128,256,512}.bpf.o: ONE CO-RE
+# object per profile for every kernel (compiled against one vmlinux.h,
+# relocated at load), with the LSM-only exec outcome
 # (ENFORCE_EXEC_D1_LSM_ONLY). With --check it compares each sha256 with
 # fullruntime/testdata/shared_product_objects.tsv (sharedProductObjects).
 #
@@ -24,10 +24,10 @@
 # objects only; the diagnostic twins and the negative builds of that build
 # are not reproduced here.
 #
-# The vmlinux.h files (testdata/al2023-vmlinux/<kernel>/vmlinux.h.xz) are
-# `bpftool btf dump file <BTF> format c` of the pinned kernel BTF
-# (btf-sha256 in the pins); the sha256 of the decompressed header is
-# checked below.
+# The CO-RE header (testdata/core-vmlinux/vmlinux.h.xz) is
+# `bpftool btf dump file <BTF> format c` of a 6.18 kernel BTF; only its
+# types are used, every access is relocated at load. The sha256 of the
+# decompressed header is checked below.
 set -euo pipefail
 
 # Refuse to run on a host: the build creates the neutral directories below.
@@ -51,7 +51,7 @@ fi
 # must be this checkout, or a tree whose source directories are identical
 # both ways (diff -r). Measured on Debian trixie: a symlink to another
 # directory, or -fdebug-prefix-map from another checkout path, changed the
-# FWD order in the 6.12 objects, so prefix maps are not used.
+# FWD order in the objects, so prefix maps are not used.
 CANON_REPO=/src/inspektor-gadget
 CANON_BTF=/src/btf
 # ---------------------------------------------------------------------------
@@ -86,7 +86,8 @@ if [[ $libbpf != "$LIBBPF_VERSION" ]]; then
 	exit 1
 fi
 
-# The one header of every object (stage 1, D3): the AL2023 6.18 BTF.
+# The one header of every object. Its directory under CANON_BTF (6.18) is
+# part of the object bytes (DWARF), so it stays fixed.
 HEADER_KERNEL=6.18
 HEADER_SHA256=a6b003369e04fe8b0382f2704e64e0c0f71c211dd54a5b160f60de21bd00a4e2
 
@@ -145,7 +146,7 @@ fi
 cd -- "$CANON_REPO"
 fail=0
 kernel=$HEADER_KERNEL
-header=$testdata/al2023-vmlinux/$kernel/vmlinux.h.xz
+header=$testdata/core-vmlinux/vmlinux.h.xz
 got=$(xz -dc -- "$header" | sha256sum | cut -d' ' -f1)
 [[ $got == "$HEADER_SHA256" ]] || { echo "$header decompresses to sha256 $got, want $HEADER_SHA256" >&2; exit 1; }
 if [[ ! -e $CANON_BTF/$kernel/vmlinux.h ]]; then

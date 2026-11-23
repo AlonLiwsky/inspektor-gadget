@@ -381,14 +381,16 @@ enforce-exec-product-images: enforce-exec-product-objects
 		-objects $(ENFORCE_EXEC_PRODUCT_OUT) -layout $(ENFORCE_EXEC_PRODUCT_OUT)/layout \
 		-json $(ENFORCE_EXEC_PRODUCT_OUT)/product-images.json
 
-# The AL2023 product object-load run (G035; gadgets/enforce_exec/test/al2023-product-load/README.md):
-# build the bundle, run every kernel on a lane (qemu: local KVM; ec2: needs the
-# AWS setup) and judge. AL2023_PROFILES and AL2023_NEG_SET must be set.
-ENFORCE_EXEC_AL2023_RUN ?= $(shell pwd)/enforce-exec-al2023-product-load/run-$(shell date -u +%Y%m%dt%H%M%Sz)
-ENFORCE_EXEC_AL2023_LANE ?= qemu
-.PHONY: enforce-exec-al2023-product-load
-enforce-exec-al2023-product-load:
-	gadgets/enforce_exec/test/al2023-product-load/host.sh all $(ENFORCE_EXEC_AL2023_RUN) $(ENFORCE_EXEC_AL2023_LANE)
+# The product object-load run (gadgets/enforce_exec/test/product-load/README.md):
+# build the bundle, run it as root over ssh on a disposable test machine
+# with any kernel (ENFORCE_EXEC_PRODUCT_LOAD_TARGET, e.g. root@<droplet-ip>)
+# and judge.
+ENFORCE_EXEC_PRODUCT_LOAD_RUN ?= $(shell pwd)/enforce-exec-product-load/run-$(shell date -u +%Y%m%dt%H%M%Sz)
+ENFORCE_EXEC_PRODUCT_LOAD_TARGET ?=
+.PHONY: enforce-exec-product-load
+enforce-exec-product-load:
+	@test -n "$(ENFORCE_EXEC_PRODUCT_LOAD_TARGET)" || { echo "set ENFORCE_EXEC_PRODUCT_LOAD_TARGET (ssh target)" >&2; exit 2; }
+	gadgets/enforce_exec/test/product-load/host.sh all $(ENFORCE_EXEC_PRODUCT_LOAD_RUN) $(ENFORCE_EXEC_PRODUCT_LOAD_TARGET)
 
 .PHONY: clang-format-outside-docker
 clang-format-outside-docker:
