@@ -67,6 +67,12 @@ type sharedProductPin struct {
 	// review F1). Literal digests, never derived from sharedProductObjects:
 	// a rebuilt object is NOT qualified until it runs the oracle on the pin.
 	ProductObjects map[string]struct{}
+	// Tier is set on the pin verifySharedProductKernel returns, never in
+	// sharedProductPins: KernelTierQualified for an exact pinned build,
+	// KernelTierProbed for the synthetic pin of a probed kernel (its
+	// release and build-id, every product object of this release, and no
+	// FmodeBacking: the live probe decides).
+	Tier KernelTier
 }
 
 // qualifiesProductObject reports whether digest is a product object of this
@@ -372,21 +378,46 @@ var sharedProductKernelProbes = sharedProductKernelProbe{
 // sharedProductKernelCheck is the product kernel gate; tests replace it.
 var sharedProductKernelCheck = verifySharedProductKernel
 
-// verifySharedProductKernel admits only an exact sharedProductPins build:
-// x86_64, a pinned vmlinux BTF digest, its release and GNU build-id, the bpf
-// LSM active, ftrace enabled and no livepatch (verifyKernelIdentity, the
-// check exported as VerifyKernel). It returns the BTF digest and its pin.
-// Every refusal wraps ErrSharedNativeUnavailable with the reason.
+// verifySharedProductKernel is the product kernel gate (admitKernelIdentity,
+// the check exported as AdmitKernel, over sharedProductPins). An exact
+// sharedProductPins build (x86_64, pinned vmlinux BTF digest, its release
+// and GNU build-id, bpf LSM active, ftrace enabled, no livepatch) is admitted
+// with its pin, Tier KernelTierQualified. Any other x86_64 build that passes
+// the runtime probes is admitted with a synthetic pin, Tier
+// KernelTierProbed: its own release and build-id, every product object of
+// this release, and no pinned FMODE_BACKING bit. It returns the running BTF
+// digest and the pin. Every refusal wraps ErrSharedNativeUnavailable with the
+// reason.
 func verifySharedProductKernel() (string, sharedProductPin, error) {
-	id, err := verifyKernelIdentity(sharedProductKernelProbes, sharedProductIdentities)
+	id, tier, err := admitKernelIdentity(sharedProductKernelProbes, sharedProductIdentities)
 	if err != nil {
 		return "", sharedProductPin{}, fmt.Errorf("shared product node refused: %w: %w", err, ErrSharedNativeUnavailable)
+	}
+	if tier == KernelTierProbed {
+		objects := make(map[string]struct{}, len(sharedProductObjects))
+		for _, digest := range sharedProductObjects {
+			objects[digest] = struct{}{}
+		}
+		return id.BTF, sharedProductPin{Release: id.Release, BuildID: id.BuildID, ProductObjects: objects, Tier: KernelTierProbed}, nil
 	}
 	pin, ok := sharedProductPins[id.BTF]
 	if !ok {
 		return "", sharedProductPin{}, fmt.Errorf("shared product node refused: no product pin for BTF %s: %w", id.BTF, ErrSharedNativeUnavailable)
 	}
+	pin.Tier = KernelTierQualified
 	return id.BTF, pin, nil
+}
+
+// SharedProductKernel runs the product kernel gate on the running kernel and
+// reports its identity and how it was admitted (KernelTierQualified for an
+// exact pinned build, KernelTierProbed otherwise). A refusal wraps
+// ErrSharedNativeUnavailable. Agents report the tier in their status.
+func SharedProductKernel() (KernelIdentity, KernelTier, error) {
+	digest, pin, err := sharedProductKernelCheck()
+	if err != nil {
+		return KernelIdentity{}, "", err
+	}
+	return KernelIdentity{Arch: sharedProductImageArch, Release: pin.Release, BTF: digest, BuildID: pin.BuildID}, pin.Tier, nil
 }
 
 // taintLivepatch is TAINT_LIVEPATCH (bit 15, include/linux/panic.h).

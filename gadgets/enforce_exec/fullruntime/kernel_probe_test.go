@@ -97,7 +97,8 @@ func TestSharedProbedKernelOverrideBuild(t *testing.T) {
 // TestSharedProbedKernelLiveRefusal (D3 oracle, on the running kernel): a
 // kernel that is not an exact pinned build is refused by the candidate gate
 // without the test-only override, whatever its probes say; a pinned build is
-// admitted. IG_SHARED_PROBED_LIVE=1 (VM).
+// admitted. The product gate admits both, as qualified or probed.
+// IG_SHARED_PROBED_LIVE=1 (VM).
 func TestSharedProbedKernelLiveRefusal(t *testing.T) {
 	if os.Getenv("IG_SHARED_PROBED_LIVE") != "1" {
 		t.Skip("set IG_SHARED_PROBED_LIVE=1 on a VM")
@@ -114,9 +115,18 @@ func TestSharedProbedKernelLiveRefusal(t *testing.T) {
 	if pinned != (err == nil) {
 		t.Fatalf("pinned=%v, candidate gate without the override: %v", pinned, err)
 	}
-	if _, _, perr := verifySharedProductKernel(); pinned != (perr == nil) || (perr != nil && !errors.Is(perr, ErrSharedNativeUnavailable)) {
-		t.Fatalf("pinned=%v, product gate: %v", pinned, perr)
+	// The product gate admits a pinned build as qualified; any other build
+	// as probed, or refuses it (a VM without the bpf LSM, ftrace off).
+	_, pin, perr := verifySharedProductKernel()
+	switch {
+	case pinned && (perr != nil || pin.Tier != KernelTierQualified):
+		t.Fatalf("pinned build, product gate: tier %q %v", pin.Tier, perr)
+	case !pinned && perr == nil && pin.Tier != KernelTierProbed:
+		t.Fatalf("unpinned build admitted with tier %q", pin.Tier)
+	case !pinned && perr != nil && !errors.Is(perr, ErrSharedNativeUnavailable):
+		t.Fatalf("unpinned build refused untyped: %v", perr)
 	}
+	t.Logf("product gate: tier %q %v", pin.Tier, perr)
 	t.Logf("pinned=%v candidate gate: %v", pinned, err)
 }
 
@@ -194,5 +204,42 @@ func TestSharedFmodeBackingPinnedAndProbed(t *testing.T) {
 		if pin.FmodeBacking != sharedFmodeBacking24 {
 			t.Errorf("pin %s (%s): FMODE_BACKING %#x, want the source-verified bit 24", digest, pin.Release, pin.FmodeBacking)
 		}
+	}
+}
+
+// TestPinnedSharedFmodeBackingNeedsTheBuild: the pinned FMODE_BACKING bit
+// is used only on the exact pinned build; a kernel that shares a pinned BTF
+// with another release or build-id, or whose identity is unreadable, gets
+// none (the live probe then decides, and a failed probe refuses).
+func TestPinnedSharedFmodeBackingNeedsTheBuild(t *testing.T) {
+	digest := sharedProductPinDigests()[0]
+	useProductKernel(t, pinnedProductKernel(digest))
+	if bit, ok := pinnedSharedFmodeBacking(); !ok || bit != sharedProductPins[digest].FmodeBacking {
+		t.Fatalf("pinned build: %#x %v", bit, ok)
+	}
+	for name, mutate := range map[string]func(*fakeProductKernel){
+		"other build-id":   func(k *fakeProductKernel) { k.buildID = strings.Repeat("0", 40) },
+		"other release":    func(k *fakeProductKernel) { k.release = "6.12.114-139.210.amzn2023.x86_64" },
+		"unpinned BTF":     func(k *fakeProductKernel) { k.digest = strings.Repeat("0", 64) },
+		"unreadable BTF":   func(k *fakeProductKernel) { k.digestErr = os.ErrPermission },
+		"unreadable build": func(k *fakeProductKernel) { k.buildIDErr = os.ErrPermission },
+	} {
+		k := pinnedProductKernel(digest)
+		mutate(k)
+		useProductKernel(t, k)
+		if bit, ok := pinnedSharedFmodeBacking(); ok || bit != 0 {
+			t.Errorf("%s: pinned bit %#x used", name, bit)
+		}
+	}
+	// Through sharedFmodeBacking: no pinned bit and a failed probe refuse.
+	k := pinnedProductKernel(digest)
+	k.buildID = strings.Repeat("0", 40)
+	useProductKernel(t, k)
+	oldProbe, oldValue := fmodeBackingProbe, sharedFmodeBackingValue
+	t.Cleanup(func() { fmodeBackingProbe, sharedFmodeBackingValue = oldProbe, oldValue })
+	sharedFmodeBackingValue = 0
+	fmodeBackingProbe = func(uint32) (uint32, error) { return 0, errors.New("no layer directory") }
+	if bit, err := sharedFmodeBacking(sharedImageOverlayLayoutOvlFile); err == nil || bit != 0 {
+		t.Fatalf("probed kernel with a failed probe: %#x %v", bit, err)
 	}
 }

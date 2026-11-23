@@ -19,11 +19,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// D3 (universal-kernel spike): runtime feature probing for the single CO-RE
-// product object. Nothing here admits a kernel by itself in a default build:
-// the product path still requires an exact pinned build (kernel_matrix.go).
-// A qualification build may admit a probed kernel with an explicit test-only
-// override (kernel_probe_override_tag.go).
+// D3 (universal kernel): runtime feature probing for the single CO-RE
+// product object. The product gate (verifySharedProductKernel) admits an
+// exact pinned build as KernelTierQualified and any other x86_64 build that
+// passes its probes as KernelTierProbed. The shared candidate path of a
+// qualification build still requires its matrix, unless the explicit
+// test-only override is set (kernel_probe_override_tag.go).
 //
 // What the probes cover, and what they cannot:
 //   - every kernel type, field, kfunc and BTF attach target the object needs
@@ -63,12 +64,24 @@ var (
 // pinnedSharedFmodeBacking is the source-verified FMODE_BACKING bit of the
 // running kernel when it is one of the exact pinned builds.
 func pinnedSharedFmodeBacking() (uint32, bool) {
-	digest, err := kernelBTFDigest()
+	p := sharedProductKernelProbes
+	digest, err := p.btfDigest()
 	if err != nil {
 		return 0, false
 	}
 	pin, ok := sharedProductPins[digest]
-	return pin.FmodeBacking, ok && pin.FmodeBacking != 0
+	if !ok || pin.FmodeBacking == 0 {
+		return 0, false
+	}
+	// The BTF digest alone does not identify a build: a probed kernel that
+	// shares a pinned BTF but not its release or build-id gets the probe's
+	// bit, not the pin's.
+	release, rerr := p.release()
+	buildID, berr := p.buildID()
+	if rerr != nil || berr != nil || release != pin.Release || buildID != pin.BuildID {
+		return 0, false
+	}
+	return pin.FmodeBacking, true
 }
 
 // sharedFmodeBacking is the FMODE_BACKING bit for the running kernel.
@@ -76,8 +89,8 @@ func pinnedSharedFmodeBacking() (uint32, bool) {
 // On a pinned kernel the pinned bit is authoritative and the live probe only
 // cross-checks it: a probe that cannot run (no usable layer directory, a
 // transient error) changes nothing, a probe that contradicts the pin refuses.
-// On any other kernel (qualification builds only) the bit is the probe's, and
-// a failed probe refuses. A refusal is never cached.
+// On any other kernel (a probed product kernel, or a qualification build) the
+// bit is the probe's, and a failed probe refuses. A refusal is never cached.
 func sharedFmodeBacking(layout uint32) (uint32, error) {
 	sharedFmodeBackingMu.Lock()
 	defer sharedFmodeBackingMu.Unlock()

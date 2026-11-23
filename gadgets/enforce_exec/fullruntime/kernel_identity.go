@@ -5,6 +5,7 @@ package fullruntime
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -20,6 +21,23 @@ type KernelIdentity struct {
 	BTF     string
 	BuildID string
 }
+
+// KernelTier is how a kernel was admitted.
+type KernelTier string
+
+const (
+	// KernelTierQualified: an exact build of a qualified list, on which the
+	// kernel suites ran with posted logs.
+	KernelTierQualified KernelTier = "qualified"
+	// KernelTierProbed: any other build that passed the runtime probes
+	// (architecture, bpf LSM active, ftrace enabled, no livepatch). The
+	// object's own load then checks every type, field, kfunc and attach
+	// target, the loader probes FMODE_BACKING and the overlay layout, and
+	// the startup canary and the live witness prove the hooks run. Hook
+	// ordering and verdict semantics on that build are not proved by a
+	// kernel suite: report the tier so an operator can tell.
+	KernelTierProbed KernelTier = "probed"
+)
 
 // Kernel check names, the KernelCheckError.Check of a failed check.
 const (
@@ -87,6 +105,104 @@ func VerifyKernel(qualified []KernelIdentity) (KernelIdentity, error) {
 		return KernelIdentity{}, err
 	}
 	return verifyKernelIdentity(sharedProductKernelProbes, byBTF)
+}
+
+// AdmitKernel is VerifyKernel with probed admission: the running kernel is
+// admitted as KernelTierQualified when it is exactly one of qualified, and
+// otherwise as KernelTierProbed when its architecture is one of qualified's
+// and it passes the runtime probes (bpf LSM active, ftrace enabled, no
+// livepatch, a readable BTF digest, release and build-id). The returned
+// identity is the running kernel's. A wrong architecture, a missing bpf LSM,
+// ftrace off, a livepatch and every read failure are still refused with a
+// *KernelCheckError; the caller must then not enforce.
+func AdmitKernel(qualified []KernelIdentity) (KernelIdentity, KernelTier, error) {
+	byBTF, err := kernelIdentitiesByBTF(qualified)
+	if err != nil {
+		return KernelIdentity{}, "", err
+	}
+	return admitKernelIdentity(sharedProductKernelProbes, byBTF)
+}
+
+// admitKernelIdentity runs AdmitKernel through probe p.
+func admitKernelIdentity(p sharedProductKernelProbe, qualified map[string]KernelIdentity) (KernelIdentity, KernelTier, error) {
+	id, err := verifyKernelIdentity(p, qualified)
+	if err == nil {
+		return id, KernelTierQualified, nil
+	}
+	if !kernelIdentityMismatch(err) {
+		return KernelIdentity{}, "", err
+	}
+	probed, perr := probedKernelIdentity(p)
+	if perr != nil {
+		return KernelIdentity{}, "", kernelCheckFailed(probedCheck(perr), fmt.Errorf("%w; probed admission refused: %w", err, perr))
+	}
+	return probed, KernelTierProbed, nil
+}
+
+// kernelIdentityMismatch reports whether err only says that the running
+// build is not one of the qualified list (BTF digest, release or build-id
+// differ), the one refusal probed admission may replace. A read failure of
+// the BTF digest is a mismatch here too: probedKernelIdentity reads it
+// again first and refuses with the identity check.
+func kernelIdentityMismatch(err error) bool {
+	var check *KernelCheckError
+	if !errors.As(err, &check) {
+		return false
+	}
+	switch check.Check {
+	case KernelCheckBTF, KernelCheckRelease, KernelCheckBuildID:
+		return true
+	}
+	return false
+}
+
+// probedCheck is the KernelCheckError.Check of a probed admission refusal
+// (the check it failed, or the BTF identity check).
+func probedCheck(err error) string {
+	var check *KernelCheckError
+	if errors.As(err, &check) {
+		return check.Check
+	}
+	return KernelCheckBTF
+}
+
+// probedKernelIdentity admits the running kernel on its probes (architecture
+// already checked by the caller): a lowercase-hex BTF digest, a release and a
+// lowercase-hex build-id (an identity failure is reported as such), then bpf
+// LSM, ftrace and livepatch.
+func probedKernelIdentity(p sharedProductKernelProbe) (KernelIdentity, error) {
+	digest, err := p.btfDigest()
+	if err != nil {
+		return KernelIdentity{}, kernelCheckFailed(KernelCheckBTF, fmt.Errorf("kernel BTF: %w", err))
+	}
+	if !isLowerHex(digest, 64) {
+		return KernelIdentity{}, kernelCheckFailed(KernelCheckBTF, fmt.Errorf("kernel BTF sha256 %q is not lowercase hex", digest))
+	}
+	release, err := p.release()
+	if err != nil {
+		return KernelIdentity{}, kernelCheckFailed(KernelCheckRelease, fmt.Errorf("kernel release: %w", err))
+	}
+	if release = strings.TrimSpace(release); release == "" {
+		return KernelIdentity{}, kernelCheckFailed(KernelCheckRelease, fmt.Errorf("empty kernel release"))
+	}
+	buildID, err := p.buildID()
+	if err != nil {
+		return KernelIdentity{}, kernelCheckFailed(KernelCheckBuildID, fmt.Errorf("kernel build-id: %w", err))
+	}
+	if !isLowerHex(buildID, 0) {
+		return KernelIdentity{}, kernelCheckFailed(KernelCheckBuildID, fmt.Errorf("kernel build-id %q is not lowercase hex", buildID))
+	}
+	lsm, err := p.lsm()
+	if err != nil {
+		return KernelIdentity{}, kernelCheckFailed(KernelCheckBPFLSM, fmt.Errorf("LSM list: %w", err))
+	}
+	if err := requireBPFLSM(lsm); err != nil {
+		return KernelIdentity{}, kernelCheckFailed(KernelCheckBPFLSM, err)
+	}
+	if err := checkSharedProductKernelRuntime(p); err != nil {
+		return KernelIdentity{}, err
+	}
+	return KernelIdentity{Arch: p.arch(), Release: release, BTF: digest, BuildID: buildID}, nil
 }
 
 // CheckKernelRuntime re-reads the two kernel controls that can change while

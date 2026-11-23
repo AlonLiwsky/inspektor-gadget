@@ -6,6 +6,7 @@ package fullruntime
 import (
 	"context"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -36,8 +37,9 @@ func (h *countingProductHost) host() SharedNodeHost {
 }
 
 // TestSharedProductStartNodeKernelGate (plan 3.1, StartNode part): on each
-// pin the host's Run is reached exactly once; on every refused kernel it is
-// never reached and the error is ErrSharedNativeUnavailable.
+// pin and on a probed kernel the host's Run is reached exactly once; on every
+// refused kernel it is never reached and the error is
+// ErrSharedNativeUnavailable.
 func TestSharedProductStartNodeKernelGate(t *testing.T) {
 	sharedProductBuild(t)
 	for _, digest := range sharedProductPinDigests() {
@@ -48,16 +50,20 @@ func TestSharedProductStartNodeKernelGate(t *testing.T) {
 			t.Fatalf("pin %s: node=%v err=%v runs=%d, want the host reached once", digest, n, err, h.runs)
 		}
 	}
+	// A probed kernel reaches the host too.
+	k := pinnedProductKernel(sharedProductPinDigests()[0])
+	k.digest, k.release, k.buildID = strings.Repeat("1", 64), "6.1.158-180.294.amzn2023.x86_64", strings.Repeat("0", 40)
+	useProductKernel(t, k)
+	h := &countingProductHost{}
+	if n, err := StartNode(WithSharedNodeHost(t.Context(), h.host()), sharedQualifiedConfig()); n != nil || !errors.Is(err, errCountingHostRefused) || h.runs != 1 {
+		t.Fatalf("probed kernel: node=%v err=%v runs=%d, want the host reached once", n, err, h.runs)
+	}
 	for name, mutate := range map[string]func(*fakeProductKernel){
-		"unpinned digest":          func(k *fakeProductKernel) { k.digest = strings.Repeat("1", 64) },
-		"persistent-owner BTF":     func(k *fakeProductKernel) { k.digest = SupportedKernelBTF },
-		"persistent-owner k8s BTF": func(k *fakeProductKernel) { k.digest = SupportedKubernetesKernelBTF },
-		"release mismatch":         func(k *fakeProductKernel) { k.release = "6.12.113-138.210.amzn2023.x86_64" },
-		"build-id mismatch":        func(k *fakeProductKernel) { k.buildID = strings.Repeat("0", 40) },
-		"livepatch":                func(k *fakeProductKernel) { k.tainted = "32768" },
-		"no bpf LSM":               func(k *fakeProductKernel) { k.lsm = "selinux" },
-		"ftrace off":               func(k *fakeProductKernel) { k.ftrace = "0" },
-		"non-amd64":                func(k *fakeProductKernel) { k.arch = "arm64" },
+		"unreadable BTF": func(k *fakeProductKernel) { k.digest, k.digestErr = "", os.ErrPermission },
+		"livepatch":      func(k *fakeProductKernel) { k.tainted = "32768" },
+		"no bpf LSM":     func(k *fakeProductKernel) { k.lsm = "selinux" },
+		"ftrace off":     func(k *fakeProductKernel) { k.ftrace = "0" },
+		"non-amd64":      func(k *fakeProductKernel) { k.arch = "arm64" },
 	} {
 		k := pinnedProductKernel(sharedProductPinDigests()[0])
 		mutate(k)
@@ -104,8 +110,9 @@ func TestSharedProductHostHasNoSeams(t *testing.T) {
 }
 
 // TestSelectSharedProductImage (plan 3.7): the entry of the running pinned
-// digest is selected; no match, a digest-only match on the wrong build and
-// an empty table are refused with ErrSharedNativeUnavailable.
+// digest is selected, and the SharedProbedKernelEntry entry on a probed
+// kernel; no match, a digest-only match on the wrong build and an empty
+// table are refused with ErrSharedNativeUnavailable.
 func TestSelectSharedProductImage(t *testing.T) {
 	type entry struct{ image, manifest string }
 	digests := sharedProductPinDigests()
@@ -126,6 +133,29 @@ func TestSelectSharedProductImage(t *testing.T) {
 	}
 	if _, _, err := SelectSharedProductImage[entry](nil); !errors.Is(err, ErrSharedNativeUnavailable) {
 		t.Fatalf("nil table: %v", err)
+	}
+	// A probed kernel selects the SharedProbedKernelEntry entry, never a
+	// digest entry, also when it shares a pinned BTF.
+	probedTable := map[string]entry{digests[0]: {"img-a", "sha256:a"}, SharedProbedKernelEntry: {"img-p", "sha256:p"}}
+	for name, mutate := range map[string]func(*fakeProductKernel){
+		"unpinned BTF":              func(k *fakeProductKernel) { k.digest = strings.Repeat("2", 64) },
+		"pinned BTF, other release": func(k *fakeProductKernel) { k.release = "6.12.114-139.210.amzn2023.x86_64" },
+	} {
+		k := pinnedProductKernel(digests[0])
+		mutate(k)
+		useProductKernel(t, k)
+		got, e, err := SelectSharedProductImage(probedTable)
+		if err != nil || got != k.digest || e != probedTable[SharedProbedKernelEntry] {
+			t.Errorf("%s: %q %+v %v, want the probed entry", name, got, e, err)
+		}
+		if _, e, err := SelectSharedProductImage(table); !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), "no image entry for probed kernel") || e != (entry{}) {
+			t.Errorf("%s without a probed entry: %+v %v", name, e, err)
+		}
+	}
+	// On a pinned kernel the probed entry is never used.
+	useProductKernel(t, pinnedProductKernel(digests[1]))
+	if _, _, err := SelectSharedProductImage(probedTable); !errors.Is(err, ErrSharedNativeUnavailable) {
+		t.Fatalf("pinned kernel without its digest entry: %v", err)
 	}
 	for name, mutate := range map[string]func(*fakeProductKernel){
 		"wrong release":  func(k *fakeProductKernel) { k.release = sharedProductPins[digests[1]].Release },

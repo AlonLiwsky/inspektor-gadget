@@ -111,6 +111,75 @@ func TestVerifyKernel(t *testing.T) {
 	}
 }
 
+// TestAdmitKernel: an exact build of the list is qualified; any other build
+// of a listed architecture that passes the probes is probed, with its own
+// identity; a wrong architecture, a malformed list, a failed control and an
+// unreadable or malformed identity are refused with a *KernelCheckError.
+func TestAdmitKernel(t *testing.T) {
+	all := QualifiedKernels()
+	for _, want := range all {
+		useProductKernel(t, pinnedProductKernel(want.BTF))
+		got, tier, err := AdmitKernel(all)
+		if err != nil || got != want || tier != KernelTierQualified {
+			t.Fatalf("%s: %+v %q %v", want.Release, got, tier, err)
+		}
+	}
+	first, second := all[0], all[1]
+	for name, mutate := range map[string]func(*fakeProductKernel){
+		"unlisted BTF":                func(k *fakeProductKernel) { k.digest = strings.Repeat("0", 64) },
+		"release of the other build":  func(k *fakeProductKernel) { k.release = second.Release },
+		"build-id of the other build": func(k *fakeProductKernel) { k.buildID = second.BuildID },
+	} {
+		k := pinnedProductKernel(first.BTF)
+		mutate(k)
+		useProductKernel(t, k)
+		got, tier, err := AdmitKernel(all)
+		want := KernelIdentity{Arch: "amd64", Release: k.release, BTF: k.digest, BuildID: k.buildID}
+		if err != nil || tier != KernelTierProbed || got != want {
+			t.Errorf("%s: %+v %q %v, want probed %+v", name, got, tier, err, want)
+		}
+	}
+	// A list holding only the other build: the running one is probed.
+	useProductKernel(t, pinnedProductKernel(first.BTF))
+	if _, tier, err := AdmitKernel([]KernelIdentity{second}); err != nil || tier != KernelTierProbed {
+		t.Fatalf("other build listed: %q %v", tier, err)
+	}
+	readErr := errors.New("read failed")
+	for _, tc := range []struct {
+		name      string
+		qualified []KernelIdentity
+		mutate    func(*fakeProductKernel)
+		check     string
+	}{
+		{"empty list", nil, nil, KernelCheckQualifiedList},
+		{"malformed list", []KernelIdentity{{Arch: "x86_64", Release: first.Release, BTF: first.BTF, BuildID: first.BuildID}}, nil, KernelCheckQualifiedList},
+		{"other arch", all, func(k *fakeProductKernel) { k.arch = "arm64" }, KernelCheckArch},
+		{"no bpf LSM, pinned", all, func(k *fakeProductKernel) { k.lsm = "selinux" }, KernelCheckBPFLSM},
+		{"no bpf LSM, unpinned", all, func(k *fakeProductKernel) { k.digest, k.lsm = strings.Repeat("0", 64), "selinux" }, KernelCheckBPFLSM},
+		{"ftrace off, unpinned", all, func(k *fakeProductKernel) { k.digest, k.ftrace = strings.Repeat("0", 64), "0\n" }, KernelCheckFtrace},
+		{"livepatched, unpinned", all, func(k *fakeProductKernel) { k.digest, k.tainted = strings.Repeat("0", 64), fmt.Sprint(taintLivepatch) }, KernelCheckLivepatch},
+		{"BTF read failure", all, func(k *fakeProductKernel) { k.digestErr = readErr }, KernelCheckBTF},
+		{"uppercase BTF", all, func(k *fakeProductKernel) { k.digest = strings.ToUpper(strings.Repeat("ab", 32)) }, KernelCheckBTF},
+		{"release read failure, unpinned", all, func(k *fakeProductKernel) { k.digest, k.releaseErr = strings.Repeat("0", 64), readErr }, KernelCheckRelease},
+		{"empty release, unpinned", all, func(k *fakeProductKernel) { k.digest, k.release = strings.Repeat("0", 64), " " }, KernelCheckRelease},
+		{"build-id read failure", all, func(k *fakeProductKernel) { k.buildIDErr = readErr }, KernelCheckBuildID},
+		{"empty build-id, unpinned", all, func(k *fakeProductKernel) { k.digest, k.buildID = strings.Repeat("0", 64), "" }, KernelCheckBuildID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			k := pinnedProductKernel(first.BTF)
+			if tc.mutate != nil {
+				tc.mutate(k)
+			}
+			useProductKernel(t, k)
+			got, tier, err := AdmitKernel(tc.qualified)
+			var kerr *KernelCheckError
+			if !errors.As(err, &kerr) || kerr.Check != tc.check || tier != "" || got != (KernelIdentity{}) {
+				t.Fatalf("got %+v %q err %v, want check %q", got, tier, err, tc.check)
+			}
+		})
+	}
+}
+
 // TestCheckKernelRuntime: ftrace and livepatch are re-read at each call
 // (never cached) and every failure, a read failure included, is typed.
 func TestCheckKernelRuntime(t *testing.T) {

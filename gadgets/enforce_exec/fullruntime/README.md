@@ -33,9 +33,10 @@ replacement.
 `NodeEnforcer.Ready` depends on how the node was started:
 
 - **Product node** (`WithSharedNodeHost`, a build without the
-  `enforce_exec_shared_qualification` tag): `StartNode` admits only the exact
-  pinned kernel builds and their pinned product objects (see
-  [Shared engine: supported kernels](#shared-engine-supported-kernels)) and
+  `enforce_exec_shared_qualification` tag): `StartNode` admits the exact
+  pinned kernel builds as `qualified` and any other x86_64 build that passes
+  the runtime probes as `probed`, with the pinned product objects (see
+  [Shared engine: supported kernels](#shared-engine-supported-kernels)), and
   refuses everything else with `ErrSharedNativeUnavailable` and the reason.
   `Ready` returns nil, also with zero bindings, unless an attach receipt, the
   product reaper, a witness (credit at exit, exec capsule, birth park, facts),
@@ -211,8 +212,24 @@ tools or their tests.
 
 ### Statement
 
-The shared engine (product node) enforces only on the same kernel builds that
-were qualified:
+The shared engine (product node) admits a kernel in one of two tiers
+(`SharedProductKernel` reports which; agents show it in their status):
+
+- **qualified**: one of the exact builds below, on which the kernel suites
+  ran with posted logs;
+- **probed**: any other x86_64 build with `bpf` in the active LSM list,
+  `ftrace_enabled=1`, no livepatch and a readable BTF digest, release and
+  build-id. The product object's own load then checks every type, field,
+  kfunc and attach target (CO-RE and the verifier), `FMODE_BACKING` and the
+  overlay layout are probed live, the startup canary proves every attached
+  program runs, and the live witness latches NotReady when an exec or fork
+  reaches its tracepoint without its LSM hook's mark. Not proved on such a
+  build: hook ordering and verdict semantics (see
+  [Why qualified builds](#why-qualified-builds)); no startup deny self-test
+  exists yet, because a test binding would hold one of the node's route
+  slots until teardown.
+
+The qualified builds:
 
 | Release | vmlinux BTF sha256 | GNU build-id | Failure-frame symbols |
 |---|---|---|---|
@@ -323,11 +340,15 @@ each kernel's `vmlinux.h`. `sharedProductObjects` (`kernel_matrix.go`,
 layout is derived from the overlay BTF shape and relocated by the object
 (`struct ovl_file___se_image`), and `FMODE_BACKING`, a preprocessor constant
 that BTF does not carry and that changed inside the 6.12 stable series, is
-probed live (`kernel_probe.go`). Kernel admission is unchanged in a default
-build: only the exact pinned builds. A qualification build can admit another
-kernel on its probes with the test-only `IG_ENFORCE_EXEC_PROBED_KERNEL=1`
-(`kernel_probe_override_tag.go`); it still refuses a kernel without the bpf
-LSM, with ftrace off, or livepatched. Stage 1 combines this with D1 (the
+probed live (`kernel_probe.go`). The product gate admits the exact pinned
+builds as `qualified` and any other x86_64 build that passes the probes as
+`probed` (`verifySharedProductKernel`); a probed kernel gets a synthetic pin
+with its own release and build-id, every product object of this release and
+no pinned `FMODE_BACKING` bit (the live probe decides, and a failed probe
+refuses). The shared candidate path of a qualification build still needs its
+matrix unless the test-only `IG_ENFORCE_EXEC_PROBED_KERNEL=1` is set
+(`kernel_probe_override_tag.go`). Every path still refuses a kernel without
+the bpf LSM, with ftrace off, or livepatched. Stage 1 combines this with D1 (the
 objects are built with `ENFORCE_EXEC_D1_LSM_ONLY`): there are no
 failure-frame symbols to resolve, and D1's own test override is folded into
 this one.
@@ -467,6 +488,17 @@ LSM sections (`kernel_identity.go`), so they do not keep a copy of it:
   of `qualified` (architecture, BTF sha256, release and GNU build-id), `bpf`
   is in the active LSM list, `ftrace_enabled=1` and `TAINT_LIVEPATCH` is
   clear. The shared engine's own gate runs the same code over its pins.
+- `AdmitKernel(qualified []KernelIdentity) (KernelIdentity, KernelTier, error)`:
+  `VerifyKernel` with probed admission. An exact entry of `qualified` is
+  `KernelTierQualified`; any other build of a listed architecture that passes
+  the same controls, with a readable lowercase-hex BTF digest, a release and
+  a build-id, is `KernelTierProbed` and the running identity is returned. A
+  wrong architecture, a malformed list, a failed control and a read failure
+  are still refused. The shared engine's gate is this check over its pins.
+- `SharedProductKernel() (KernelIdentity, KernelTier, error)`: the shared
+  engine's product gate on the running kernel, for status reporting.
+- `SelectSharedProductImage(entries)`: on a probed kernel it selects the
+  `SharedProbedKernelEntry` (`"probed"`) entry, never a digest entry.
 - `CheckKernelRuntime() error`: re-reads ftrace and the livepatch taint.
   Call it at every status computation; it is never cached.
 
@@ -475,15 +507,15 @@ Every failure is a `*KernelCheckError` whose `Check` names the failed check
 `livepatch`) and whose message gives the reason. A read failure is a failed
 check, and so is an empty list, a malformed entry (an empty field, a BTF
 digest that is not 64 lowercase hex characters such as `"*"`, a non-hex
-build-id) or a BTF digest listed twice. There is no wildcard and no way to
-pass a check without a listed build. A section passes its own compiled-in
+build-id) or a BTF digest listed twice. There is no wildcard: `VerifyKernel`
+passes only a listed build, and `AdmitKernel` reports any other as probed. A section passes its own compiled-in
 list, built from `QualifiedKernels()` or from entries with its own posted
-evidence; configuration must never add an entry. If `VerifyKernel` fails, the
-section must not load. If `CheckKernelRuntime` fails, the section is NotReady
+evidence; configuration must never add an entry. If `VerifyKernel` or
+`AdmitKernel` fails, the section must not load. If `CheckKernelRuntime` fails, the section is NotReady
 and counts as unprotected: ftrace off stops BPF trampolines, so it is
 detected, not guarded (see the measurement above).
 
-### Why an allowlist
+### Why qualified builds
 
 CO-RE relocates field offsets but cannot verify:
 
@@ -495,15 +527,16 @@ CO-RE relocates field offsets but cannot verify:
 
 The costs are asymmetric. On an unproven kernel, Strict either fails closed
 node-wide (an exec outage) or silently misses an exec path while reporting
-Ready. A reported refusal is better than either.
+Ready. A probed kernel takes that risk, reduced by the checks listed in the
+statement above, and reports its tier so an operator can tell it from a
+qualified build.
 
 ### Support window and AMI pinning
 
-The rule, not a calendar date: support covers exactly the builds above.
-Nodes must stay on them. Pin the AMI releases listed above: no in-place
-`dnf` kernel update, no automatic node AMI upgrade, no livepatch. A node that
-moves to any other kernel build, newer or not, is refused until that build is
-qualified and pinned in a new IG release. Support for a node ends when its
+The rule, not a calendar date: qualified support covers exactly the builds
+above. A node that moves to any other kernel build, newer or not, runs as
+probed until that build is qualified and pinned in a new IG release. A
+livepatch, a missing bpf LSM or ftrace off is refused on every build. Support for a node ends when its
 operator moves it to another AMI or kernel.
 
 ### Operational facts and unproven items

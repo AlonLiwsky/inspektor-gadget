@@ -541,9 +541,10 @@ type SharedNodeHost struct {
 }
 
 // WithSharedNodeHost selects the product StartNode path. StartNode then
-// admits only an exact pinned kernel build (sharedProductPins) and the
-// pinned product image; anything else is refused with
-// ErrSharedNativeUnavailable. A qualification build refuses it.
+// admits a kernel that passes the product gate (verifySharedProductKernel:
+// an exact pinned build, or a probed x86_64 build) and the pinned product
+// image; anything else is refused with ErrSharedNativeUnavailable. A
+// qualification build refuses it.
 func WithSharedNodeHost(ctx context.Context, h SharedNodeHost) context.Context {
 	return context.WithValue(ctx, sharedNodeHostKey{}, h)
 }
@@ -556,8 +557,9 @@ func sharedNodeHostFrom(ctx context.Context) (SharedNodeHost, bool) {
 // StartNode starts the node-wide shared collection. A qualification build
 // with WithSharedNodeQualification loads the shared candidate collection;
 // that node never reports Ready. Otherwise WithSharedNodeHost loads the
-// product image, only in a product build and only on an exact pinned kernel
-// build (verifySharedProductKernel, checked before the host runs anything).
+// product image, only in a product build and only on a kernel the product
+// gate admits (verifySharedProductKernel: an exact pinned build or a probed
+// one, checked before the host runs anything).
 // Without either StartNode refuses with ErrSharedNativeUnavailable.
 //
 // When config.CanaryCommand is empty, the startup attach canary execs
@@ -584,14 +586,19 @@ func StartNode(ctx context.Context, config SharedNodeConfig) (*NodeEnforcer, err
 	})
 }
 
+// SharedProbedKernelEntry is the key of the image entry that
+// SelectSharedProductImage selects on a probed kernel (KernelTierProbed).
+const SharedProbedKernelEntry = "probed"
+
 // SelectSharedProductImage selects the agent's product image entry for the
 // running kernel at agent start (node-agent: kernel BTF sha256 -> image,
 // profile, expected manifest digest). It runs the full product kernel gate
-// (verifySharedProductKernel: pinned BTF, release, build-id, bpf LSM,
-// ftrace, no livepatch) and returns the running BTF sha256 and its entry. An
-// empty table, a refused kernel or no entry for the running digest is an
-// error wrapping ErrSharedNativeUnavailable with the reason; there is no
-// fallback entry.
+// (verifySharedProductKernel) and returns the running BTF sha256 and the
+// entry: on an exact pinned build the entry of its BTF sha256, on a probed
+// kernel the SharedProbedKernelEntry entry (a digest entry is never used for
+// a probed kernel, even one that shares a pinned BTF). An empty table, a
+// refused kernel or no entry for the kernel is an error wrapping
+// ErrSharedNativeUnavailable with the reason.
 func SelectSharedProductImage[T any](entries map[string]T) (string, T, error) {
 	var zero T
 	if len(entries) == 0 {
@@ -601,9 +608,13 @@ func SelectSharedProductImage[T any](entries map[string]T) (string, T, error) {
 	if err != nil {
 		return "", zero, err
 	}
-	entry, ok := entries[digest]
+	key := digest
+	if pin.Tier == KernelTierProbed {
+		key = SharedProbedKernelEntry
+	}
+	entry, ok := entries[key]
 	if !ok {
-		return "", zero, fmt.Errorf("shared product image selection: no image entry for kernel %s (BTF sha256 %s): %w", pin.Release, digest, ErrSharedNativeUnavailable)
+		return "", zero, fmt.Errorf("shared product image selection: no image entry for %s kernel %s (BTF sha256 %s): %w", pin.Tier, pin.Release, digest, ErrSharedNativeUnavailable)
 	}
 	return digest, entry, nil
 }

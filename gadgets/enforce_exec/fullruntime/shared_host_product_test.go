@@ -165,8 +165,8 @@ func qualifyAllProductObjectsForTest(t *testing.T) {
 // pins list exactly the four qualified objects; with a reduced set, a product
 // object of this release is refused on a pinned AL2023 kernel that does not
 // list it, an unknown digest is refused even where every product object is
-// qualified, and an unpinned kernel is refused by the product gate in every
-// build (the probed-kernel override never reaches it).
+// qualified, and an unpinned kernel is admitted only as a probed kernel,
+// with every product object of this release and nothing else.
 func TestSharedProductObjectPinBinding(t *testing.T) {
 	// The real pins: exactly the four stage-1 product objects, qualified
 	// on both AL2023 pins by the S1 oracle; nothing else.
@@ -216,19 +216,35 @@ func TestSharedProductObjectPinBinding(t *testing.T) {
 			t.Errorf("%s: %v, want admit=%v reason %q", tc.name, err, tc.admit, tc.reason)
 		}
 	}
-	// An unpinned kernel: refused by the product gate whatever the build,
-	// even with the probed-kernel opt-in set (it only reaches the
-	// qualification candidate gate of a qualification build).
-	t.Setenv("IG_ENFORCE_EXEC_PROBED_KERNEL", "1")
+	// An unpinned kernel: admitted by the product gate as a probed kernel,
+	// whose synthetic pin qualifies every product object of this release
+	// and nothing else.
 	k := pinnedProductKernel(digests[0])
 	k.digest, k.release, k.buildID = strings.Repeat("ef", 32), "6.12.48+deb13-cloud-amd64", "00"
 	useProductKernel(t, k)
-	if _, _, err := verifySharedProductKernel(); !errors.Is(err, ErrSharedNativeUnavailable) {
-		t.Fatalf("unpinned kernel admitted by the product gate (qualification=%v): %v", sharedQualificationBuild, err)
+	_, probed, err := verifySharedProductKernel()
+	if err != nil || probed.Tier != KernelTierProbed || probed.Release != k.release {
+		t.Fatalf("unpinned kernel: pin %+v err %v, want a probed admission", probed, err)
 	}
-	err := admitSharedProductImage(sharedProductImageContext(sharedProductObjects["g19pkg128"]), sharedProductImageMetadata(), sharedProductPinnedResources(one))
+	for _, tc := range []struct {
+		object string
+		admit  bool
+	}{{sharedProductObjects["g19pkg128"], true}, {sharedProductObjects["g19pkg512"], true}, {strings.Repeat("cd", 32), false}} {
+		err := admitSharedProductImage(sharedProductImageContext(tc.object), sharedProductImageMetadata(), sharedProductPinnedResources(probed))
+		if tc.admit != (err == nil) || (!tc.admit && !errors.Is(err, ErrSharedNativeUnavailable)) {
+			t.Errorf("probed kernel, object %s: %v, want admit=%v", tc.object, err, tc.admit)
+		}
+	}
+	// An unpinned kernel without the bpf LSM is still refused, by the
+	// product gate and by the image admission.
+	k.lsm = "lockdown,capability,selinux"
+	useProductKernel(t, k)
+	if _, _, err := verifySharedProductKernel(); !errors.Is(err, ErrSharedNativeUnavailable) {
+		t.Fatalf("unpinned kernel without the bpf LSM admitted: %v", err)
+	}
+	err = admitSharedProductImage(sharedProductImageContext(sharedProductObjects["g19pkg128"]), sharedProductImageMetadata(), sharedProductPinnedResources(one))
 	if !errors.Is(err, ErrSharedNativeUnavailable) {
-		t.Fatalf("product image admitted on an unpinned kernel: %v", err)
+		t.Fatalf("product image admitted on a kernel without the bpf LSM: %v", err)
 	}
 	// In a default build the candidate gate refuses it too: the override
 	// cannot be enabled there.

@@ -138,9 +138,10 @@ func sharedProductPinDigests() []string {
 	return out
 }
 
-// TestSharedProductKernelGate (plan 3.1, gate part): each pin passes; every
-// other identity or control is refused with ErrSharedNativeUnavailable and
-// a reason.
+// TestSharedProductKernelGate (plan 3.1, gate part): each pin passes as
+// qualified; any other x86_64 build passes as probed; a wrong architecture,
+// an unreadable or malformed identity and every failed control is refused
+// with ErrSharedNativeUnavailable and a reason.
 func TestSharedProductKernelGate(t *testing.T) {
 	digests := sharedProductPinDigests()
 	for _, digest := range digests {
@@ -155,14 +156,8 @@ func TestSharedProductKernelGate(t *testing.T) {
 		mutate func(*fakeProductKernel)
 		reason string
 	}{
-		"unpinned digest":            {func(k *fakeProductKernel) { k.digest = strings.Repeat("0", 64) }, "not a qualified"},
-		"persistent-owner BTF":       {func(k *fakeProductKernel) { k.digest = SupportedKernelBTF }, "not a qualified"},
-		"persistent-owner k8s BTF":   {func(k *fakeProductKernel) { k.digest = SupportedKubernetesKernelBTF }, "not a qualified"},
-		"uppercase digest":           {func(k *fakeProductKernel) { k.digest = strings.ToUpper(k.digest) }, "not a qualified"},
+		"uppercase digest":           {func(k *fakeProductKernel) { k.digest = strings.ToUpper(k.digest) }, "not lowercase hex"},
 		"digest read error":          {func(k *fakeProductKernel) { k.digestErr = os.ErrPermission }, "kernel BTF"},
-		"release mismatch":           {func(k *fakeProductKernel) { k.release = sharedProductPins[other].Release }, "kernel release"},
-		"release suffix":             {func(k *fakeProductKernel) { k.release += "+" }, "kernel release"},
-		"build-id mismatch":          {func(k *fakeProductKernel) { k.buildID = sharedProductPins[other].BuildID }, "build-id"},
 		"build-id empty":             {func(k *fakeProductKernel) { k.buildID = "" }, "build-id"},
 		"livepatch taint":            {func(k *fakeProductKernel) { k.tainted = "32768\n" }, "livepatched"},
 		"livepatch with other taint": {func(k *fakeProductKernel) { k.tainted = fmt.Sprint(1<<15 | 1<<12) }, "livepatched"},
@@ -182,6 +177,31 @@ func TestSharedProductKernelGate(t *testing.T) {
 				t.Fatalf("err %v digest %q, want ErrSharedNativeUnavailable with %q", err, digest, tc.reason)
 			}
 		})
+	}
+	// Any other x86_64 build that passes the probes is admitted as probed,
+	// with its own release and build-id, also when it shares a pinned BTF.
+	for name, mutate := range map[string]func(*fakeProductKernel){
+		"unpinned digest":          func(k *fakeProductKernel) { k.digest = strings.Repeat("0", 64) },
+		"persistent-owner BTF":     func(k *fakeProductKernel) { k.digest = SupportedKernelBTF },
+		"persistent-owner k8s BTF": func(k *fakeProductKernel) { k.digest = SupportedKubernetesKernelBTF },
+		"release mismatch":         func(k *fakeProductKernel) { k.release = sharedProductPins[other].Release },
+		"release suffix":           func(k *fakeProductKernel) { k.release += "+" },
+		"build-id mismatch":        func(k *fakeProductKernel) { k.buildID = sharedProductPins[other].BuildID },
+	} {
+		k := pinnedProductKernel(digests[0])
+		mutate(k)
+		useProductKernel(t, k)
+		digest, pin, err := verifySharedProductKernel()
+		if err != nil || digest != k.digest || pin.Tier != KernelTierProbed || pin.Release != k.release || pin.BuildID != k.buildID ||
+			pin.FmodeBacking != 0 || len(pin.ProductObjects) != len(sharedProductObjects) {
+			t.Errorf("%s: digest %q pin %+v err %v, want a probed admission", name, digest, pin, err)
+		}
+	}
+	for _, digest := range digests {
+		useProductKernel(t, pinnedProductKernel(digest))
+		if _, pin, _ := verifySharedProductKernel(); pin.Tier != KernelTierQualified {
+			t.Fatalf("pin %s: tier %q", digest, pin.Tier)
+		}
 	}
 	// A tainted bit other than TAINT_LIVEPATCH is not this gate's concern.
 	k := pinnedProductKernel(digests[0])
