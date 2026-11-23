@@ -345,8 +345,7 @@ int BPF_PROG(enforce_exec_track_memfd, struct inode *inode,
 	return ret;
 }
 SEC("lsm.s/bprm_check_security")
-int
-BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
+int BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
 {
 	if (ret) {
 		return ret;

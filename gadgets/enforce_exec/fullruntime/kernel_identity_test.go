@@ -56,7 +56,8 @@ func TestAdmitKernel(t *testing.T) {
 			tc.mutate(k)
 			useProductKernel(t, k)
 			got, err := AdmitKernel()
-			kerr, ok := err.(*KernelCheckError)
+			var kerr *KernelCheckError
+			ok := errors.As(err, &kerr)
 			if !ok || kerr.Check != tc.check || errors.Is(err, ErrSharedNativeUnavailable) || got != (KernelIdentity{}) {
 				t.Fatalf("got %+v err %v, want a bare *KernelCheckError %q", got, err, tc.check)
 			}
