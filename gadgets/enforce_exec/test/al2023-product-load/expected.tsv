@@ -159,6 +159,6 @@ build	userspace	TestSharedCandidateMergedMetadataObjects	-
 unpinned	identity	bundle_manifest	-
 unpinned	identity	kernel_unpinned	-
 unpinned	unpinned	TestSharedProductNodeNegativesAttached	-
-unpinned	evidence	refusal_logged	-
+unpinned	evidence	probed_logged	-
 unpinned	hygiene	no_enforce_progs	-
 unpinned	hygiene	dmesg_clean	-

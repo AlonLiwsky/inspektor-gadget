@@ -164,7 +164,7 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 	if !sharedProductObject(elf) {
 		t.Fatalf("object sha256 %s is not a product ELF of %s", elf, pin.Release)
 	}
-	t.Logf("identity: release %s btf %s build-id %s elf-sha256 %s", pin.Release, digest, pin.BuildID, elf)
+	t.Logf("identity: release %s btf %s build-id %s elf-sha256 %s tier %s", pin.Release, digest, pin.BuildID, elf, pin.Tier)
 
 	// Step 2: StartNode through the product host; Ready with zero bindings.
 	host, gcOf := sharedProductHost(t, layout, image)
@@ -758,24 +758,27 @@ func sharedProductChild(t *testing.T) {
 // separated references in IG_SHARED_PRODUCT_LAYOUT: the other kernel's
 // product image, the diagnostic twin) is refused with
 // ErrSharedNativeUnavailable; the qualification seam is ignored; with
-// IG_SHARED_PRODUCT_UNPINNED=1 (an unpinned kernel) StartNode refuses
-// before the host runs anything.
+// IG_SHARED_PRODUCT_UNPINNED=1 (an unpinned kernel) the product gate admits
+// it as probed and StartNode reaches the host.
 func TestSharedProductNodeNegativesAttached(t *testing.T) {
 	layout, image, profile := sharedProductAttachedEnv(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 	config := SharedNodeConfig{Profile: profile, ABI3Development: true, Image: image}
 	if os.Getenv("IG_SHARED_PRODUCT_UNPINNED") == "1" {
+		id, tier, err := SharedProductKernel()
+		if err != nil || tier != KernelTierProbed {
+			t.Fatalf("unpinned-probed: tier %q err %v", tier, err)
+		}
 		runs := 0
 		run := func(context.Context, gadgetcontext.Option) (func(context.Context) error, <-chan error, error) {
 			runs++
 			return func(context.Context) error { return nil }, make(chan error), errors.New("host reached")
 		}
-		_, err := StartNode(WithSharedNodeHost(ctx, SharedNodeHost{Run: run}), config)
-		if !errors.Is(err, ErrSharedNativeUnavailable) || runs != 0 {
-			t.Fatalf("unpinned-refusal: err=%v runs=%d", err, runs)
+		if _, err := StartNode(WithSharedNodeHost(ctx, SharedNodeHost{Run: run}), config); runs != 1 {
+			t.Fatalf("unpinned-probed: StartNode did not reach the host: err=%v runs=%d", err, runs)
 		}
-		t.Logf("unpinned-refusal: %v", err)
+		t.Logf("unpinned-probed: tier %s release %s btf %s build-id %s, StartNode reached the host", tier, id.Release, id.BTF, id.BuildID)
 		return
 	}
 	qruns := 0

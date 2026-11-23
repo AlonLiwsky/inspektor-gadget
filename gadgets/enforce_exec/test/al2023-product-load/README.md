@@ -104,7 +104,9 @@ evidence is never overwritten.
 - **unpinned** (the AL2023 image's default 6.1 kernel on QEMU; the runner's
   own kernel on EC2): the kernel is unpinned, then
   `TestSharedProductNodeNegativesAttached` with `IG_SHARED_PRODUCT_UNPINNED=1`
-  must log the refusal "is not a qualified kernel build".
+  must log that the product gate admitted it as probed and that StartNode
+  reached the host ("unpinned-probed: tier probed ... StartNode reached the
+  host").
 
 Each group also has an `infra.tsv` (build commands, lane preflight, VM, guest
 exit, fetch, teardown, absence proof). A missing record, or any nonzero code
