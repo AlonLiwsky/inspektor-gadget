@@ -87,9 +87,10 @@ func TestPushSharedImageDeterministic(t *testing.T) {
 }
 
 // TestSharedProductImagePinsMatchTestdata: SharedProductImagePins equals
-// testdata/shared_product_images.tsv line by line, every image's object is
-// the qualified product object of its profile on its kernel, every kernel has every profile
-// once, and each compiled-in profile is valid.
+// testdata/shared_product_images.tsv line by line: one kernel-neutral image
+// per profile, in profile order, named enforce-exec-shared:<profile>, whose
+// object is the product object of its profile; each compiled-in profile is
+// valid.
 func TestSharedProductImagePinsMatchTestdata(t *testing.T) {
 	f, err := os.Open("testdata/shared_product_images.tsv")
 	if err != nil {
@@ -107,49 +108,28 @@ func TestSharedProductImagePinsMatchTestdata(t *testing.T) {
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(lines) != len(pins) || len(pins) != len(sharedProductPins)*len(sharedProductProfiles) {
-		t.Fatalf("%d testdata lines, %d pins, want %d", len(lines), len(pins), len(sharedProductPins)*len(sharedProductProfiles))
+	if len(lines) != len(pins) || len(pins) != len(sharedProductProfiles) || len(pins) != 4 {
+		t.Fatalf("%d testdata lines, %d pins, want %d", len(lines), len(pins), len(sharedProductProfiles))
 	}
-	seen := map[[2]string]bool{}
 	for i, pin := range pins {
-		want := strings.Join([]string{pin.Release, pin.Profile, pin.Image, pin.ObjectSHA256, pin.ManifestDigest, pin.IndexDigest}, "\t")
+		want := strings.Join([]string{pin.Profile, pin.Image, pin.ObjectSHA256, pin.ManifestDigest, pin.IndexDigest}, "\t")
 		if lines[i] != want {
 			t.Errorf("testdata line %d %q, pin %q", i, lines[i], want)
 		}
-		kernel, ok := sharedProductPins[pin.BTF]
-		if !ok || pin.Release != kernel.Release {
-			t.Fatalf("pin %d: BTF %s not a product kernel", i, pin.BTF)
+		if want := sharedProductProfiles[i].Name; pin.Profile != want {
+			t.Errorf("pin %d: profile %s, want %s (profile order)", i, pin.Profile, want)
 		}
-		// Stage 1: the image's object is the qualified product object of
-		// its profile on this kernel.
-		if !kernel.qualifiesProductObject(pin.ObjectSHA256) || pin.ObjectSHA256 != sharedProductObjects[pin.Profile] {
-			t.Errorf("pin %d: object %s is not the qualified %s object of %s", i, pin.ObjectSHA256, pin.Profile, kernel.Release)
+		if pin.Image != "enforce-exec-shared:"+pin.Profile {
+			t.Errorf("pin %d: image %s", i, pin.Image)
 		}
-		if want := sharedProductProfiles[i%len(sharedProductProfiles)].Name; pin.Profile != want {
-			t.Errorf("pin %d: profile %s, want %s (pin order)", i, pin.Profile, want)
+		if pin.ObjectSHA256 != sharedProductObjects[pin.Profile] {
+			t.Errorf("pin %d: object %s is not the %s product object", i, pin.ObjectSHA256, pin.Profile)
 		}
-		key := [2]string{pin.BTF, pin.Profile}
-		if seen[key] {
-			t.Errorf("pin %d: duplicate %v", i, key)
-		}
-		seen[key] = true
 		if _, err := pin.SharedProfile.Validate(); err != nil {
 			t.Errorf("pin %d: profile %+v: %v", i, pin.SharedProfile, err)
 		}
 		if !strings.HasPrefix(pin.ManifestDigest, "sha256:") || !strings.HasPrefix(pin.IndexDigest, "sha256:") {
 			t.Errorf("pin %d: digests %s %s", i, pin.ManifestDigest, pin.IndexDigest)
-		}
-	}
-	// Every qualified product object has an image on its kernel.
-	for btf, kernel := range sharedProductPins {
-		for object := range kernel.ProductObjects {
-			found := false
-			for _, pin := range pins {
-				found = found || pin.BTF == btf && pin.ObjectSHA256 == object
-			}
-			if !found {
-				t.Errorf("%s object %s has no image pin", kernel.Release, object)
-			}
 		}
 	}
 	// The result is a copy.
@@ -175,27 +155,27 @@ func TestSharedProductImageProfileMatchesQualification(t *testing.T) {
 // TestSharedProductImageName: the local reference scheme, and the
 // normalized name it is tagged with in a layout.
 func TestSharedProductImageName(t *testing.T) {
-	got := sharedProductImageName("g19pkg128", "6.12.113-138.209.amzn2023.x86_64")
-	if got != "enforce-exec-shared:g19pkg128-al2023-6.12.113-138.209" {
+	got := sharedProductImageName("g19pkg128")
+	if got != "enforce-exec-shared:g19pkg128" {
 		t.Fatalf("image name %q", got)
 	}
 	domain, remainder := oci.SplitIGDomain(got)
-	if domain+"/"+remainder != "ghcr.io/inspektor-gadget/gadget/enforce-exec-shared:g19pkg128-al2023-6.12.113-138.209" {
+	if domain+"/"+remainder != "ghcr.io/inspektor-gadget/gadget/enforce-exec-shared:g19pkg128" {
 		t.Fatalf("normalized %s/%s", domain, remainder)
 	}
 }
 
 // TestBuildSharedProductImage: the same object builds the same digests in
 // two stores, tagged with the normalized local reference; the exported
-// builder refuses an object that is not the pinned one, an unknown profile
-// or kernel.
+// builder refuses an object that is not the pinned one and an unknown
+// profile.
 func TestBuildSharedProductImage(t *testing.T) {
 	elf := sharedMinimalObject(t)
 	pin := SharedProductImagePins()[1]
 	var first SharedProductImagePin
 	for k := range 2 {
 		store := memory.New()
-		got, err := buildSharedProductImage(t.Context(), store, elf, pin.BTF, pin.Profile)
+		got, err := buildSharedProductImage(t.Context(), store, elf, pin.Profile)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -213,14 +193,11 @@ func TestBuildSharedProductImage(t *testing.T) {
 			t.Fatalf("resolve %s: %+v %v", got.Image, desc, err)
 		}
 	}
-	if _, err := BuildSharedProductImage(t.Context(), memory.New(), elf, pin.BTF, pin.Profile); err == nil || errors.Is(err, ErrSharedProductImageMismatch) {
+	if _, err := BuildSharedProductImage(t.Context(), memory.New(), elf, pin.Profile); err == nil || errors.Is(err, ErrSharedProductImageMismatch) {
 		t.Fatalf("unpinned object: %v", err)
 	}
-	if _, err := buildSharedProductImage(t.Context(), memory.New(), elf, pin.BTF, "g19pkg1024"); err == nil {
+	if _, err := buildSharedProductImage(t.Context(), memory.New(), elf, "g19pkg1024"); err == nil {
 		t.Fatal("unknown profile built")
-	}
-	if _, err := buildSharedProductImage(t.Context(), memory.New(), elf, "00", pin.Profile); err == nil {
-		t.Fatal("unknown kernel built")
 	}
 }
 
@@ -232,7 +209,7 @@ func TestBuildSharedProductImage(t *testing.T) {
 func TestBuildSharedProductImageChecksDigests(t *testing.T) {
 	elf := sharedMinimalObject(t)
 	pinned := SharedProductImagePins()[1]
-	built, err := buildSharedProductImage(t.Context(), memory.New(), elf, pinned.BTF, pinned.Profile)
+	built, err := buildSharedProductImage(t.Context(), memory.New(), elf, pinned.Profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,8 +225,8 @@ func TestBuildSharedProductImageChecksDigests(t *testing.T) {
 		"manifest drift": {"sha256:" + strings.Repeat("0", 64), built.IndexDigest, true},
 		"index drift":    {built.ManifestDigest, "sha256:" + strings.Repeat("0", 64), true},
 	} {
-		sharedProductImagePins = []sharedProductImagePin{{BTF: pinned.BTF, Profile: pinned.Profile, ObjectSHA256: object, ManifestDigest: tc.manifest, Index: tc.index}}
-		got, err := BuildSharedProductImage(t.Context(), memory.New(), elf, pinned.BTF, pinned.Profile)
+		sharedProductImagePins = []sharedProductImagePin{{Profile: pinned.Profile, ObjectSHA256: object, ManifestDigest: tc.manifest, Index: tc.index}}
+		got, err := BuildSharedProductImage(t.Context(), memory.New(), elf, pinned.Profile)
 		if tc.mismatch != errors.Is(err, ErrSharedProductImageMismatch) || !tc.mismatch && err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,7 +37,7 @@ import (
 
 // Product attached tests (G011 pass 2, plan section 5). Product build only
 // (no qualification tag): the node starts through WithSharedNodeHost, never
-// the qualification seam. Root on an exact pinned kernel build only.
+// the qualification seam. Root on a kernel the product gate admits.
 //
 //   IG_SHARED_PRODUCT_LAYOUT   OCI image layout directory holding the product
 //                              images (built by the tag-only builder)
@@ -117,7 +118,7 @@ func sharedProductAttachedEnv(t *testing.T) (string, string, SharedProfile) {
 	t.Helper()
 	layout, image := os.Getenv("IG_SHARED_PRODUCT_LAYOUT"), os.Getenv("IG_SHARED_PRODUCT_IMAGE")
 	if layout == "" || image == "" {
-		t.Skip("set IG_SHARED_PRODUCT_LAYOUT and IG_SHARED_PRODUCT_IMAGE on an exact pinned kernel")
+		t.Skip("set IG_SHARED_PRODUCT_LAYOUT and IG_SHARED_PRODUCT_IMAGE on a kernel the product gate admits")
 	}
 	if sharedQualificationBuild {
 		t.Fatal("product attached test in a qualification build")
@@ -132,7 +133,7 @@ func sharedProductAttachedEnv(t *testing.T) (string, string, SharedProfile) {
 }
 
 // TestSharedProductNodeReadyAttached (plan section 5, steps 1-8): the
-// product node on an exact pinned kernel build: identity, Ready with zero
+// product node on a kernel the product gate admits: identity, Ready with zero
 // bindings, Strict deny and Audit pass-through with the per-binding
 // contract, Ready under exec churn, a revision, the ftrace negative
 // (opt-in), teardown without leftovers, and a SIGKILL restart.
@@ -151,7 +152,7 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 	}
 
 	// Step 1: identity.
-	digest, pin, err := verifySharedProductKernel()
+	id, err := SharedProductKernel()
 	if err != nil {
 		t.Fatalf("kernel gate: %v", err)
 	}
@@ -162,9 +163,9 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 	sum := sha256.Sum256(object)
 	elf := hex.EncodeToString(sum[:])
 	if !sharedProductObject(elf) {
-		t.Fatalf("object sha256 %s is not a product ELF of %s", elf, pin.Release)
+		t.Fatalf("object sha256 %s is not a product ELF of this release", elf)
 	}
-	t.Logf("identity: release %s btf %s build-id %s elf-sha256 %s tier %s", pin.Release, digest, pin.BuildID, elf, pin.Tier)
+	t.Logf("identity: release %s btf %s build-id %s elf-sha256 %s", id.Release, id.BTF, id.BuildID, elf)
 
 	// Step 2: StartNode through the product host; Ready with zero bindings.
 	host, gcOf := sharedProductHost(t, layout, image)
@@ -552,7 +553,7 @@ func TestSharedProductNodeFtraceNegativeAttached(t *testing.T) {
 	if err := checkSharedInitNamespaces(); err != nil {
 		t.Fatalf("design 13.8: %v", err)
 	}
-	if _, _, err := verifySharedProductKernel(); err != nil {
+	if _, err := verifySharedProductKernel(); err != nil {
 		t.Fatalf("kernel gate: %v", err)
 	}
 	host, gcOf := sharedProductHost(t, layout, image)
@@ -755,20 +756,24 @@ func sharedProductChild(t *testing.T) {
 
 // TestSharedProductNodeNegativesAttached (plan section 5, negatives and the
 // unpinned instance): every image of IG_SHARED_PRODUCT_NEG_IMAGES (comma
-// separated references in IG_SHARED_PRODUCT_LAYOUT: the other kernel's
-// product image, the diagnostic twin) is refused with
+// separated references in IG_SHARED_PRODUCT_LAYOUT, for example the
+// diagnostic twin) is refused with
 // ErrSharedNativeUnavailable; the qualification seam is ignored; with
-// IG_SHARED_PRODUCT_UNPINNED=1 (an unpinned kernel) the product gate admits
-// it as probed and StartNode reaches the host.
+// IG_SHARED_PRODUCT_UNPINNED=1 (a kernel that is none of the pinned AL2023
+// builds) the product gate admits it like any other kernel and StartNode
+// reaches the host.
 func TestSharedProductNodeNegativesAttached(t *testing.T) {
 	layout, image, profile := sharedProductAttachedEnv(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 	config := SharedNodeConfig{Profile: profile, ABI3Development: true, Image: image}
 	if os.Getenv("IG_SHARED_PRODUCT_UNPINNED") == "1" {
-		id, tier, err := SharedProductKernel()
-		if err != nil || tier != KernelTierProbed {
-			t.Fatalf("unpinned-probed: tier %q err %v", tier, err)
+		id, err := SharedProductKernel()
+		if err != nil {
+			t.Fatalf("unpinned-admitted: product gate: %v", err)
+		}
+		if slices.Contains(QualifiedKernels(), id) {
+			t.Fatalf("unpinned-admitted: %+v is a pinned AL2023 build", id)
 		}
 		runs := 0
 		run := func(context.Context, gadgetcontext.Option) (func(context.Context) error, <-chan error, error) {
@@ -776,9 +781,9 @@ func TestSharedProductNodeNegativesAttached(t *testing.T) {
 			return func(context.Context) error { return nil }, make(chan error), errors.New("host reached")
 		}
 		if _, err := StartNode(WithSharedNodeHost(ctx, SharedNodeHost{Run: run}), config); runs != 1 {
-			t.Fatalf("unpinned-probed: StartNode did not reach the host: err=%v runs=%d", err, runs)
+			t.Fatalf("unpinned-admitted: StartNode did not reach the host: err=%v runs=%d", err, runs)
 		}
-		t.Logf("unpinned-probed: tier %s release %s btf %s build-id %s, StartNode reached the host", tier, id.Release, id.BTF, id.BuildID)
+		t.Logf("unpinned-admitted: release %s btf %s build-id %s, StartNode reached the host", id.Release, id.BTF, id.BuildID)
 		return
 	}
 	qruns := 0

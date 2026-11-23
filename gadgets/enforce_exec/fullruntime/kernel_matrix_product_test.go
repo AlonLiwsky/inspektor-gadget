@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -138,77 +139,172 @@ func sharedProductPinDigests() []string {
 	return out
 }
 
-// TestSharedProductKernelGate (plan 3.1, gate part): each pin passes as
-// qualified; any other x86_64 build passes as probed; a wrong architecture,
-// an unreadable or malformed identity and every failed control is refused
-// with ErrSharedNativeUnavailable and a reason.
-func TestSharedProductKernelGate(t *testing.T) {
+// arbitraryProductKernel is a healthy fake of a kernel that is none of the
+// pinned AL2023 builds (an Ubuntu build).
+func arbitraryProductKernel() *fakeProductKernel {
+	return &fakeProductKernel{
+		arch: "amd64", digest: strings.Repeat("e1", 32), release: "7.0.0-43-generic", buildID: strings.Repeat("5a", 20),
+		lsm: "lockdown,capability,landlock,yama,apparmor,bpf\n", ftrace: "1\n", tainted: "0\n",
+	}
+}
+
+// productGateKernels are the kernels the gate tests run on: every pinned
+// AL2023 build, an arbitrary other build, and builds that share a pinned
+// BTF with another release or build-id (or a persistent-owner BTF).
+func productGateKernels() map[string]*fakeProductKernel {
 	digests := sharedProductPinDigests()
+	out := map[string]*fakeProductKernel{"arbitrary build": arbitraryProductKernel()}
 	for _, digest := range digests {
-		useProductKernel(t, pinnedProductKernel(digest))
-		got, pin, err := verifySharedProductKernel()
-		if err != nil || got != digest || pin.Release != sharedProductPins[digest].Release {
-			t.Fatalf("pin %s: digest %q pin %+v err %v", digest, got, pin, err)
-		}
+		out["pinned "+sharedProductPins[digest].Release] = pinnedProductKernel(digest)
 	}
-	other := digests[1]
-	cases := map[string]struct {
-		mutate func(*fakeProductKernel)
-		reason string
-	}{
-		"uppercase digest":           {func(k *fakeProductKernel) { k.digest = strings.ToUpper(k.digest) }, "not lowercase hex"},
-		"digest read error":          {func(k *fakeProductKernel) { k.digestErr = os.ErrPermission }, "kernel BTF"},
-		"build-id empty":             {func(k *fakeProductKernel) { k.buildID = "" }, "build-id"},
-		"livepatch taint":            {func(k *fakeProductKernel) { k.tainted = "32768\n" }, "livepatched"},
-		"livepatch with other taint": {func(k *fakeProductKernel) { k.tainted = fmt.Sprint(1<<15 | 1<<12) }, "livepatched"},
-		"malformed taint":            {func(k *fakeProductKernel) { k.tainted = "x" }, "kernel taint"},
-		"no bpf LSM":                 {func(k *fakeProductKernel) { k.lsm = "lockdown,capability,selinux" }, "BPF LSM not active"},
-		"bpf LSM prefix only":        {func(k *fakeProductKernel) { k.lsm = "bpfx,selinux" }, "BPF LSM not active"},
-		"ftrace off":                 {func(k *fakeProductKernel) { k.ftrace = "0\n" }, "ftrace is not enabled"},
-		"non-amd64":                  {func(k *fakeProductKernel) { k.arch = "arm64" }, "require amd64, running on arm64"},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			k := pinnedProductKernel(digests[0])
-			tc.mutate(k)
-			useProductKernel(t, k)
-			digest, _, err := verifySharedProductKernel()
-			if !errors.Is(err, ErrSharedNativeUnavailable) || digest != "" || !strings.Contains(err.Error(), tc.reason) || !strings.Contains(err.Error(), "shared product node refused") {
-				t.Fatalf("err %v digest %q, want ErrSharedNativeUnavailable with %q", err, digest, tc.reason)
-			}
-		})
-	}
-	// Any other x86_64 build that passes the probes is admitted as probed,
-	// with its own release and build-id, also when it shares a pinned BTF.
 	for name, mutate := range map[string]func(*fakeProductKernel){
-		"unpinned digest":          func(k *fakeProductKernel) { k.digest = strings.Repeat("0", 64) },
 		"persistent-owner BTF":     func(k *fakeProductKernel) { k.digest = SupportedKernelBTF },
 		"persistent-owner k8s BTF": func(k *fakeProductKernel) { k.digest = SupportedKubernetesKernelBTF },
-		"release mismatch":         func(k *fakeProductKernel) { k.release = sharedProductPins[other].Release },
-		"release suffix":           func(k *fakeProductKernel) { k.release += "+" },
-		"build-id mismatch":        func(k *fakeProductKernel) { k.buildID = sharedProductPins[other].BuildID },
+		"pinned BTF, other release": func(k *fakeProductKernel) {
+			k.release = sharedProductPins[digests[1]].Release
+		},
+		"pinned BTF, release suffix": func(k *fakeProductKernel) { k.release += "+" },
+		"pinned BTF, other build-id": func(k *fakeProductKernel) {
+			k.buildID = sharedProductPins[digests[1]].BuildID
+		},
 	} {
 		k := pinnedProductKernel(digests[0])
 		mutate(k)
-		useProductKernel(t, k)
-		digest, pin, err := verifySharedProductKernel()
-		if err != nil || digest != k.digest || pin.Tier != KernelTierProbed || pin.Release != k.release || pin.BuildID != k.buildID ||
-			pin.FmodeBacking != 0 || len(pin.ProductObjects) != len(sharedProductObjects) {
-			t.Errorf("%s: digest %q pin %+v err %v, want a probed admission", name, digest, pin, err)
-		}
+		out[name] = k
 	}
-	for _, digest := range digests {
-		useProductKernel(t, pinnedProductKernel(digest))
-		if _, pin, _ := verifySharedProductKernel(); pin.Tier != KernelTierQualified {
-			t.Fatalf("pin %s: tier %q", digest, pin.Tier)
+	return out
+}
+
+// TestSharedProductKernelGate (plan 3.1, gate part): every kernel goes
+// through the same checks. Each healthy kernel (a pinned AL2023 build or
+// any other build) is admitted with its own identity; on each of them a
+// wrong architecture, an unreadable or malformed identity and every failed
+// control is refused with the same check, wrapping both the
+// *KernelCheckError and ErrSharedNativeUnavailable.
+func TestSharedProductKernelGate(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(*fakeProductKernel)
+		check  string
+		reason string
+	}{
+		"uppercase digest":           {func(k *fakeProductKernel) { k.digest = strings.ToUpper(k.digest) }, KernelCheckBTF, "not lowercase hex"},
+		"digest read error":          {func(k *fakeProductKernel) { k.digestErr = os.ErrPermission }, KernelCheckBTF, "kernel BTF"},
+		"release read error":         {func(k *fakeProductKernel) { k.releaseErr = os.ErrPermission }, KernelCheckRelease, "kernel release"},
+		"release empty":              {func(k *fakeProductKernel) { k.release = "\n" }, KernelCheckRelease, "empty kernel release"},
+		"build-id read error":        {func(k *fakeProductKernel) { k.buildIDErr = os.ErrPermission }, KernelCheckBuildID, "build-id"},
+		"build-id empty":             {func(k *fakeProductKernel) { k.buildID = "" }, KernelCheckBuildID, "build-id"},
+		"build-id malformed":         {func(k *fakeProductKernel) { k.buildID = "xyz" }, KernelCheckBuildID, "not lowercase hex"},
+		"livepatch taint":            {func(k *fakeProductKernel) { k.tainted = "32768\n" }, KernelCheckLivepatch, "livepatched"},
+		"livepatch with other taint": {func(k *fakeProductKernel) { k.tainted = fmt.Sprint(1<<15 | 1<<12) }, KernelCheckLivepatch, "livepatched"},
+		"malformed taint":            {func(k *fakeProductKernel) { k.tainted = "x" }, KernelCheckLivepatch, "kernel taint"},
+		"no bpf LSM":                 {func(k *fakeProductKernel) { k.lsm = "lockdown,capability,selinux" }, KernelCheckBPFLSM, "BPF LSM not active"},
+		"bpf LSM prefix only":        {func(k *fakeProductKernel) { k.lsm = "bpfx,selinux" }, KernelCheckBPFLSM, "BPF LSM not active"},
+		"ftrace off":                 {func(k *fakeProductKernel) { k.ftrace = "0\n" }, KernelCheckFtrace, "ftrace is not enabled"},
+		"ftrace read error":          {func(k *fakeProductKernel) { k.ftraceErr = os.ErrPermission }, KernelCheckFtrace, "ftrace_enabled"},
+		"non-amd64":                  {func(k *fakeProductKernel) { k.arch = "arm64" }, KernelCheckArch, "requires amd64, running on arm64"},
+	}
+	for kname, healthy := range productGateKernels() {
+		useProductKernel(t, healthy)
+		want := KernelIdentity{Arch: "amd64", Release: healthy.release, BTF: healthy.digest, BuildID: healthy.buildID}
+		if got, err := SharedProductKernel(); err != nil || got != want {
+			t.Fatalf("%s: %+v %v, want %+v", kname, got, err, want)
+		}
+		if got, err := verifySharedProductKernel(); err != nil || got != want {
+			t.Fatalf("%s: verifySharedProductKernel %+v %v", kname, got, err)
+		}
+		for name, tc := range cases {
+			t.Run(kname+"/"+name, func(t *testing.T) {
+				k := *healthy
+				tc.mutate(&k)
+				useProductKernel(t, &k)
+				got, err := SharedProductKernel()
+				var kerr *KernelCheckError
+				if !errors.As(err, &kerr) || kerr.Check != tc.check || !errors.Is(err, ErrSharedNativeUnavailable) || got != (KernelIdentity{}) ||
+					!strings.Contains(err.Error(), tc.reason) || !strings.Contains(err.Error(), "shared product node refused") {
+					t.Fatalf("got %+v err %v, want check %q with %q and ErrSharedNativeUnavailable", got, err, tc.check, tc.reason)
+				}
+			})
 		}
 	}
 	// A tainted bit other than TAINT_LIVEPATCH is not this gate's concern.
-	k := pinnedProductKernel(digests[0])
+	k := pinnedProductKernel(sharedProductPinDigests()[0])
 	k.tainted = fmt.Sprint(1 << 12)
 	useProductKernel(t, k)
-	if _, _, err := verifySharedProductKernel(); err != nil {
+	if _, err := verifySharedProductKernel(); err != nil {
 		t.Fatalf("out-of-tree taint alone: %v", err)
+	}
+}
+
+// TestSharedProductKernelPinnedAndArbitraryIdentical: a pinned AL2023 build
+// and an arbitrary other kernel go through the identical path. With the same
+// controls they get the same outcome from SharedProductKernel, AdmitKernel,
+// the FMODE_BACKING bit (the live probe on both, a failed probe refusing on
+// both) and the product image admission (the same product objects on both,
+// an unknown object refused on both); the pins never enter the decision.
+func TestSharedProductKernelPinnedAndArbitraryIdentical(t *testing.T) {
+	type outcome struct {
+		gate, admit, fmodeOK, fmodeFail string
+		images                          []string
+	}
+	errString := func(err error) string {
+		var kerr *KernelCheckError
+		switch {
+		case err == nil:
+			return "ok"
+		case errors.As(err, &kerr):
+			return "refused " + kerr.Check
+		default:
+			return "refused"
+		}
+	}
+	oldProbe, oldValue := fmodeBackingProbe, sharedFmodeBackingValue
+	t.Cleanup(func() { fmodeBackingProbe, sharedFmodeBackingValue = oldProbe, oldValue })
+	run := func(k *fakeProductKernel) outcome {
+		useProductKernel(t, k)
+		var o outcome
+		_, err := SharedProductKernel()
+		o.gate = errString(err)
+		_, err = AdmitKernel()
+		o.admit = errString(err)
+		sharedFmodeBackingValue = 0
+		fmodeBackingProbe = func(uint32) (uint32, error) { return sharedFmodeBacking25, nil }
+		bit, err := sharedFmodeBacking(sharedImageOverlayLayoutOvlFile)
+		o.fmodeOK = fmt.Sprintf("%#x %v", bit, err)
+		sharedFmodeBackingValue = 0
+		fmodeBackingProbe = func(uint32) (uint32, error) { return 0, errors.New("no layer directory") }
+		bit, err = sharedFmodeBacking(sharedImageOverlayLayoutOvlFile)
+		o.fmodeFail = fmt.Sprintf("%#x %v", bit, err)
+		sharedFmodeBackingValue = 0
+		for _, object := range []string{sharedProductObjects["g19pkg64"], sharedProductObjects["g19pkg512"], strings.Repeat("cd", 32)} {
+			err := admitSharedProductImage(sharedProductImageContext(object), sharedProductImageMetadata(), sharedProductResources())
+			if err != nil && !errors.Is(err, ErrSharedNativeUnavailable) {
+				t.Fatalf("untyped image refusal: %v", err)
+			}
+			o.images = append(o.images, errString(err))
+		}
+		return o
+	}
+	for name, mutate := range map[string]func(*fakeProductKernel){
+		"healthy":    func(*fakeProductKernel) {},
+		"no bpf LSM": func(k *fakeProductKernel) { k.lsm = "selinux" },
+		"ftrace off": func(k *fakeProductKernel) { k.ftrace = "0" },
+		"livepatch":  func(k *fakeProductKernel) { k.tainted = "32768" },
+		"arm64":      func(k *fakeProductKernel) { k.arch = "arm64" },
+	} {
+		arbitrary := arbitraryProductKernel()
+		mutate(arbitrary)
+		want := run(arbitrary)
+		for _, digest := range sharedProductPinDigests() {
+			pinned := pinnedProductKernel(digest)
+			mutate(pinned)
+			if got := run(pinned); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s: pinned %s %+v, arbitrary %+v", name, sharedProductPins[digest].Release, got, want)
+			}
+		}
+		if name == "healthy" && (want.gate != "ok" || want.admit != "ok" || want.fmodeOK != "0x2000000 <nil>" || want.fmodeFail == "0x0 <nil>" ||
+			!reflect.DeepEqual(want.images, []string{"ok", "ok", "refused"})) {
+			t.Errorf("healthy kernels: %+v", want)
+		}
 	}
 }
 
@@ -325,7 +421,7 @@ func TestReadProcSysRequiresProcfs(t *testing.T) {
 	k := pinnedProductKernel(sharedProductPinDigests()[0])
 	useProductKernel(t, k)
 	sharedProductKernelProbes.ftrace = func() (string, error) { return readProcSys(fake) }
-	if _, _, err := verifySharedProductKernel(); !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), "not on procfs") {
+	if _, err := verifySharedProductKernel(); !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(err.Error(), "not on procfs") {
 		t.Fatalf("gate with a non-procfs control: %v", err)
 	}
 }

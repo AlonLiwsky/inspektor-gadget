@@ -578,21 +578,20 @@ func sharedSetDiff(a, b []string) []string {
 	return out
 }
 
-// admitSharedProductImage binds the product image to the running pinned
-// kernel build: the kernel gate (re-run here, at instantiation); every
-// probe program's effective target (resources, after any attach_to
-// override) is its section's target, the failure-frame ones the pin's
-// symbols (also in the image metadata); and the loaded eBPF object's sha256
-// (operators.NativeProgramDigestKey) is one of the pin's QUALIFIED product
-// objects (sharedProductPin.ProductObjects).
+// admitSharedProductImage admits the product image on the running kernel:
+// the product kernel gate (SharedProductKernel, re-run here, at
+// instantiation); every probe program's effective target (resources, after
+// any attach_to override) is its section's own target; and the loaded eBPF
+// object's sha256 (operators.NativeProgramDigestKey) is one of this
+// release's product objects (sharedProductObjects), on every kernel alike.
 // Every refusal wraps ErrSharedNativeUnavailable.
 func admitSharedProductImage(gc operators.GadgetContext, metadata *viper.Viper, resources *operators.NativeResources) error {
-	_, pin, err := sharedProductKernelCheck()
+	kernel, err := sharedProductKernelCheck()
 	if err != nil {
 		return err
 	}
 	refuse := func(cause error) error {
-		return fmt.Errorf("shared product image refused on %s: %w: %w", pin.Release, cause, ErrSharedNativeUnavailable)
+		return fmt.Errorf("shared product image refused on %s: %w: %w", kernel.Release, cause, ErrSharedNativeUnavailable)
 	}
 	if resources == nil {
 		return refuse(fmt.Errorf("missing native resources"))
@@ -616,12 +615,7 @@ func admitSharedProductImage(gc operators.GadgetContext, metadata *viper.Viper, 
 		return refuse(fmt.Errorf("eBPF object digest unavailable"))
 	}
 	if !sharedProductObject(digest) {
-		return refuse(fmt.Errorf("eBPF object sha256 %s is not a pinned product object", digest))
-	}
-	// S1 review F1: the (kernel, object) pair must be qualified, not only
-	// the kernel and the object separately.
-	if !pin.qualifiesProductObject(digest) {
-		return refuse(fmt.Errorf("eBPF object sha256 %s is a product object of this release but is not qualified on pinned kernel %s", digest, pin.Release))
+		return refuse(fmt.Errorf("eBPF object sha256 %s is not a product object of this release", digest))
 	}
 	return nil
 }

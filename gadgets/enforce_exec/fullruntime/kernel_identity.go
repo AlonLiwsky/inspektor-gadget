@@ -5,7 +5,6 @@ package fullruntime
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -14,7 +13,10 @@ import (
 // KernelIdentity is one exact kernel build: the architecture (Go GOARCH), the
 // release (uname -r), the sha256 of the vmlinux BTF (/sys/kernel/btf/vmlinux,
 // lowercase hex) and the vmlinux GNU build-id (/sys/kernel/notes, lowercase
-// hex). The BTF digest alone does not identify a build.
+// hex). The BTF digest alone does not identify a build. SharedProductKernel
+// and AdmitKernel return the running kernel's identity (for status and
+// logs, never matched against a list); QualifiedKernels and VerifyKernel use
+// it for the qualification record.
 type KernelIdentity struct {
 	Arch    string
 	Release string
@@ -22,24 +24,9 @@ type KernelIdentity struct {
 	BuildID string
 }
 
-// KernelTier is how a kernel was admitted.
-type KernelTier string
-
-const (
-	// KernelTierQualified: an exact build of a qualified list, on which the
-	// kernel suites ran with posted logs.
-	KernelTierQualified KernelTier = "qualified"
-	// KernelTierProbed: any other build that passed the runtime probes
-	// (architecture, bpf LSM active, ftrace enabled, no livepatch). The
-	// object's own load then checks every type, field, kfunc and attach
-	// target, the loader probes FMODE_BACKING and the overlay layout, and
-	// the startup canary and the live witness prove the hooks run. Hook
-	// ordering and verdict semantics on that build are not proved by a
-	// kernel suite: report the tier so an operator can tell.
-	KernelTierProbed KernelTier = "probed"
-)
-
 // Kernel check names, the KernelCheckError.Check of a failed check.
+// KernelCheckQualifiedList is reported only by VerifyKernel (qualification
+// record API); the others by every check.
 const (
 	KernelCheckQualifiedList = "qualified-list" // the caller's list is empty or malformed
 	KernelCheckArch          = "arch"
@@ -52,7 +39,8 @@ const (
 )
 
 // KernelCheckError is a failed kernel check: Check names it, Err is why. A
-// read failure is a failed check too, never a pass.
+// read failure is a failed check too, never a pass. SharedProductKernel,
+// AdmitKernel, VerifyKernel and CheckKernelRuntime report it.
 type KernelCheckError struct {
 	Check string
 	Err   error
@@ -79,10 +67,13 @@ func kernelCheckFailed(check string, err error) *KernelCheckError {
 	return &KernelCheckError{Check: check, Err: err}
 }
 
-// QualifiedKernels returns the kernel builds the shared exec engine is
-// qualified on (sharedProductPins), sorted by release. Callers may admit a
-// subset of them, or other builds with their own posted evidence, through
-// VerifyKernel; configuration must never add an entry.
+// QualifiedKernels returns the kernel builds the shared exec engine's kernel
+// suites ran on (sharedProductPins), sorted by release. It is the
+// qualification record, not an admission list: the product gate
+// (SharedProductKernel) and AdmitKernel admit every kernel on its probes. A
+// caller that wants an exact-build gate of its own may pass a subset of
+// these, or other builds with their own posted evidence, to VerifyKernel;
+// configuration must never add an entry.
 func QualifiedKernels() []KernelIdentity {
 	out := make([]KernelIdentity, 0, len(sharedProductIdentities))
 	for _, id := range sharedProductIdentities {
@@ -92,13 +83,14 @@ func QualifiedKernels() []KernelIdentity {
 	return out
 }
 
-// VerifyKernel is the kernel identity check that gates the shared exec
-// engine, for any caller with its own compiled-in qualified list. It admits
-// the running kernel only if it is exactly one of qualified (architecture,
-// BTF sha256, release and GNU build-id) and bpf is in the active LSM list,
-// ftrace is enabled and the kernel is not livepatched. It returns the
-// matching entry. Every failure, an empty or malformed list and every read
-// failure included, is a *KernelCheckError: the caller must then not enforce.
+// VerifyKernel is an exact-build kernel identity check, for a caller with its
+// own compiled-in qualified list (qualification record API: the product gate
+// does not use it). It admits the running kernel only if it is exactly one of
+// qualified (architecture, BTF sha256, release and GNU build-id) and bpf is
+// in the active LSM list, ftrace is enabled and the kernel is not
+// livepatched. It returns the matching entry. Every failure, an empty or
+// malformed list and every read failure included, is a *KernelCheckError:
+// the caller must then not enforce.
 func VerifyKernel(qualified []KernelIdentity) (KernelIdentity, error) {
 	byBTF, err := kernelIdentitiesByBTF(qualified)
 	if err != nil {
@@ -107,70 +99,26 @@ func VerifyKernel(qualified []KernelIdentity) (KernelIdentity, error) {
 	return verifyKernelIdentity(sharedProductKernelProbes, byBTF)
 }
 
-// AdmitKernel is VerifyKernel with probed admission: the running kernel is
-// admitted as KernelTierQualified when it is exactly one of qualified, and
-// otherwise as KernelTierProbed when its architecture is one of qualified's
-// and it passes the runtime probes (bpf LSM active, ftrace enabled, no
-// livepatch, a readable BTF digest, release and build-id). The returned
-// identity is the running kernel's. A wrong architecture, a missing bpf LSM,
-// ftrace off, a livepatch and every read failure are still refused with a
-// *KernelCheckError; the caller must then not enforce.
-func AdmitKernel(qualified []KernelIdentity) (KernelIdentity, KernelTier, error) {
-	byBTF, err := kernelIdentitiesByBTF(qualified)
-	if err != nil {
-		return KernelIdentity{}, "", err
-	}
-	return admitKernelIdentity(sharedProductKernelProbes, byBTF)
+// AdmitKernel runs the checks of the product kernel gate (SharedProductKernel)
+// on the running kernel, for the other BPF LSM sections of an agent: the
+// architecture is amd64, the vmlinux BTF sha256 is readable lowercase hex,
+// the release is non-empty, the GNU build-id is lowercase hex, bpf is in the
+// active LSM list, ftrace is enabled and the kernel is not livepatched. Every
+// kernel is admitted the same way, on these checks; no build list is
+// consulted. It returns the running kernel's identity. Every failure, a read
+// failure included, is a bare *KernelCheckError: the caller must then not
+// enforce.
+func AdmitKernel() (KernelIdentity, error) {
+	return admitKernelIdentity(sharedProductKernelProbes)
 }
 
-// admitKernelIdentity runs AdmitKernel through probe p.
-func admitKernelIdentity(p sharedProductKernelProbe, qualified map[string]KernelIdentity) (KernelIdentity, KernelTier, error) {
-	id, err := verifyKernelIdentity(p, qualified)
-	if err == nil {
-		return id, KernelTierQualified, nil
+// admitKernelIdentity runs AdmitKernel through probe p, in order:
+// architecture, BTF digest, release, build-id (an identity failure is
+// reported as such), then bpf LSM, ftrace and livepatch.
+func admitKernelIdentity(p sharedProductKernelProbe) (KernelIdentity, error) {
+	if arch := p.arch(); arch != sharedProductImageArch {
+		return KernelIdentity{}, kernelCheckFailed(KernelCheckArch, fmt.Errorf("the shared exec engine requires %s, running on %s", sharedProductImageArch, arch))
 	}
-	if !kernelIdentityMismatch(err) {
-		return KernelIdentity{}, "", err
-	}
-	probed, perr := probedKernelIdentity(p)
-	if perr != nil {
-		return KernelIdentity{}, "", kernelCheckFailed(probedCheck(perr), fmt.Errorf("%w; probed admission refused: %w", err, perr))
-	}
-	return probed, KernelTierProbed, nil
-}
-
-// kernelIdentityMismatch reports whether err only says that the running
-// build is not one of the qualified list (BTF digest, release or build-id
-// differ), the one refusal probed admission may replace. A read failure of
-// the BTF digest is a mismatch here too: probedKernelIdentity reads it
-// again first and refuses with the identity check.
-func kernelIdentityMismatch(err error) bool {
-	var check *KernelCheckError
-	if !errors.As(err, &check) {
-		return false
-	}
-	switch check.Check {
-	case KernelCheckBTF, KernelCheckRelease, KernelCheckBuildID:
-		return true
-	}
-	return false
-}
-
-// probedCheck is the KernelCheckError.Check of a probed admission refusal
-// (the check it failed, or the BTF identity check).
-func probedCheck(err error) string {
-	var check *KernelCheckError
-	if errors.As(err, &check) {
-		return check.Check
-	}
-	return KernelCheckBTF
-}
-
-// probedKernelIdentity admits the running kernel on its probes (architecture
-// already checked by the caller): a lowercase-hex BTF digest, a release and a
-// lowercase-hex build-id (an identity failure is reported as such), then bpf
-// LSM, ftrace and livepatch.
-func probedKernelIdentity(p sharedProductKernelProbe) (KernelIdentity, error) {
 	digest, err := p.btfDigest()
 	if err != nil {
 		return KernelIdentity{}, kernelCheckFailed(KernelCheckBTF, fmt.Errorf("kernel BTF: %w", err))
@@ -202,7 +150,7 @@ func probedKernelIdentity(p sharedProductKernelProbe) (KernelIdentity, error) {
 	if err := checkSharedProductKernelRuntime(p); err != nil {
 		return KernelIdentity{}, err
 	}
-	return KernelIdentity{Arch: p.arch(), Release: release, BTF: digest, BuildID: buildID}, nil
+	return KernelIdentity{Arch: sharedProductImageArch, Release: release, BTF: digest, BuildID: buildID}, nil
 }
 
 // CheckKernelRuntime re-reads the two kernel controls that can change while
@@ -215,7 +163,8 @@ func CheckKernelRuntime() error {
 	return checkSharedProductKernelRuntime(sharedProductKernelProbes)
 }
 
-// sharedProductIdentities are sharedProductPins as kernel identities.
+// sharedProductIdentities are sharedProductPins as kernel identities (the
+// qualification record behind QualifiedKernels).
 var sharedProductIdentities = func() map[string]KernelIdentity {
 	out := make(map[string]KernelIdentity, len(sharedProductPins))
 	for digest, pin := range sharedProductPins {

@@ -8,7 +8,7 @@
 #
 #   guest.sh <tag> <bundle> <out>
 #     tag     6.12 or 6.18 (an exact pinned kernel: steps 0-4 and 6), or
-#             unpinned (any other kernel: step 5, probed admission)
+#             unpinned (any other kernel: step 5, admitted on its probes)
 #     bundle  bin/{fullruntime.test,verdict-load,judge,test2json,bpftool},
 #             objects/, layout/, images.tsv, bundle.sha256sums, env.sh
 #     out     writable; receives <out>/<tag>/<step>__<profile>.json (the
@@ -223,13 +223,13 @@ if failed "$S"; then
 	exit 0
 fi
 
-# ---- step 5: unpinned kernel admitted as probed (the whole unpinned run) ----------
+# ---- step 5: unpinned kernel admitted on its probes (the whole unpinned run) ------
 if [[ $TAG == unpinned ]]; then
 	NAMES=$(enforce_names "$B/objects/$(al2023_object 6.12 128)")
 	gotest unpinned - TestSharedProductNodeNegativesAttached IG_SHARED_PRODUCT_LAYOUT="$B/layout" \
 		IG_SHARED_PRODUCT_IMAGE="$(al2023_image 6.12 128)" IG_SHARED_PRODUCT_PROFILE=128 IG_SHARED_PRODUCT_UNPINNED=1
 	S=$(stream evidence -)
-	check "$S" probed_logged "unpinned-probed: tier probed, StartNode reached the host" -- grep -q 'unpinned-probed: tier probed .*StartNode reached the host' "$(stream unpinned -)"
+	check "$S" admitted_logged "unpinned-admitted: ... StartNode reached the host" -- grep -q 'unpinned-admitted: .*StartNode reached the host' "$(stream unpinned -)"
 	end "$S"
 	S=$(stream hygiene -)
 	check "$S" no_enforce_progs "no enforce_exec program loaded" -- test -z "$(enforce_progs)"

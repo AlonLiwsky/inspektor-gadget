@@ -20,9 +20,9 @@ import (
 )
 
 // D3 (universal kernel): runtime feature probing for the single CO-RE
-// product object. The product gate (verifySharedProductKernel) admits an
-// exact pinned build as KernelTierQualified and any other x86_64 build that
-// passes its probes as KernelTierProbed. The shared candidate path of a
+// product object. The product gate (verifySharedProductKernel) admits every
+// x86_64 kernel the same way, on its probes; the pinned AL2023 builds are
+// only the qualification record. The shared candidate path of a
 // qualification build still requires its matrix, unless the explicit
 // test-only override is set (kernel_probe_override_tag.go).
 //
@@ -56,41 +56,14 @@ var (
 	sharedFmodeBackingNote atomic.Pointer[string]
 	// fmodeBackingReader is the bit the loader installs; tests replace it.
 	fmodeBackingReader = sharedFmodeBacking
-	// Seams of sharedFmodeBacking: the live probe and the pinned bit.
-	fmodeBackingProbe  = probeSharedFmodeBacking
-	fmodeBackingPinned = pinnedSharedFmodeBacking
+	// fmodeBackingProbe is sharedFmodeBacking's live probe; tests replace it.
+	fmodeBackingProbe = probeSharedFmodeBacking
 )
 
-// pinnedSharedFmodeBacking is the source-verified FMODE_BACKING bit of the
-// running kernel when it is one of the exact pinned builds.
-func pinnedSharedFmodeBacking() (uint32, bool) {
-	p := sharedProductKernelProbes
-	digest, err := p.btfDigest()
-	if err != nil {
-		return 0, false
-	}
-	pin, ok := sharedProductPins[digest]
-	if !ok || pin.FmodeBacking == 0 {
-		return 0, false
-	}
-	// The BTF digest alone does not identify a build: a probed kernel that
-	// shares a pinned BTF but not its release or build-id gets the probe's
-	// bit, not the pin's.
-	release, rerr := p.release()
-	buildID, berr := p.buildID()
-	if rerr != nil || berr != nil || release != pin.Release || buildID != pin.BuildID {
-		return 0, false
-	}
-	return pin.FmodeBacking, true
-}
-
-// sharedFmodeBacking is the FMODE_BACKING bit for the running kernel.
-//
-// On a pinned kernel the pinned bit is authoritative and the live probe only
-// cross-checks it: a probe that cannot run (no usable layer directory, a
-// transient error) changes nothing, a probe that contradicts the pin refuses.
-// On any other kernel (a probed product kernel, or a qualification build) the
-// bit is the probe's, and a failed probe refuses. A refusal is never cached.
+// sharedFmodeBacking is the FMODE_BACKING bit for the running kernel: the
+// live probe always decides, on every kernel (the pinned AL2023 builds
+// included), and a failed probe refuses. Only a success is cached; a refusal
+// is never cached, so the next constants computation probes again.
 func sharedFmodeBacking(layout uint32) (uint32, error) {
 	sharedFmodeBackingMu.Lock()
 	defer sharedFmodeBackingMu.Unlock()
@@ -101,25 +74,12 @@ func sharedFmodeBacking(layout uint32) (uint32, error) {
 		s := fmt.Sprintf(format, args...)
 		sharedFmodeBackingNote.Store(&s)
 	}
-	pinned, isPinned := fmodeBackingPinned()
 	probed, err := fmodeBackingProbe(layout)
-	switch {
-	case isPinned && err != nil:
-		// Not cached: the next computation cross-checks again.
-		note("pinned %#x; cross-check unavailable: %v", pinned, err)
-		return pinned, nil
-	case isPinned && probed != pinned:
-		err = fmt.Errorf("FMODE_BACKING: the live probe (%#x) contradicts the pinned bit (%#x)", probed, pinned)
+	if err != nil {
 		note("refused: %v", err)
 		return 0, err
-	case err != nil:
-		note("refused: %v", err)
-		return 0, err
-	case isPinned:
-		note("pinned %#x; confirmed by the live probe", pinned)
-	default:
-		note("probed %#x", probed)
 	}
+	note("probed %#x", probed)
 	sharedFmodeBackingValue = probed
 	return probed, nil
 }
@@ -489,13 +449,15 @@ type SharedKernelProbeReport struct {
 	LSM                               string
 	BPFLSM                            bool
 	Ftrace, Tainted                   string
-	// Pinned is the release of the exact pinned build this kernel is, or "".
-	Pinned            string
+	// Qualified is the release of the qualification-record build this kernel
+	// is (sharedProductPins: where the kernel suites ran), or "". Diagnostic
+	// only: admission does not consult it.
+	Qualified         string
 	OverlayLayout     uint32
 	OverlayError      string
 	FmodeBacking      uint32
 	FmodeBackingError string
-	// FmodeBackingNote: pinned or probed, and the cross-check's outcome.
+	// FmodeBackingNote: the live probe's outcome.
 	FmodeBackingNote string
 }
 
@@ -513,7 +475,7 @@ func ProbeSharedKernel() SharedKernelProbeReport {
 	r := SharedKernelProbeReport{Arch: p.arch(), Release: str(p.release), BTFDigest: str(p.btfDigest), BuildID: str(p.buildID), LSM: str(p.lsm), Ftrace: str(p.ftrace), Tainted: str(p.tainted)}
 	r.BPFLSM = requireBPFLSM(r.LSM) == nil
 	if pin, ok := sharedProductPins[r.BTFDigest]; ok && pin.Release == r.Release && pin.BuildID == r.BuildID {
-		r.Pinned = pin.Release
+		r.Qualified = pin.Release
 	}
 	layout, err := resolveSharedImageOverlayLayout()
 	if err != nil {

@@ -33,9 +33,10 @@ replacement.
 `NodeEnforcer.Ready` depends on how the node was started:
 
 - **Product node** (`WithSharedNodeHost`, a build without the
-  `enforce_exec_shared_qualification` tag): `StartNode` admits the exact
-  pinned kernel builds as `qualified` and any other x86_64 build that passes
-  the runtime probes as `probed`, with the pinned product objects (see
+  `enforce_exec_shared_qualification` tag): `StartNode` admits every x86_64
+  kernel that passes the product kernel gate (`SharedProductKernel`: bpf
+  LSM, ftrace on, no livepatch, readable identity), with a product object of
+  this release (see
   [Shared engine: supported kernels](#shared-engine-supported-kernels)), and
   refuses everything else with `ErrSharedNativeUnavailable` and the reason.
   `Ready` returns nil, also with zero bindings, unless an attach receipt, the
@@ -212,24 +213,33 @@ tools or their tests.
 
 ### Statement
 
-The shared engine (product node) admits a kernel in one of two tiers
-(`SharedProductKernel` reports which; agents show it in their status):
+The shared engine (product node) admits every x86_64 kernel the same way,
+on its probes (`SharedProductKernel`, re-run by `StartNode` and at image
+instantiation): `bpf` in the active LSM list, `ftrace_enabled=1`, no
+livepatch (`TAINT_LIVEPATCH` clear), and a readable identity (a
+lowercase-hex vmlinux BTF sha256, a non-empty release, a lowercase-hex GNU
+build-id). Anything else is refused. No kernel build list takes part in the
+admission.
 
-- **qualified**: one of the exact builds below, on which the kernel suites
-  ran with posted logs;
-- **probed**: any other x86_64 build with `bpf` in the active LSM list,
-  `ftrace_enabled=1`, no livepatch and a readable BTF digest, release and
-  build-id. The product object's own load then checks every type, field,
-  kfunc and attach target (CO-RE and the verifier), `FMODE_BACKING` and the
-  overlay layout are probed live, the startup canary proves every attached
-  program runs, and the live witness latches NotReady when an exec or fork
-  reaches its tracepoint without its LSM hook's mark. Not proved on such a
-  build: hook ordering and verdict semantics (see
-  [Why qualified builds](#why-qualified-builds)); no startup deny self-test
-  exists yet, because a test binding would hold one of the node's route
-  slots until teardown.
+What is proved on every admitted kernel, at start and while it runs:
 
-The qualified builds:
+- the product object's own load checks every type, field, kfunc and attach
+  target it uses (CO-RE relocation and the verifier);
+- `FMODE_BACKING` and the overlay `private_data` layout are probed live; a
+  failed `FMODE_BACKING` probe refuses (it is never cached, and no kernel
+  has a pinned fallback any more);
+- the startup canary proves every attached program runs;
+- the live witness latches NotReady when an exec or fork reaches its
+  tracepoint without its LSM hook's mark, or when ftrace goes off.
+
+What is not proved by a suite on a kernel the suites did not run on: hook
+ordering and verdict semantics across the exec paths (see
+[What the probes cannot prove](#what-the-probes-cannot-prove)). There is no
+startup deny self-test: a test binding would hold one of the node's two
+route slots until teardown.
+
+The kernels the suites ran on (the qualification record: `QualifiedKernels`,
+`testdata/shared_product_pins.tsv`; the product gate does not consult it):
 
 | Release | vmlinux BTF sha256 | GNU build-id | Failure-frame symbols |
 |---|---|---|---|
@@ -253,18 +263,19 @@ qualification runs used; IDs differ per region, the release names do not):
   (`ami-0c50b8c0d6d72c152`, 6.12) and
   `amazon-eks-node-al2023-x86_64-standard-1.36-v20261031`
   (`ami-07ef7f0d9b6d0f123`, 6.18): the same kernel builds as qualified (the
-  same BTF was recorded on both; the agent still checks the build-id and
-  release at start). **EKS product Ready is proven** (G011 pass 2b, run g011eks-20261115t163442-6da1, 120 PASS / 0 FAIL):
-  a default-build node-agent (one DaemonSet, the per-kernel image map) reached
+  same BTF was recorded on both; G011 pass 2b checked the build-id and
+  release live). **EKS product Ready is proven** (G011 pass 2b, run g011eks-20261115t163442-6da1, 120 PASS / 0 FAIL):
+  a default-build node-agent (one DaemonSet, then with a per-kernel image map) reached
   product Ready True ("Selected containers have active enforcement") on both
   AMIs. The EKS AMIs carry taint 12288 (out-of-tree or unsigned modules),
   which is allowed: only the livepatch bit is gated.
 
-Identity is the BTF sha256 **and** the GNU build-id (`/sys/kernel/notes`)
-**and** the release (`uname -r`); the BTF alone does not identify a build. The
-node also requires x86_64, `bpf` in the active LSM list, `ftrace_enabled=1` and
-no livepatch (`TAINT_LIVEPATCH` clear). Ftrace and livepatch are re-read at
-every `Ready`. Ftrace is detected, not guarded: on both pinned kernels
+The node reads the identity of every kernel (the BTF sha256, the GNU
+build-id from `/sys/kernel/notes` and the release from `uname -r`) and
+refuses one it cannot read; it reports the identity, it does not match it
+against a list. The node also requires x86_64, `bpf` in the active LSM list,
+`ftrace_enabled=1` and no livepatch (`TAINT_LIVEPATCH` clear). Ftrace and
+livepatch are re-read at every `Ready`. Ftrace is detected, not guarded: on both pinned kernels
 `sysctl kernel.ftrace_enabled=0` is accepted while the node runs (no EBUSY),
 and `Ready` reports NotReady ("ftrace is not enabled") at its next call
 (G011 pass 2). On both pinned kernels, under a Strict Deny policy, a uid-1000
@@ -274,20 +285,19 @@ Ready was nil (G011 pass 2, run g011p2-20261115t160735-f9e2). Ready had
 already gone NotReady before that exec. Only this one exec was measured
 (uid 1000, Deny fallback); nothing else about enforcement with ftrace off is
 known, so treat a NotReady node as unprotected. This is an accepted, detected
-limitation: only root can change the sysctl. The image is bound to the build as well. **D1 (LSM-only prototype, this
+limitation: only root can change the sysctl. **D1 (LSM-only prototype, this
 branch):** the image carries no failure-frame `attach_to` target; the exec
 frame is `lsm/bprm_creds_for_exec` .. `lsm/bprm_committed_creds` (success) or
 `tp_btf/sys_exit` (failure) on every kernel, an `attach_to` override on any
 probe is refused, and the failure-frame symbol columns of the table above
 are historical (the pins no longer hold them). The loaded eBPF object's
 sha256 (recorded by the eBPF operator for native owners,
-`operators.NativeProgramDigestKey`) must be one of the product objects
-QUALIFIED on that pin (`sharedProductPin.ProductObjects`, literal digests: the
-four stage-1 objects are qualified on both AL2023 pins by the S1 oracle; a
-rebuilt object is refused until it is qualified again). Every other kernel
-or image is refused at agent start (`StartNode`, `SelectSharedProductImage`)
-with an error that wraps `ErrSharedNativeUnavailable` and names the reason. The
-pins live in `kernel_matrix.go` (`sharedProductPins`) and
+`operators.NativeProgramDigestKey`) must be one of this release's product
+objects (`sharedProductObjects`, `testdata/shared_product_objects.tsv`), on
+every kernel alike; a rebuilt object with another digest is refused. Every
+other kernel or image is refused at agent start (`StartNode`) with an error
+that wraps `ErrSharedNativeUnavailable` and names the reason. The
+qualification record lives in `kernel_matrix.go` (`sharedProductPins`) and
 `testdata/shared_product_pins.tsv`.
 
 **Kernel witness and startup canary (stage 1, `shared_kernel_witness.go`).**
@@ -340,12 +350,10 @@ each kernel's `vmlinux.h`. `sharedProductObjects` (`kernel_matrix.go`,
 layout is derived from the overlay BTF shape and relocated by the object
 (`struct ovl_file___se_image`), and `FMODE_BACKING`, a preprocessor constant
 that BTF does not carry and that changed inside the 6.12 stable series, is
-probed live (`kernel_probe.go`). The product gate admits the exact pinned
-builds as `qualified` and any other x86_64 build that passes the probes as
-`probed` (`verifySharedProductKernel`); a probed kernel gets a synthetic pin
-with its own release and build-id, every product object of this release and
-no pinned `FMODE_BACKING` bit (the live probe decides, and a failed probe
-refuses). The shared candidate path of a qualification build still needs its
+probed live (`kernel_probe.go`) on every kernel, the AL2023 builds included:
+a failed probe refuses. The product gate admits every x86_64 kernel that
+passes its probes (`verifySharedProductKernel`) with any product object of
+this release. The shared candidate path of a qualification build still needs its
 matrix unless the test-only `IG_ENFORCE_EXEC_PROBED_KERNEL=1` is set
 (`kernel_probe_override_tag.go`). Every path still refuses a kernel without
 the bpf LSM, with ftrace off, or livepatched. Stage 1 combines this with D1 (the
@@ -396,59 +404,60 @@ checkout paths, built the same four sha256). Prefix maps are not used: a
 measured `-fdebug-prefix-map` build changed the FWD order of the 6.12 objects.
 
 > **Qualification (stage 1).** The four objects in
-> `testdata/shared_product_objects.tsv` are QUALIFIED on both AL2023 pins
-> (`sharedProductPin.ProductObjects`, the last column of
-> `testdata/shared_product_pins.tsv`): the stage-1 oracle (D3 34 steps and
+> `testdata/shared_product_objects.tsv` ran on both AL2023 builds (recorded
+> in `sharedProductPin.ProductObjects`, the last column of
+> `testdata/shared_product_pins.tsv`; the product admission does not read
+> it): the stage-1 oracle (D3 34 steps and
 > D1 18 tests, Strict and Audit) and the product StartNode attached test ran
 > on both pinned kernels with these exact objects, 0 FAIL and 0 SKIP. The
 > G011 evidence below was produced with the earlier per-kernel objects.
 
 ### Product images
 
-Each pinned object is packaged into one product gadget image, built in the
-default build by `BuildSharedProductImage` (`shared_product_oci.go`): an
-index holding exactly one `linux/amd64` manifest, whose config is the merged
-product metadata (`candidate/gadget.yaml`, the packaged attach declaration,
-the geometry annotations and the event ABI; stage 1 has no failure-frame
-attach target, so a profile's image is the same on both kernels) and whose
-one layer is the object. Nothing time- or host-dependent is
+Each pinned object is packaged into one kernel-neutral product gadget
+image per profile, built in the default build by `BuildSharedProductImage`
+(`shared_product_oci.go`): an index holding exactly one `linux/amd64`
+manifest, whose config is the merged product metadata
+(`candidate/gadget.yaml`, the packaged attach declaration, the geometry
+annotations and the event ABI; stage 1 has no failure-frame attach target)
+and whose one layer is the object. Nothing time- or host-dependent is
 written (no annotations, no timestamps, the platform is fixed), so the
 digests are a function of the object and this source. The images are
 **never pushed to a registry**: the node-agent image build rebuilds them from
-source into its `tracers.tar` and must reproduce the pinned digests.
+source into its `tracers.tar` and must reproduce the pinned digests. The same
+image runs on every kernel the product gate admits.
 
-| Kernel | Profile | Image (local reference) | Manifest digest | Index digest |
-|---|---|---|---|---|
-| `6.12.113-138.209` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.12.113-138.209` | `sha256:2f161cc1edcbcd42fdfdce3c7ea746b260dfd071955d7fb25fab341ee32ee124` | `sha256:1397ee56fd71995e95fc6ae610c0c9b07d23d26e2a5110b1d6006bba308743fe` |
-| `6.12.113-138.209` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.12.113-138.209` | `sha256:036e99e41408b669b879f925a942af68689c1734c2d9b0d8033207387f25de6a` | `sha256:e67bd898e7e9cf9e53d4c298ab018009357174f4ae1c8e903540088829cb1114` |
-| `6.12.113-138.209` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.12.113-138.209` | `sha256:b65fc46b646442d746eb46cade87eda3a6d33144651e92e066adb9e7559e1bf0` | `sha256:f58271b21e84dc06d97b9345288020ad278874935e18e840b11d70e3ae8b761c` |
-| `6.12.113-138.209` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.12.113-138.209` | `sha256:3b5bd67827694a55b8e7de90cedf12142d1d02b67ecce1bc92f893e3fb67c3ec` | `sha256:60609bd695295bf01fd1a4f6924953c65fcc17269d26ab572044a113d0c0639f` |
-| `6.18.56-125.164` | `g19pkg64` | `enforce-exec-shared:g19pkg64-al2023-6.18.56-125.164` | `sha256:2f161cc1edcbcd42fdfdce3c7ea746b260dfd071955d7fb25fab341ee32ee124` | `sha256:1397ee56fd71995e95fc6ae610c0c9b07d23d26e2a5110b1d6006bba308743fe` |
-| `6.18.56-125.164` | `g19pkg128` | `enforce-exec-shared:g19pkg128-al2023-6.18.56-125.164` | `sha256:036e99e41408b669b879f925a942af68689c1734c2d9b0d8033207387f25de6a` | `sha256:e67bd898e7e9cf9e53d4c298ab018009357174f4ae1c8e903540088829cb1114` |
-| `6.18.56-125.164` | `g19pkg256` | `enforce-exec-shared:g19pkg256-al2023-6.18.56-125.164` | `sha256:b65fc46b646442d746eb46cade87eda3a6d33144651e92e066adb9e7559e1bf0` | `sha256:f58271b21e84dc06d97b9345288020ad278874935e18e840b11d70e3ae8b761c` |
-| `6.18.56-125.164` | `g19pkg512` | `enforce-exec-shared:g19pkg512-al2023-6.18.56-125.164` | `sha256:3b5bd67827694a55b8e7de90cedf12142d1d02b67ecce1bc92f893e3fb67c3ec` | `sha256:60609bd695295bf01fd1a4f6924953c65fcc17269d26ab572044a113d0c0639f` |
+| Profile | Image (local reference) | Manifest digest | Index digest |
+|---|---|---|---|
+| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:2f161cc1edcbcd42fdfdce3c7ea746b260dfd071955d7fb25fab341ee32ee124` | `sha256:1397ee56fd71995e95fc6ae610c0c9b07d23d26e2a5110b1d6006bba308743fe` |
+| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:036e99e41408b669b879f925a942af68689c1734c2d9b0d8033207387f25de6a` | `sha256:e67bd898e7e9cf9e53d4c298ab018009357174f4ae1c8e903540088829cb1114` |
+| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:b65fc46b646442d746eb46cade87eda3a6d33144651e92e066adb9e7559e1bf0` | `sha256:f58271b21e84dc06d97b9345288020ad278874935e18e840b11d70e3ae8b761c` |
+| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:3b5bd67827694a55b8e7de90cedf12142d1d02b67ecce1bc92f893e3fb67c3ec` | `sha256:60609bd695295bf01fd1a4f6924953c65fcc17269d26ab572044a113d0c0639f` |
 
-- **Pins.** `testdata/shared_product_images.tsv` (release, profile, image,
-  object sha256, manifest and index digest) mirrors `sharedProductImagePins`
+The digests are those the per-kernel references of pinset p1 carried: the
+reference (tag) is not part of either digest.
+
+- **Pins.** `testdata/shared_product_images.tsv` (profile, image, object
+  sha256, manifest and index digest) mirrors `sharedProductImagePins`
   (`TestSharedProductImagePinsMatchTestdata`). `SharedProductImagePins()`
-  exports them with each kernel's BTF and release and the object's
-  `SharedProfile`. Its geometry is compiled into the object and annotated on
-  the image (the geometry the qualification ran with,
-  `TestSharedProductImageProfileMatchesQualification`). Its budget fields
-  are host-side runtime limits, not in the object or the digests; the values
-  are the qualification sizes: CompileBytes 8 MiB, TelemetryBytes 4096,
-  CandidateBytes 1 MiB, RolloutBytes 4096, PossibleCPUs 64 (see "Geometry
-  limits" for the 64-CPU host limit). node-agent compiles in `g19pkg128` for
-  both kernels.
-- **Names.** `enforce-exec-shared:<profile>-al2023-<kernel version>`, tagged
-  in a layout under its normalized name
-  (`ghcr.io/inspektor-gadget/gadget/enforce-exec-shared:...`, like any short
-  gadget name). The manifest-digest check is node-agent's, not IG's: the
-  agent resolves the name in `tracers.tar` and pins the manifest digest, so
-  a re-wrapped index (`ig image export`) is harmless. IG has no manifest or
-  index check at run time; its runtime binding of an image is the loaded
-  object's sha256 (one of the pinned product objects), the failure-frame
-  `attach_to` targets and the geometry annotations.
+  exports them, one per profile in profile order (`g19pkg64`, `128`, `256`,
+  `512`), with the object's `SharedProfile`. Its geometry is compiled into
+  the object and annotated on the image (the geometry the qualification ran
+  with, `TestSharedProductImageProfileMatchesQualification`). Its budget
+  fields are host-side runtime limits, not in the object or the digests; the
+  values are the qualification sizes: CompileBytes 8 MiB, TelemetryBytes
+  4096, CandidateBytes 1 MiB, RolloutBytes 4096, PossibleCPUs 64 (see
+  "Geometry limits" for the 64-CPU host limit). node-agent compiles in
+  `g19pkg128`.
+- **Names.** `enforce-exec-shared:<profile>`, tagged in a layout under its
+  normalized name (`ghcr.io/inspektor-gadget/gadget/enforce-exec-shared:...`,
+  like any short gadget name). The manifest-digest check is node-agent's,
+  not IG's: the agent resolves the name in `tracers.tar` and pins the
+  manifest digest, so a re-wrapped index (`ig image export`) is harmless. IG
+  has no manifest or index check at run time; its runtime binding of an
+  image is the loaded object's sha256 (one of this release's product
+  objects), the probe targets (no `attach_to` override) and the geometry
+  annotations.
 - **Build.** `make enforce-exec-product-images` rebuilds the objects in the
   pinned container, then runs `cmd/productimages` on the host: it writes the
   OCI layout `enforce-exec-product-objects/layout` and
@@ -478,66 +487,71 @@ a manual EC2 gate** (the product attached tests with
 
 ### Exported kernel check (other enforcement sections)
 
-The identity check that gates the shared engine is exported for other BPF
-LSM sections (`kernel_identity.go`), so they do not keep a copy of it:
+The product kernel gate is exported for other BPF LSM sections
+(`kernel_identity.go`, `kernel_matrix.go`), so they do not keep a copy of it:
 
-- `QualifiedKernels() []KernelIdentity`: the pinned builds above
-  (`Arch`, `Release`, `BTF`, `BuildID`), sorted by release.
-- `VerifyKernel(qualified []KernelIdentity) (KernelIdentity, error)`: the
-  start check. It admits the running kernel only if it is exactly one entry
-  of `qualified` (architecture, BTF sha256, release and GNU build-id), `bpf`
-  is in the active LSM list, `ftrace_enabled=1` and `TAINT_LIVEPATCH` is
-  clear. The shared engine's own gate runs the same code over its pins.
-- `AdmitKernel(qualified []KernelIdentity) (KernelIdentity, KernelTier, error)`:
-  `VerifyKernel` with probed admission. An exact entry of `qualified` is
-  `KernelTierQualified`; any other build of a listed architecture that passes
-  the same controls, with a readable lowercase-hex BTF digest, a release and
-  a build-id, is `KernelTierProbed` and the running identity is returned. A
-  wrong architecture, a malformed list, a failed control and a read failure
-  are still refused. The shared engine's gate is this check over its pins.
-- `SharedProductKernel() (KernelIdentity, KernelTier, error)`: the shared
-  engine's product gate on the running kernel, for status reporting.
-- `SelectSharedProductImage(entries)`: on a probed kernel it selects the
-  `SharedProbedKernelEntry` (`"probed"`) entry, never a digest entry.
+- `SharedProductKernel() (KernelIdentity, error)`: the shared engine's
+  product kernel gate on the running kernel, in order: architecture amd64, a
+  readable lowercase-hex BTF digest, a non-empty release, a lowercase-hex
+  build-id, then `bpf` in the active LSM list, `ftrace_enabled=1` and no
+  livepatch. It returns the running identity (for status reporting). A
+  refusal wraps both the `*KernelCheckError` (`errors.As`) and
+  `ErrSharedNativeUnavailable`. `StartNode` and the product image admission
+  run the same gate.
+- `AdmitKernel() (KernelIdentity, error)`: the same checks, for the other
+  BPF LSM sections; a refusal is a bare `*KernelCheckError` (it does not
+  wrap `ErrSharedNativeUnavailable`). There is no list parameter: every
+  kernel is admitted the same way.
 - `CheckKernelRuntime() error`: re-reads ftrace and the livepatch taint.
   Call it at every status computation; it is never cached.
 
+The qualification record API is unchanged and does not take part in the
+product admission:
+
+- `QualifiedKernels() []KernelIdentity`: the builds the suites ran on (the
+  table above: `Arch`, `Release`, `BTF`, `BuildID`), sorted by release.
+- `VerifyKernel(qualified []KernelIdentity) (KernelIdentity, error)`: an
+  exact-build check for a caller that wants one. It admits the running
+  kernel only if it is exactly one entry of `qualified` (architecture, BTF
+  sha256, release and GNU build-id) and passes the same controls. It refuses
+  an empty list, a malformed entry (an empty field, a BTF digest that is not
+  64 lowercase hex characters such as `"*"`, a non-hex build-id) or a BTF
+  digest listed twice (`qualified-list`); there is no wildcard, and
+  configuration must never add an entry.
+
 Every failure is a `*KernelCheckError` whose `Check` names the failed check
-(`qualified-list`, `arch`, `btf`, `release`, `build-id`, `bpf-lsm`, `ftrace`,
-`livepatch`) and whose message gives the reason. A read failure is a failed
-check, and so is an empty list, a malformed entry (an empty field, a BTF
-digest that is not 64 lowercase hex characters such as `"*"`, a non-hex
-build-id) or a BTF digest listed twice. There is no wildcard: `VerifyKernel`
-passes only a listed build, and `AdmitKernel` reports any other as probed. A section passes its own compiled-in
-list, built from `QualifiedKernels()` or from entries with its own posted
-evidence; configuration must never add an entry. If `VerifyKernel` or
-`AdmitKernel` fails, the section must not load. If `CheckKernelRuntime` fails, the section is NotReady
-and counts as unprotected: ftrace off stops BPF trampolines, so it is
-detected, not guarded (see the measurement above).
+(`arch`, `btf`, `release`, `build-id`, `bpf-lsm`, `ftrace`, `livepatch`, and
+`qualified-list` for `VerifyKernel` only) and whose message gives the reason.
+A read failure is a failed check, never a pass. If `AdmitKernel` fails, the
+section must not load. If `CheckKernelRuntime` fails, the section is
+NotReady and counts as unprotected: ftrace off stops BPF trampolines, so it
+is detected, not guarded (see the measurement above).
 
-### Why qualified builds
+### What the probes cannot prove
 
-CO-RE relocates field offsets but cannot verify:
+CO-RE relocates field offsets and the verifier accepts or refuses the
+object, but neither can verify:
 
 - hook semantics and ordering across the exec paths;
-- verifier acceptance of the spin-lock object on each kernel's verifier (the
-  combined-stack limit is counted differently across releases);
-- exec-path behaviour changed by AL2023 backports under the same version
-  string.
+- exec-path behaviour changed by distribution backports under the same
+  version string.
 
-The costs are asymmetric. On an unproven kernel, Strict either fails closed
-node-wide (an exec outage) or silently misses an exec path while reporting
-Ready. A probed kernel takes that risk, reduced by the checks listed in the
-statement above, and reports its tier so an operator can tell it from a
-qualified build.
+The costs are asymmetric. On a kernel no suite ran on, Strict either fails
+closed node-wide (an exec outage) or silently misses an exec path while
+reporting Ready. The startup canary and the live witness reduce that risk
+(an unattached or silent hook refuses the start or latches NotReady) but do
+not remove it: they prove the hooks run, not that the verdicts are right.
+The AL2023 builds above are the kernels on which the kernel suites proved
+the verdicts.
 
 ### Support window and AMI pinning
 
-The rule, not a calendar date: qualified support covers exactly the builds
-above. A node that moves to any other kernel build, newer or not, runs as
-probed until that build is qualified and pinned in a new IG release. A
-livepatch, a missing bpf LSM or ftrace off is refused on every build. Support for a node ends when its
-operator moves it to another AMI or kernel.
+The rule, not a calendar date: every kernel that passes the product gate is
+admitted, on every AMI. Suite evidence covers exactly the builds above; a
+node that moves to any other kernel build runs on the probes alone until a
+suite runs on that build. A livepatch, a missing bpf LSM, ftrace off, an
+unreadable identity or a failed `FMODE_BACKING` probe is refused on every
+build.
 
 ### Operational facts and unproven items
 
@@ -554,7 +568,7 @@ operator moves it to another AMI or kernel.
 - Limits of the G011 evidence: in-pod reads cover verdicts and self-status
   only, facts are shown by outcome, and the default build has no fact counters.
   The restart ordering of Ready versus re-protection is ordered by code but not
-  decidable from the evidence at 1 s resolution. SELinux was Permissive. Selection of the per-kernel image map entry is evidenced only through the wrong-digest negative; the positive run shows the selected entry works, not which entry was chosen.
+  decidable from the evidence at 1 s resolution. SELinux was Permissive. G011 still used a per-kernel image map: its selection was evidenced only through the wrong-digest negative (the images are now one per profile).
 
 ### Geometry limits
 
@@ -627,7 +641,7 @@ Every host must follow these rules; the node enforces them by refusal.
 
 ### Future work (not implemented)
 
-1. **Startup self-test on an unlisted kernel:** load, probe execs, check hook
+1. **Startup self-test on a kernel no suite ran on:** load, probe execs, check hook
    firing and ordering, then enable.
    - Pro: broad coverage.
    - Cons: proves only the exercised paths (races, binfmt_misc, ptrace and rare
@@ -646,7 +660,7 @@ Every host must follow these rules; the node enforces them by refusal.
    kubescape/inspektor-gadget#27).
    - Pro: today's proof strength.
    - Cons: about an hour of EC2 per kernel; needs a pipeline that tracks vendor
-     updates; the allowlist lags new AMIs.
+     updates; the qualification record lags new AMIs.
 
 The likely combination is (4) for support claims, with (3) and (1) only as a
 pre-check, never as a Ready claim.

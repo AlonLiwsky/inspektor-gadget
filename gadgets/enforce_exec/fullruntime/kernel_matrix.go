@@ -46,10 +46,12 @@ func supportedKernelBTF(digest string) bool {
 	}
 }
 
-// sharedProductPin is one exact kernel build the shared product node is
-// qualified on (G011 pass 1; checklist step 0 values, mirrored in
-// testdata/shared_product_pins.tsv). The BTF digest alone does not identify a
-// build: the release and the vmlinux GNU build-id must match too.
+// sharedProductPin is one exact kernel build the shared product node's
+// kernel suites ran on (G011 pass 1; checklist step 0 values, mirrored in
+// testdata/shared_product_pins.tsv). It is the qualification record
+// (QualifiedKernels, VerifyKernel, the qualification-build candidate matrix
+// sharedCandidateKernelBTF), never a product admission: the product gate
+// admits every kernel on its probes (verifySharedProductKernel).
 type sharedProductPin struct {
 	Release string // uname -r
 	BuildID string // vmlinux GNU build-id (hex) from /sys/kernel/notes
@@ -57,32 +59,12 @@ type sharedProductPin struct {
 	// lsm/bprm_creds_for_exec .. tp_btf/sys_exit on every kernel, so a pin
 	// carries no per-kernel handler choice.
 	//
-	// FmodeBacking is the FMODE_BACKING bit of this build
-	// (include/linux/fs.h; source-verified). The live probe only
-	// cross-checks it (kernel_probe.go sharedFmodeBacking).
-	FmodeBacking uint32
 	// ProductObjects is the set of product object sha256 (a subset of
-	// sharedProductObjects) QUALIFIED on this pinned build: the product
-	// admits only a (kernel, object) pair that ran its oracle there (S1
-	// review F1). Literal digests, never derived from sharedProductObjects:
-	// a rebuilt object is NOT qualified until it runs the oracle on the pin.
+	// sharedProductObjects) that ran the oracle on this build: recorded
+	// evidence (shared_product_pins.tsv column 4, which the AL2023
+	// product-load harness reads). Literal digests, never derived from
+	// sharedProductObjects. The product image admission does not read it.
 	ProductObjects map[string]struct{}
-	// Tier is set on the pin verifySharedProductKernel returns, never in
-	// sharedProductPins: KernelTierQualified for an exact pinned build,
-	// KernelTierProbed for the synthetic pin of a probed kernel (its
-	// release and build-id, every product object of this release, and no
-	// FmodeBacking: the live probe decides).
-	Tier KernelTier
-}
-
-// qualifiesProductObject reports whether digest is a product object of this
-// release that is qualified on pin.
-func (pin sharedProductPin) qualifiesProductObject(digest string) bool {
-	if !sharedProductObject(digest) {
-		return false
-	}
-	_, ok := pin.ProductObjects[digest]
-	return ok
 }
 
 // sharedProductObjects is the sha256 set of the product objects of THIS
@@ -113,9 +95,8 @@ func sharedProductObject(digest string) bool {
 // sharedProductPins maps a vmlinux BTF sha256 to its pinned build.
 var sharedProductPins = map[string]sharedProductPin{
 	"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": {
-		Release:      "6.12.113-138.209.amzn2023.x86_64",
-		BuildID:      "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
-		FmodeBacking: sharedFmodeBacking24,
+		Release: "6.12.113-138.209.amzn2023.x86_64",
+		BuildID: "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
 		// G003 pr35-review-refresh-r1: oracle-al2023-k612 (D3 34, D1 18)
 		// and product-al2023-k612 (9 checks); 0 FAIL, 0 SKIP.
 		ProductObjects: map[string]struct{}{
@@ -126,9 +107,8 @@ var sharedProductPins = map[string]sharedProductPin{
 		},
 	},
 	"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
-		Release:      "6.18.56-125.164.amzn2023.x86_64",
-		BuildID:      "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
-		FmodeBacking: sharedFmodeBacking24,
+		Release: "6.18.56-125.164.amzn2023.x86_64",
+		BuildID: "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
 		// G003 pr35-review-refresh-r1: oracle-al2023-k618 (D3 34, D1 18)
 		// and product-al2023-k618 (9 checks); 0 FAIL, 0 SKIP.
 		ProductObjects: map[string]struct{}{
@@ -379,45 +359,29 @@ var sharedProductKernelProbes = sharedProductKernelProbe{
 var sharedProductKernelCheck = verifySharedProductKernel
 
 // verifySharedProductKernel is the product kernel gate (admitKernelIdentity,
-// the check exported as AdmitKernel, over sharedProductPins). An exact
-// sharedProductPins build (x86_64, pinned vmlinux BTF digest, its release
-// and GNU build-id, bpf LSM active, ftrace enabled, no livepatch) is admitted
-// with its pin, Tier KernelTierQualified. Any other x86_64 build that passes
-// the runtime probes is admitted with a synthetic pin, Tier
-// KernelTierProbed: its own release and build-id, every product object of
-// this release, and no pinned FMODE_BACKING bit. It returns the running BTF
-// digest and the pin. Every refusal wraps ErrSharedNativeUnavailable with the
-// reason.
-func verifySharedProductKernel() (string, sharedProductPin, error) {
-	id, tier, err := admitKernelIdentity(sharedProductKernelProbes, sharedProductIdentities)
+// the check exported as AdmitKernel): amd64, a readable lowercase-hex vmlinux
+// BTF sha256, a non-empty release, a lowercase-hex GNU build-id, bpf LSM
+// active, ftrace enabled and no livepatch. Every kernel is admitted the same
+// way, on these checks; the pinned AL2023 builds (sharedProductPins) are the
+// qualification record and play no part here. It returns the running
+// kernel's identity. Every refusal wraps both the *KernelCheckError and
+// ErrSharedNativeUnavailable.
+func verifySharedProductKernel() (KernelIdentity, error) {
+	id, err := admitKernelIdentity(sharedProductKernelProbes)
 	if err != nil {
-		return "", sharedProductPin{}, fmt.Errorf("shared product node refused: %w: %w", err, ErrSharedNativeUnavailable)
+		return KernelIdentity{}, fmt.Errorf("shared product node refused: %w: %w", err, ErrSharedNativeUnavailable)
 	}
-	if tier == KernelTierProbed {
-		objects := make(map[string]struct{}, len(sharedProductObjects))
-		for _, digest := range sharedProductObjects {
-			objects[digest] = struct{}{}
-		}
-		return id.BTF, sharedProductPin{Release: id.Release, BuildID: id.BuildID, ProductObjects: objects, Tier: KernelTierProbed}, nil
-	}
-	pin, ok := sharedProductPins[id.BTF]
-	if !ok {
-		return "", sharedProductPin{}, fmt.Errorf("shared product node refused: no product pin for BTF %s: %w", id.BTF, ErrSharedNativeUnavailable)
-	}
-	pin.Tier = KernelTierQualified
-	return id.BTF, pin, nil
+	return id, nil
 }
 
-// SharedProductKernel runs the product kernel gate on the running kernel and
-// reports its identity and how it was admitted (KernelTierQualified for an
-// exact pinned build, KernelTierProbed otherwise). A refusal wraps
-// ErrSharedNativeUnavailable. Agents report the tier in their status.
-func SharedProductKernel() (KernelIdentity, KernelTier, error) {
-	digest, pin, err := sharedProductKernelCheck()
-	if err != nil {
-		return KernelIdentity{}, "", err
-	}
-	return KernelIdentity{Arch: sharedProductImageArch, Release: pin.Release, BTF: digest, BuildID: pin.BuildID}, pin.Tier, nil
+// SharedProductKernel is the product kernel gate on the running kernel
+// (amd64, a readable BTF digest, release and build-id, bpf LSM active,
+// ftrace enabled, no livepatch) and returns its identity for status
+// reporting. StartNode's product path and the product image admission run
+// the same gate. A refusal wraps both a *KernelCheckError (errors.As) and
+// ErrSharedNativeUnavailable.
+func SharedProductKernel() (KernelIdentity, error) {
+	return sharedProductKernelCheck()
 }
 
 // taintLivepatch is TAINT_LIVEPATCH (bit 15, include/linux/panic.h).
@@ -609,8 +573,8 @@ func sharedImageOverlayConstants() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// FMODE_BACKING: the pinned bit on a pinned kernel (cross-checked by the
-	// live probe), the probed bit elsewhere (kernel_probe.go). Unset (0)
+	// FMODE_BACKING: the live probe's bit on every kernel (kernel_probe.go;
+	// a failed probe refuses). Unset (0)
 	// with a layout is refused by the classifier like an unset layout, with
 	// the reason; a failure is not cached, the next load computes it again.
 	backing := uint32(0)

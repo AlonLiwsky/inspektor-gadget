@@ -111,17 +111,17 @@ func TestVerifyKernel(t *testing.T) {
 	}
 }
 
-// TestAdmitKernel: an exact build of the list is qualified; any other build
-// of a listed architecture that passes the probes is probed, with its own
-// identity; a wrong architecture, a malformed list, a failed control and an
-// unreadable or malformed identity are refused with a *KernelCheckError.
+// TestAdmitKernel: every kernel is admitted the same way, on its checks: a
+// pinned AL2023 build and any other build that passes them return their own
+// identity; a wrong architecture, a failed control and an unreadable or
+// malformed identity are refused with a bare *KernelCheckError (it does not
+// wrap ErrSharedNativeUnavailable).
 func TestAdmitKernel(t *testing.T) {
 	all := QualifiedKernels()
 	for _, want := range all {
 		useProductKernel(t, pinnedProductKernel(want.BTF))
-		got, tier, err := AdmitKernel(all)
-		if err != nil || got != want || tier != KernelTierQualified {
-			t.Fatalf("%s: %+v %q %v", want.Release, got, tier, err)
+		if got, err := AdmitKernel(); err != nil || got != want {
+			t.Fatalf("%s: %+v %v", want.Release, got, err)
 		}
 	}
 	first, second := all[0], all[1]
@@ -129,52 +129,48 @@ func TestAdmitKernel(t *testing.T) {
 		"unlisted BTF":                func(k *fakeProductKernel) { k.digest = strings.Repeat("0", 64) },
 		"release of the other build":  func(k *fakeProductKernel) { k.release = second.Release },
 		"build-id of the other build": func(k *fakeProductKernel) { k.buildID = second.BuildID },
+		"release with spaces":         func(k *fakeProductKernel) { k.release = " 7.0.0-43-generic\n" },
 	} {
 		k := pinnedProductKernel(first.BTF)
 		mutate(k)
 		useProductKernel(t, k)
-		got, tier, err := AdmitKernel(all)
-		want := KernelIdentity{Arch: "amd64", Release: k.release, BTF: k.digest, BuildID: k.buildID}
-		if err != nil || tier != KernelTierProbed || got != want {
-			t.Errorf("%s: %+v %q %v, want probed %+v", name, got, tier, err, want)
+		got, err := AdmitKernel()
+		want := KernelIdentity{Arch: "amd64", Release: strings.TrimSpace(k.release), BTF: k.digest, BuildID: k.buildID}
+		if err != nil || got != want {
+			t.Errorf("%s: %+v %v, want %+v", name, got, err, want)
 		}
 	}
-	// A list holding only the other build: the running one is probed.
-	useProductKernel(t, pinnedProductKernel(first.BTF))
-	if _, tier, err := AdmitKernel([]KernelIdentity{second}); err != nil || tier != KernelTierProbed {
-		t.Fatalf("other build listed: %q %v", tier, err)
-	}
 	readErr := errors.New("read failed")
+	unpinned := strings.Repeat("0", 64)
 	for _, tc := range []struct {
-		name      string
-		qualified []KernelIdentity
-		mutate    func(*fakeProductKernel)
-		check     string
+		name   string
+		mutate func(*fakeProductKernel)
+		check  string
 	}{
-		{"empty list", nil, nil, KernelCheckQualifiedList},
-		{"malformed list", []KernelIdentity{{Arch: "x86_64", Release: first.Release, BTF: first.BTF, BuildID: first.BuildID}}, nil, KernelCheckQualifiedList},
-		{"other arch", all, func(k *fakeProductKernel) { k.arch = "arm64" }, KernelCheckArch},
-		{"no bpf LSM, pinned", all, func(k *fakeProductKernel) { k.lsm = "selinux" }, KernelCheckBPFLSM},
-		{"no bpf LSM, unpinned", all, func(k *fakeProductKernel) { k.digest, k.lsm = strings.Repeat("0", 64), "selinux" }, KernelCheckBPFLSM},
-		{"ftrace off, unpinned", all, func(k *fakeProductKernel) { k.digest, k.ftrace = strings.Repeat("0", 64), "0\n" }, KernelCheckFtrace},
-		{"livepatched, unpinned", all, func(k *fakeProductKernel) { k.digest, k.tainted = strings.Repeat("0", 64), fmt.Sprint(taintLivepatch) }, KernelCheckLivepatch},
-		{"BTF read failure", all, func(k *fakeProductKernel) { k.digestErr = readErr }, KernelCheckBTF},
-		{"uppercase BTF", all, func(k *fakeProductKernel) { k.digest = strings.ToUpper(strings.Repeat("ab", 32)) }, KernelCheckBTF},
-		{"release read failure, unpinned", all, func(k *fakeProductKernel) { k.digest, k.releaseErr = strings.Repeat("0", 64), readErr }, KernelCheckRelease},
-		{"empty release, unpinned", all, func(k *fakeProductKernel) { k.digest, k.release = strings.Repeat("0", 64), " " }, KernelCheckRelease},
-		{"build-id read failure", all, func(k *fakeProductKernel) { k.buildIDErr = readErr }, KernelCheckBuildID},
-		{"empty build-id, unpinned", all, func(k *fakeProductKernel) { k.digest, k.buildID = strings.Repeat("0", 64), "" }, KernelCheckBuildID},
+		{"other arch", func(k *fakeProductKernel) { k.arch = "arm64" }, KernelCheckArch},
+		{"uname arch spelling", func(k *fakeProductKernel) { k.arch = "x86_64" }, KernelCheckArch},
+		{"no bpf LSM, pinned", func(k *fakeProductKernel) { k.lsm = "selinux" }, KernelCheckBPFLSM},
+		{"no bpf LSM, unpinned", func(k *fakeProductKernel) { k.digest, k.lsm = unpinned, "selinux" }, KernelCheckBPFLSM},
+		{"LSM read failure", func(k *fakeProductKernel) { k.lsmErr = readErr }, KernelCheckBPFLSM},
+		{"ftrace off, unpinned", func(k *fakeProductKernel) { k.digest, k.ftrace = unpinned, "0\n" }, KernelCheckFtrace},
+		{"livepatched, unpinned", func(k *fakeProductKernel) { k.digest, k.tainted = unpinned, fmt.Sprint(taintLivepatch) }, KernelCheckLivepatch},
+		{"BTF read failure", func(k *fakeProductKernel) { k.digestErr = readErr }, KernelCheckBTF},
+		{"uppercase BTF", func(k *fakeProductKernel) { k.digest = strings.ToUpper(strings.Repeat("ab", 32)) }, KernelCheckBTF},
+		{"short BTF", func(k *fakeProductKernel) { k.digest = "ab" }, KernelCheckBTF},
+		{"release read failure", func(k *fakeProductKernel) { k.digest, k.releaseErr = unpinned, readErr }, KernelCheckRelease},
+		{"empty release", func(k *fakeProductKernel) { k.digest, k.release = unpinned, " " }, KernelCheckRelease},
+		{"build-id read failure", func(k *fakeProductKernel) { k.buildIDErr = readErr }, KernelCheckBuildID},
+		{"empty build-id", func(k *fakeProductKernel) { k.digest, k.buildID = unpinned, "" }, KernelCheckBuildID},
+		{"uppercase build-id", func(k *fakeProductKernel) { k.buildID = strings.ToUpper(k.buildID) }, KernelCheckBuildID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			k := pinnedProductKernel(first.BTF)
-			if tc.mutate != nil {
-				tc.mutate(k)
-			}
+			tc.mutate(k)
 			useProductKernel(t, k)
-			got, tier, err := AdmitKernel(tc.qualified)
-			var kerr *KernelCheckError
-			if !errors.As(err, &kerr) || kerr.Check != tc.check || tier != "" || got != (KernelIdentity{}) {
-				t.Fatalf("got %+v %q err %v, want check %q", got, tier, err, tc.check)
+			got, err := AdmitKernel()
+			kerr, ok := err.(*KernelCheckError)
+			if !ok || kerr.Check != tc.check || errors.Is(err, ErrSharedNativeUnavailable) || got != (KernelIdentity{}) {
+				t.Fatalf("got %+v err %v, want a bare *KernelCheckError %q", got, err, tc.check)
 			}
 		})
 	}

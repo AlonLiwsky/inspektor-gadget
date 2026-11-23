@@ -97,8 +97,8 @@ func TestSharedProbedKernelOverrideBuild(t *testing.T) {
 // TestSharedProbedKernelLiveRefusal (D3 oracle, on the running kernel): a
 // kernel that is not an exact pinned build is refused by the candidate gate
 // without the test-only override, whatever its probes say; a pinned build is
-// admitted. The product gate admits both, as qualified or probed.
-// IG_SHARED_PROBED_LIVE=1 (VM).
+// admitted. The product gate treats both alike: it admits the kernel on its
+// probes or refuses it typed. IG_SHARED_PROBED_LIVE=1 (VM).
 func TestSharedProbedKernelLiveRefusal(t *testing.T) {
 	if os.Getenv("IG_SHARED_PROBED_LIVE") != "1" {
 		t.Skip("set IG_SHARED_PROBED_LIVE=1 on a VM")
@@ -115,18 +115,17 @@ func TestSharedProbedKernelLiveRefusal(t *testing.T) {
 	if pinned != (err == nil) {
 		t.Fatalf("pinned=%v, candidate gate without the override: %v", pinned, err)
 	}
-	// The product gate admits a pinned build as qualified; any other build
-	// as probed, or refuses it (a VM without the bpf LSM, ftrace off).
-	_, pin, perr := verifySharedProductKernel()
-	switch {
-	case pinned && (perr != nil || pin.Tier != KernelTierQualified):
-		t.Fatalf("pinned build, product gate: tier %q %v", pin.Tier, perr)
-	case !pinned && perr == nil && pin.Tier != KernelTierProbed:
-		t.Fatalf("unpinned build admitted with tier %q", pin.Tier)
-	case !pinned && perr != nil && !errors.Is(perr, ErrSharedNativeUnavailable):
-		t.Fatalf("unpinned build refused untyped: %v", perr)
+	// The product gate does not consult the pins: it admits any kernel on
+	// its probes, or refuses it typed (a VM without the bpf LSM, ftrace off).
+	id, perr := verifySharedProductKernel()
+	var kerr *KernelCheckError
+	if perr != nil && (!errors.Is(perr, ErrSharedNativeUnavailable) || !errors.As(perr, &kerr)) {
+		t.Fatalf("product gate refused untyped: %v", perr)
 	}
-	t.Logf("product gate: tier %q %v", pin.Tier, perr)
+	if perr == nil && id.BTF != digest {
+		t.Fatalf("product gate identity %+v, running BTF %s", id, digest)
+	}
+	t.Logf("product gate: %+v %v", id, perr)
 	t.Logf("pinned=%v candidate gate: %v", pinned, err)
 }
 
@@ -144,102 +143,46 @@ func btfMemberOffsetAny(spec *btf.Spec, structName, member string) (uint32, erro
 	return 0, fmt.Errorf("BTF %s.%s: no such member", structName, member)
 }
 
-// TestSharedFmodeBackingPinnedAndProbed: on a pinned kernel the pinned bit
-// survives a probe that cannot run and is refused only by a probe that
-// contradicts it; elsewhere the probe decides. A refusal is never cached.
-func TestSharedFmodeBackingPinnedAndProbed(t *testing.T) {
-	oldProbe, oldPinned := fmodeBackingProbe, fmodeBackingPinned
+// TestSharedFmodeBackingProbeDecides: the live probe decides the
+// FMODE_BACKING bit on every kernel, a pinned AL2023 build included; a
+// failed probe refuses and is never cached, a success is cached.
+func TestSharedFmodeBackingProbeDecides(t *testing.T) {
+	oldProbe := fmodeBackingProbe
 	reset := func() {
 		sharedFmodeBackingMu.Lock()
 		sharedFmodeBackingValue = 0
 		sharedFmodeBackingMu.Unlock()
 	}
-	t.Cleanup(func() { fmodeBackingProbe, fmodeBackingPinned = oldProbe, oldPinned; reset() })
+	t.Cleanup(func() { fmodeBackingProbe = oldProbe; reset() })
 	boom := errors.New("fsconfig overlay create: invalid argument")
-	calls := 0
-	set := func(pinned uint32, probed uint32, err error) {
-		reset()
-		calls = 0
-		fmodeBackingPinned = func() (uint32, bool) { return pinned, pinned != 0 }
-		fmodeBackingProbe = func(uint32) (uint32, error) { calls++; return probed, err }
-	}
 	const layout = sharedImageOverlayLayoutRealFile
-
-	set(sharedFmodeBacking24, 0, boom)
-	for i := 1; i <= 2; i++ {
-		if got, err := sharedFmodeBacking(layout); err != nil || got != sharedFmodeBacking24 {
-			t.Fatalf("pinned, probe unavailable: %#x, %v", got, err)
-		}
-		if calls != i {
-			t.Fatalf("pinned, probe unavailable: %d probes after %d calls (the cross-check must be retried)", calls, i)
-		}
+	kernels := []*fakeProductKernel{arbitraryProductKernel()}
+	for _, d := range sharedProductPinDigests() {
+		kernels = append(kernels, pinnedProductKernel(d))
 	}
-	set(sharedFmodeBacking24, sharedFmodeBacking25, nil)
-	for i := 1; i <= 2; i++ {
-		if got, err := sharedFmodeBacking(layout); err == nil || got != 0 || !strings.Contains(err.Error(), "contradicts the pinned bit") {
-			t.Fatalf("pinned, probe mismatch: %#x, %v", got, err)
-		}
-	}
-	if calls != 2 {
-		t.Fatalf("a mismatch was cached: %d probes", calls)
-	}
-	set(sharedFmodeBacking24, sharedFmodeBacking24, nil)
-	for range 2 {
-		if got, err := sharedFmodeBacking(layout); err != nil || got != sharedFmodeBacking24 {
-			t.Fatalf("pinned, confirmed: %#x, %v", got, err)
-		}
-	}
-	if calls != 1 {
-		t.Fatalf("a confirmed bit was not cached: %d probes", calls)
-	}
-	set(0, 0, boom)
-	if got, err := sharedFmodeBacking(layout); !errors.Is(err, boom) || got != 0 {
-		t.Fatalf("unpinned, probe failed: %#x, %v", got, err)
-	}
-	fmodeBackingProbe = func(uint32) (uint32, error) { calls++; return sharedFmodeBacking25, nil }
-	if got, err := sharedFmodeBacking(layout); err != nil || got != sharedFmodeBacking25 || calls != 2 {
-		t.Fatalf("unpinned, retry after a failure: %#x, %v, %d probes", got, err, calls)
-	}
-	for digest, pin := range sharedProductPins {
-		if pin.FmodeBacking != sharedFmodeBacking24 {
-			t.Errorf("pin %s (%s): FMODE_BACKING %#x, want the source-verified bit 24", digest, pin.Release, pin.FmodeBacking)
-		}
-	}
-}
-
-// TestPinnedSharedFmodeBackingNeedsTheBuild: the pinned FMODE_BACKING bit
-// is used only on the exact pinned build; a kernel that shares a pinned BTF
-// with another release or build-id, or whose identity is unreadable, gets
-// none (the live probe then decides, and a failed probe refuses).
-func TestPinnedSharedFmodeBackingNeedsTheBuild(t *testing.T) {
-	digest := sharedProductPinDigests()[0]
-	useProductKernel(t, pinnedProductKernel(digest))
-	if bit, ok := pinnedSharedFmodeBacking(); !ok || bit != sharedProductPins[digest].FmodeBacking {
-		t.Fatalf("pinned build: %#x %v", bit, ok)
-	}
-	for name, mutate := range map[string]func(*fakeProductKernel){
-		"other build-id":   func(k *fakeProductKernel) { k.buildID = strings.Repeat("0", 40) },
-		"other release":    func(k *fakeProductKernel) { k.release = "6.12.114-139.210.amzn2023.x86_64" },
-		"unpinned BTF":     func(k *fakeProductKernel) { k.digest = strings.Repeat("0", 64) },
-		"unreadable BTF":   func(k *fakeProductKernel) { k.digestErr = os.ErrPermission },
-		"unreadable build": func(k *fakeProductKernel) { k.buildIDErr = os.ErrPermission },
-	} {
-		k := pinnedProductKernel(digest)
-		mutate(k)
+	for _, k := range kernels {
 		useProductKernel(t, k)
-		if bit, ok := pinnedSharedFmodeBacking(); ok || bit != 0 {
-			t.Errorf("%s: pinned bit %#x used", name, bit)
+		reset()
+		calls := 0
+		fmodeBackingProbe = func(uint32) (uint32, error) { calls++; return 0, boom }
+		for i := 1; i <= 2; i++ {
+			if got, err := sharedFmodeBacking(layout); !errors.Is(err, boom) || got != 0 || calls != i {
+				t.Fatalf("%s, probe failed: %#x, %v, %d probes after %d calls (a refusal must not be cached)", k.release, got, err, calls, i)
+			}
 		}
-	}
-	// Through sharedFmodeBacking: no pinned bit and a failed probe refuse.
-	k := pinnedProductKernel(digest)
-	k.buildID = strings.Repeat("0", 40)
-	useProductKernel(t, k)
-	oldProbe, oldValue := fmodeBackingProbe, sharedFmodeBackingValue
-	t.Cleanup(func() { fmodeBackingProbe, sharedFmodeBackingValue = oldProbe, oldValue })
-	sharedFmodeBackingValue = 0
-	fmodeBackingProbe = func(uint32) (uint32, error) { return 0, errors.New("no layer directory") }
-	if bit, err := sharedFmodeBacking(sharedImageOverlayLayoutOvlFile); err == nil || bit != 0 {
-		t.Fatalf("probed kernel with a failed probe: %#x %v", bit, err)
+		// The probe's bit is used, whatever the build (25 on a pinned build
+		// whose source has 24: the probe still decides).
+		fmodeBackingProbe = func(uint32) (uint32, error) { calls++; return sharedFmodeBacking25, nil }
+		for range 2 {
+			if got, err := sharedFmodeBacking(layout); err != nil || got != sharedFmodeBacking25 {
+				t.Fatalf("%s, probe succeeded: %#x, %v", k.release, got, err)
+			}
+		}
+		if calls != 3 {
+			t.Fatalf("%s: a probed bit was not cached: %d probes", k.release, calls)
+		}
+		if note := sharedFmodeBackingNote.Load(); note == nil || *note != "probed 0x2000000" {
+			t.Fatalf("%s: note %v", k.release, note)
+		}
 	}
 }

@@ -132,8 +132,8 @@ func buildSharedProductLayout(t *testing.T, dir string, objects map[[2]string]st
 		if want := pinned[pin.Release]; len(want) <= i || digest != want[i] {
 			t.Fatalf("%s: sha256 %s is not the pinned product ELF of %s profile %s (%v)", path, digest, pin.Release, profile, want)
 		}
-		if !pin.qualifiesProductObject(digest) {
-			t.Fatalf("%s: sha256 %s is not a qualified product ELF of %s", path, digest, pin.Release)
+		if !sharedProductObject(digest) {
+			t.Fatalf("%s: sha256 %s is not a product ELF of this release", path, digest)
 		}
 		ref, err := BuildSharedCandidateImageRef(t.Context(), store, elf, KernelMatrixEntry{
 			Release: pin.Release, Profile: p,
@@ -143,9 +143,9 @@ func buildSharedProductLayout(t *testing.T, dir string, objects map[[2]string]st
 		}
 		images = append(images, sharedProductLayoutImage{Kernel: kernel, Profile: profile, Ref: ref, Object: filepath.Base(path), ObjectSHA256: digest})
 	}
-	// Negative images: objects qualified on no pin, packaged like a product
-	// image (profile 128 geometry) so the product StartNode must refuse
-	// them on their digest.
+	// Negative images: objects that are not product objects of this release,
+	// packaged like a product image (profile 128 geometry) so the product
+	// StartNode must refuse them on their digest.
 	for _, path := range negatives {
 		elf, err := os.ReadFile(path)
 		if err != nil {
@@ -153,10 +153,8 @@ func buildSharedProductLayout(t *testing.T, dir string, objects map[[2]string]st
 		}
 		sum := sha256.Sum256(elf)
 		digest := hex.EncodeToString(sum[:])
-		for _, pin := range sharedProductPins {
-			if pin.qualifiesProductObject(digest) {
-				t.Fatalf("negative %s: sha256 %s is qualified on %s", path, digest, pin.Release)
-			}
+		if sharedProductObject(digest) {
+			t.Fatalf("negative %s: sha256 %s is a product object of this release", path, digest)
 		}
 		p, _, _ := sharedProductProfileNamed("128")
 		var release string
