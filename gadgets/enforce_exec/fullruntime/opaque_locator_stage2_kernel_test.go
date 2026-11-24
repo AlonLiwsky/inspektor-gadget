@@ -109,7 +109,7 @@ func stage2PopulatePolicy(t *testing.T, maps map[string]*ebpf.Map, scope uint64,
 		maps["opaque_lifecycle_policy_object"], maps["opaque_lifecycle_policy_snapshot"]
 	if blobs == nil || object == nil || snapshot == nil ||
 		blobs.MaxEntries() != 11 || blobs.ValueSize() != 288 ||
-		object.ValueSize() != 80 || snapshot.ValueSize() != 784 {
+		object.ValueSize() != 80 || snapshot.ValueSize() != sharedSnapshotBytes {
 		t.Fatal("invalid synthetic policy map geometry")
 	}
 	for key := uint32(0); key < 11; key++ {
@@ -150,7 +150,7 @@ func stage2PopulatePolicy(t *testing.T, maps map[string]*ebpf.Map, scope uint64,
 			t.Fatal(err)
 		}
 	}
-	snapshotValue := make([]byte, 784)
+	snapshotValue := make([]byte, sharedSnapshotBytes)
 	binary.LittleEndian.PutUint64(snapshotValue[0:8], scope)
 	binary.LittleEndian.PutUint64(snapshotValue[8:16], 1)
 	binary.LittleEndian.PutUint64(snapshotValue[24:32], 1)

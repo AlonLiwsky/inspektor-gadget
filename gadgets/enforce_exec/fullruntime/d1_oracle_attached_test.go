@@ -1059,7 +1059,10 @@ func TestD1OracleFtraceWitness(t *testing.T) {
 		t.Fatal("the attach canary passed with ftrace off")
 	}
 	for name, r := range receipts {
-		lsm := strings.HasPrefix(r.Target, "task_") || strings.HasPrefix(r.Target, "bprm_")
+		// The canary waits for every task_/bprm_ program and for the
+		// mapping gate's em_mmap_file (the ELF loader maps the canary's
+		// program); the root barrier and em_file_mprotect are exempt.
+		lsm := strings.HasPrefix(r.Target, "task_") || strings.HasPrefix(r.Target, "bprm_") || name == sharedExecMapMmap
 		if named := strings.Contains(canary.Error(), name+" ("); named != lsm {
 			t.Fatalf("canary with ftrace off: program %s (%s) named %v, want %v: %v", name, r.Target, named, lsm, canary)
 		}

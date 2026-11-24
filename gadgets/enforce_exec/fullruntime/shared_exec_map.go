@@ -29,8 +29,8 @@ const (
 	sharedExecMapMmap = "em_mmap_file"
 	// sharedExecMapMprotect judges an mprotect that adds PROT_EXEC to a file
 	// mapping. A fork, exec and exit need not do that, so the attach canary
-	// does not wait for it (runSharedAttachCanary). Nothing else proves it at
-	// start yet: a self-test like the root barrier's is an open item.
+	// does not wait for it (runSharedAttachCanary); the start self-test
+	// (verifySharedExecMap) proves it.
 	sharedExecMapMprotect = "em_file_mprotect"
 )
 

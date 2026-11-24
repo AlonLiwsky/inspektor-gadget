@@ -572,6 +572,33 @@ func TestSharedNodeExecMapAttached(t *testing.T) {
 		t.Logf("CASE %s | revisions under churn %s | judged+%d image+%d denied+%d would+%d unknown+%d race+%d", verdict, name, d(emJudged), d(emAllowImage), d(emDenied), d(emWouldDeny), d(emUnknown), d(emRace))
 	}
 
+	t.Log("PHASE 5b: revisions while Strict maps a NON-image file: every attempt is denied (no fail-open in the race)")
+	{
+		before := read("A")
+		const loops = 400
+		done := make(chan error, 1)
+		go func() {
+			out, code, err := inits["A"].run(ctx, fmt.Sprintf(`i=0; ok=0; d=0; while [ $i -lt %d ]; do emtest mmapx /tmp/evil >/dev/null; r=$?; [ $r -eq 0 ] && ok=$((ok+1)); [ $r -eq 13 ] && d=$((d+1)); i=$((i+1)); done; echo "ok=$ok denied=$d"`, loops))
+			if err == nil && (code != 0 || !strings.Contains(out, fmt.Sprintf("ok=0 denied=%d", loops))) {
+				err = fmt.Errorf("%q code %d", strings.TrimSpace(out), code)
+			}
+			done <- err
+		}()
+		for i := 0; i < 12; i++ {
+			publish("churn revision (non-image)")
+			time.Sleep(150 * time.Millisecond)
+		}
+		err := <-done
+		after := read("A")
+		d := func(i int) uint64 { return after[i] - before[i] }
+		verdict := "PASS"
+		if err != nil || d(emDenied) < loops {
+			verdict = "FAIL"
+			failed++
+		}
+		t.Logf("CASE %s | revisions while Strict maps a non-image file x%d | %v | denied+%d notimage+%d unknown+%d race+%d", verdict, loops, err, d(emDenied), d(emNotImage), d(emUnknown), d(emRace))
+	}
+
 	t.Log("PHASE 6: Audit dlopen loop does not push out exec verdicts (own ring)")
 	{
 		seen := events.count()

@@ -573,6 +573,15 @@ func (c *productCommander) revise(ctx context.Context, slot uint32, cgroup uint6
 	if err != nil {
 		return 0, err
 	}
+	// G020: a revision keeps the binding's image set (no refresh: the
+	// container's rootfs is immutable for its lifetime); both records
+	// reference it during the grace period. The mapping gate's flags are
+	// checked against it before anything is staged.
+	imageHandle, imageDev := c.image.sealed(slot, record.scope)
+	execMap, err := sharedExecMapFlags(policy.ExecMap, policy.Source, imageHandle)
+	if err != nil {
+		return 0, fmt.Errorf("revise slot %d: %w", slot, err)
+	}
 	object, generation, err := c.stage(ctx, compiled)
 	if err != nil {
 		// G019 gap 3: no free object while every spare one is held by a
@@ -585,18 +594,9 @@ func (c *productCommander) revise(ctx context.Context, slot uint32, cgroup uint6
 	}
 	c.clearRevision(slot, false)
 	defer c.settle(object)
-	// G020: a revision keeps the binding's image set (no refresh: the
-	// container's rootfs is immutable for its lifetime); both records
-	// reference it during the grace period.
-	imageHandle, imageDev := c.image.sealed(slot, record.scope)
 	if imageHandle == 0 && sharedPolicyUsesImage(policy.Source) {
 		c.discard(context.WithoutCancel(ctx), object)
 		return 0, fmt.Errorf("revise slot %d (FromImage policy): %w: the binding has no sealed image set", slot, ErrSharedImageIndexUnavailable)
-	}
-	execMap, err := sharedExecMapFlags(policy.ExecMap, policy.Source, imageHandle)
-	if err != nil {
-		c.discard(context.WithoutCancel(ctx), object)
-		return 0, fmt.Errorf("revise slot %d: %w", slot, err)
 	}
 	body, err := sharedProductPublishBody(sharedPublishFields{
 		cgroup: cgroup, scope: record.scope, generationExpected: route.State.Generation, objectGeneration: generation,

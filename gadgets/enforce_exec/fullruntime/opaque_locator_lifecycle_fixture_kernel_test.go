@@ -195,7 +195,7 @@ func TestOpaqueLocatorLifecycleFixtureKernelRun(t *testing.T) {
 			object.Type() != ebpf.Array || object.MaxEntries() != 1 ||
 			object.ValueSize() != 80 || object.Flags() != 0 ||
 			snapshot.Type() != ebpf.Array || snapshot.MaxEntries() != 1 ||
-			snapshot.ValueSize() != 784 || snapshot.Flags()&unix.BPF_F_RDONLY_PROG == 0 {
+			snapshot.ValueSize() != sharedSnapshotBytes || snapshot.Flags()&unix.BPF_F_RDONLY_PROG == 0 {
 			t.Fatal("invalid synthetic policy object/snapshot maps")
 		}
 		wantEntries := uint32(10)
@@ -242,7 +242,7 @@ func TestOpaqueLocatorLifecycleFixtureKernelRun(t *testing.T) {
 		if err := object.Update(uint32(0), objectValue, ebpf.UpdateAny); err != nil {
 			t.Fatalf("populate synthetic object: %v", err)
 		}
-		snapshotValue := make([]byte, 784)
+		snapshotValue := make([]byte, sharedSnapshotBytes)
 		binary.LittleEndian.PutUint64(snapshotValue[0:8], gate.Scope)
 		binary.LittleEndian.PutUint64(snapshotValue[8:16], 1)  // serial
 		binary.LittleEndian.PutUint64(snapshotValue[24:32], 1) // generation

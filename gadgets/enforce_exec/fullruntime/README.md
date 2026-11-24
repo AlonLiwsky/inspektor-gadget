@@ -359,10 +359,10 @@ image runs on every kernel the product gate admits.
 
 | Profile | Image (local reference) | Manifest digest | Index digest |
 |---|---|---|---|
-| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:299da23e6469707a15344947670093f81fc3656e76c92164dda9c8945f548cb5` | `sha256:a809c884bce1a72e2ee7e0875ad4d4eccb59c52c9782a5f837a22f82b0da27c6` |
-| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:6020fd3fd8e689cfc42e176557b58617e8ebaecfaa69a09cbfe6597deb7ec8e7` | `sha256:0a23502c7ae93b5b5c70865d93078cf44d2496c689a7d10a6b24a5a12e15cab2` |
-| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:897876a95d13bbed4c42ce7f903f49eefd524b27c64a958cafc8450daf1160f2` | `sha256:e9f53b7f260d13f327dd2ae493c287fbb1f1028dc5fd91878aee45f95e7bb44d` |
-| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:a5f011fc8d6bc166942d94f284d3c410dbd91eb12b5f05ddb7095ee7ac6af748` | `sha256:d494441b9d4ac829e16bc355db4bc29c29db9b2b7cea5369ae94dc5fe79458a7` |
+| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:e774fd0a518b4c2b5028ba3f66fda0c2e805c68364fd6884a8f6c42eef5df733` | `sha256:30c1c9bdac1a0732e2e707021e5c2eb5f587e2b4fc7cc53c8eb270cd6e1c7c7d` |
+| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:90a5794b0c798f0096b05bab6421d9e23973e33c07d3d781a8eb32c1ab3f0320` | `sha256:baba7e37592d4d325b8e8d959c1e4a79e69ab76dec2119671451cb5c977d8cd6` |
+| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:c9e920874e172325ea83f44ad9f0306bc3582064823510c8eedfdf9582c1238d` | `sha256:e7a075c1b5b96529aea19894c1542333ad7dbdce1211f3a1df20718ba28f1bcb` |
+| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:3e2802a22fee50df3935a57b597a59cc9fac0dc13986ca5a52e28722f1685a68` | `sha256:bc76e32ec2e34903d027e19cffa3b108ce7977abe9e8743166e4bc01f439a850` |
 
 The reference (tag) is not part of either digest.
 
@@ -648,7 +648,11 @@ objects carry a gate for this (`full/shared_exec_map.h`): `em_mmap_file`
   during the lookup): Strict denies (`EACCES`), Audit allows and reports. A
   policy publish that moves the record during a lookup is retried once
   against the new ACTIVE record, so a publish does not break a mapping that
-  both records allow. For `file_mprotect` on overlayfs, `vma->vm_file` is the
+  both records allow. The flags are trusted only from a record read whole:
+  a record that moved before it was read is never taken as "gate off". When
+  it moves again during the retry, whether the gate is on is not known, so
+  Strict denies that one mapping (UNKNOWN), also for a binding without the
+  gate. For `file_mprotect` on overlayfs, `vma->vm_file` is the
   backing file; the gate checks that the outer path it was opened for is on
   the container's own overlay, then runs the classifier's layer checks.
 - **Anonymous memory** is allowed and counted, and judged as "not from the
@@ -674,7 +678,10 @@ objects carry a gate for this (`full/shared_exec_map.h`): `em_mmap_file`
   engine's own record, written at `bprm_committed_creds` on the thread group
   leader (`exec_map_exe`), never `mm->exe_file`, which userspace can change
   (`PR_SET_MM_EXE_FILE`, `PR_SET_MM_MAP`). A child made by fork without exec
-  has no record of its own and gets no exemption.
+  has no record of its own and gets no exemption. The record is the file's
+  `{dev, ino}`: a program that a path rule allows on a writable mount can be
+  rewritten after it started and then mapped under the exemption. Allow a
+  non-image program by path only on a read-only mount.
 - **Coverage.** The same as the root barrier: the ACTIVE route of the task's
   exact cgroup, Strict enforces, Audit reports. The gate takes no claim: it
   reads the route's ACTIVE snapshot record under the route lock, classifies,
@@ -693,8 +700,9 @@ objects carry a gate for this (`full/shared_exec_map.h`): `em_mmap_file`
   executable mapping there, in Audit too, with or without the gate: the
   class is not known, as for the root barrier. So one route fault breaks
   every dynamic exec, `dlopen` and JIT in that cgroup. `exec_map_faults`
-  counts these faults and UNKNOWN results. It is a fail-closed class of its
-  own (`FailClosedExecMap`, `SharedFailClosedHealth.ExecMap`), like the
+  counts these faults and Strict UNKNOWN results (an Audit UNKNOWN denies
+  nothing: it is counted and reported, never a fault). It is a fail-closed
+  class of its own (`FailClosedExecMap`, `SharedFailClosedHealth.ExecMap`), like the
   barrier: outside Total, Degraded on a fault in the last 60 s, NotReady
   above 0.1 % over 5 min.
 - **Self-test.** At start, after the root barrier's check and before the

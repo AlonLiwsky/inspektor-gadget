@@ -65,8 +65,10 @@
  * Fail closed: a route invariant fault in a covered cgroup denies every
  * executable mapping there, in Audit too, with or without the gate (the class
  * is not known, as for the root barrier). exec_map_faults counts these
- * faults [0] and UNKNOWN results [1] (a classifier fault or a race that the
- * retry did not resolve); both are the node's mapping-gate fail-closed class.
+ * faults [0] and Strict UNKNOWN results [1] (a classifier fault or a race
+ * that the retry did not resolve); both are the node's mapping-gate
+ * fail-closed class. An Audit UNKNOWN is counted in exec_map_counters and
+ * reported as an event, never as a fault.
  *
  * Self-test: exec_map_probe names one agent thread (a random nonce comm).
  * For that thread only, an uncovered mapping is judged as Strict with no
@@ -188,9 +190,14 @@ struct {
 	__type(value, struct em_probe);
 } exec_map_probe SEC(".maps");
 
+/* consistent: the ACTIVE record was read whole (its serial and phase did not
+ * change around the reads). Only then are flags, handle and dev the
+ * binding's. A record is immutable once PREPARED, so an unchanged serial
+ * means unchanged metadata. */
 struct em_cover {
 	__u64 cgroup, serial, handle, generation;
-	__u32 slot, incarnation, record, dev, known, flags;
+	__u32 slot, incarnation, record, dev, known, flags, consistent,
+		reserved;
 };
 
 static __always_inline void em_count(__u32 slot, __u32 cell)
@@ -253,12 +260,17 @@ static __attribute__((noinline)) int exec_map_cover(struct em_cover *c)
 	c->known = 0;
 	c->flags = 0;
 	c->generation = 0;
+	c->consistent = 0;
 	struct se_shared_binding *binding =
 		bpf_map_lookup_elem(&se_bindings, &slot);
+	/* An ACTIVE route always names a binding, a serial and a record. */
 	if (!binding || !serial || record >= 2)
-		return class;
+		return 3;
 	asm volatile("" : "+r"(record));
 	const struct se_snapshot *s = &binding->state.records[record & 1U];
+	/* A publish can move the route between the anchor read and here: the
+	 * record is then not consistent, and the caller retries; it never
+	 * reads the flags as "off". */
 	if (s->serial != serial || s->phase != SE_SNAPSHOT_ACTIVE)
 		return class;
 	c->handle = s->metadata.image_handle;
@@ -266,8 +278,8 @@ static __attribute__((noinline)) int exec_map_cover(struct em_cover *c)
 	c->flags = s->metadata.exec_map_flags;
 	c->generation = s->generation;
 	asm volatile("" ::: "memory");
-	c->known = s->serial == serial && s->phase == SE_SNAPSHOT_ACTIVE &&
-		   c->handle && c->dev;
+	c->consistent = s->serial == serial && s->phase == SE_SNAPSHOT_ACTIVE;
+	c->known = c->consistent && c->handle && c->dev;
 	return class;
 }
 
@@ -611,11 +623,28 @@ static __always_inline int em_judge(struct file *file, int vma_file,
 	int class = exec_map_cover(&c);
 	if (!class)
 		return em_probe_judge(file, hook);
+	if (class != 3 && !c.consistent) {
+		/* A publish moved the record before it was read: read the new
+		 * ACTIVE record once more. */
+		em_count(c.slot, EM_RACE);
+		class = exec_map_cover(&c);
+		if (!class)
+			return 0;
+	}
 	if (class == 3) {
 		/* The class is unknown: fail closed, like the root barrier,
 		 * with or without the gate. */
 		em_fault(EM_FAULT_ROUTE);
 		return -EM_EACCES;
+	}
+	if (!c.consistent) {
+		/* Two publishes in one lookup: whether the gate is on is not
+		 * known. UNKNOWN: Strict denies, Audit reports. */
+		em_count(c.slot, EM_UNKNOWN);
+		if (class == 2)
+			em_fault(EM_FAULT_UNKNOWN);
+		return em_refuse(&c, class, EM_UNKNOWN, hook, file,
+				 vma_file ? 0 : file);
 	}
 	if (!(c.flags & SE_EXEC_MAP_JUDGE))
 		return 0;
@@ -627,7 +656,8 @@ static __always_inline int em_judge(struct file *file, int vma_file,
 	int anon = file ? em_anon_file(file) : EM_ANON;
 	if (anon < 0) {
 		em_count(slot, EM_UNKNOWN);
-		em_fault(EM_FAULT_UNKNOWN);
+		if (class == 2)
+			em_fault(EM_FAULT_UNKNOWN);
 		return em_refuse(&c, class, EM_UNKNOWN, hook, file, path_file);
 	}
 	if (anon > 0 || modified) {
@@ -658,7 +688,7 @@ static __always_inline int em_judge(struct file *file, int vma_file,
 			em_fault(EM_FAULT_ROUTE);
 			return -EM_EACCES;
 		}
-		if (!(c.flags & SE_EXEC_MAP_JUDGE))
+		if (c.consistent && !(c.flags & SE_EXEC_MAP_JUDGE))
 			return 0;
 		image = -1;
 		if (c.known)
@@ -674,7 +704,9 @@ static __always_inline int em_judge(struct file *file, int vma_file,
 	}
 	__u32 cell = image == 0 ? EM_NOT_IMAGE : EM_UNKNOWN;
 	em_count(c.slot, cell);
-	if (cell == EM_UNKNOWN)
+	/* Fail-closed class: Strict UNKNOWN only. An Audit UNKNOWN denies
+	 * nothing; it is counted (EM_UNKNOWN) and reported, never NotReady. */
+	if (cell == EM_UNKNOWN && class == 2)
 		em_fault(EM_FAULT_UNKNOWN);
 	return em_refuse(&c, class, cell, hook, file, path_file);
 }
