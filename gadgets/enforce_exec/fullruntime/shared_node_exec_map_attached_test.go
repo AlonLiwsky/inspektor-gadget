@@ -56,7 +56,7 @@ var execMapCells = []string{"judged", "image", "exe", "notimage", "unknown", "an
 
 // execMapEvent is one event of the "execmap" datasource.
 type execMapEvent struct {
-	generation, cgroup, ino, loadEpoch                uint64
+	generation, scope, cgroup, ino, loadEpoch         uint64
 	dev, hook, reason, execClass, deny, hostPID, slot uint32
 	comm, path                                        string
 }
@@ -138,8 +138,22 @@ func (c *execMapCollector) since(n int) []execMapEvent {
 func newExecMapFixture(t *testing.T, base, name, helpers string) *sharedOverlayFixture {
 	t.Helper()
 	dir := filepath.Join(base, name)
-	f := &sharedOverlayFixture{dir: dir, lower: filepath.Join(dir, "lower"), upper: filepath.Join(dir, "upper"), work: filepath.Join(dir, "work"), merged: filepath.Join(dir, "merged")}
-	for _, d := range []string{f.lower, f.upper, f.work, f.merged} {
+	// The upper layer and the work dir are on tmpfs (review 2, item 4):
+	// overlayfs opens a file of the upper layer on a private clone of that
+	// mount, which has the internal mount namespace like shmem; the gate must
+	// still judge it as a file at mprotect.
+	rw := filepath.Join(dir, "rw")
+	f := &sharedOverlayFixture{dir: dir, lower: filepath.Join(dir, "lower"), upper: filepath.Join(rw, "upper"), work: filepath.Join(rw, "work"), merged: filepath.Join(dir, "merged")}
+	for _, d := range []string{f.lower, rw, f.merged} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := unix.Mount("tmpfs", rw, "tmpfs", 0, "size=512m"); err != nil {
+		t.Fatalf("mount tmpfs %s: %v", rw, err)
+	}
+	t.Cleanup(func() { _ = unix.Unmount(rw, unix.MNT_DETACH) })
+	for _, d := range []string{f.upper, f.work} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -466,7 +480,7 @@ func TestSharedNodeExecMapAttached(t *testing.T) {
 	check("dlopen image library", "emtest dlopen /usr/lib64/empre.so", ran, ran)
 	check("mmap PROT_EXEC of a non-image file", "emtest mmapx /tmp/evil", deniedMap, wouldMap)
 	check("mmap PROT_EXEC of an image file", "emtest mmapx /usr/bin/true", ran, ran)
-	check("mmap PROT_READ then mprotect +EXEC, non-image file", "emtest mprotx /tmp/evil", cell(emMprotect, deniedMap), cell(emMprotect, wouldMap))
+	check("mmap PROT_READ then mprotect +EXEC, non-image file (upper layer on tmpfs)", "emtest mprotx /tmp/evil", cell(emMprotect, deniedMap), cell(emMprotect, wouldMap))
 	check("mmap PROT_READ then mprotect +EXEC, image file", "emtest mprotx /usr/bin/true", cell(emAllowImage, cell(emMprotect, ran)), cell(emMprotect, ran))
 	t.Log("PHASE 1b: anonymous memory (allowed, counted)")
 	check("anonymous memory, mprotect +EXEC, run it", "emtest anonx", cell(emAnon, ran), ran)

@@ -41,9 +41,11 @@
  *   hugetlb memfd;
  * - /dev/zero (character device 1:5): the hook runs before the driver makes
  *   the mapping anonymous.
- * A private file mapping that was written (vma->anon_vma) and then made
- * executable is the same class (EM_MODIFIED): its written pages hold the
- * workload's own bytes, like anonymous memory. So the gate stops the loader,
+ * A private file mapping that has an anon_vma (some page of it was written,
+ * or it was split from one that was) and is then made executable is the same
+ * class (EM_MODIFIED): it may hold the workload's own bytes, like anonymous
+ * memory. Its unwritten pages still hold the file's bytes; the class claims
+ * no more than "a private mapping with an anon_vma". So the gate stops the loader,
  * LD_PRELOAD and dlopen from mapping a file that is not from the image; code
  * that the workload copies or writes into memory itself is the anonymous
  * class. A file on a user-visible tmpfs (for example /dev/shm, POSIX
@@ -98,7 +100,7 @@ enum em_cell {
 	EM_NOT_IMAGE, /* file not from the image */
 	EM_UNKNOWN, /* provenance UNKNOWN (read fault, race) */
 	EM_ANON, /* anonymous executable memory (MAP_ANONYMOUS) */
-	EM_MODIFIED, /* written private file mapping made executable */
+	EM_MODIFIED, /* private file mapping with an anon_vma made executable */
 	EM_DENIED, /* Strict denials */
 	EM_WOULD_DENY, /* Audit: allowed, Strict would deny */
 	EM_RACE, /* the snapshot record moved during the lookup (retried) */
@@ -268,6 +270,9 @@ static __attribute__((noinline)) int exec_map_cover(struct em_cover *c)
 	/* An ACTIVE route always names a binding, a serial and a record. */
 	if (!binding || !serial || record >= 2)
 		return 3;
+	/* The binding's scope does not change with a publish: set it first,
+	 * so an event of a moved record is still attributed. */
+	c->scope = binding->state.scope;
 	asm volatile("" : "+r"(record));
 	const struct se_snapshot *s = &binding->state.records[record & 1U];
 	/* A publish can move the route between the anchor read and here: the
@@ -279,7 +284,6 @@ static __attribute__((noinline)) int exec_map_cover(struct em_cover *c)
 	c->dev = s->metadata.image_dev;
 	c->flags = s->metadata.exec_map_flags;
 	c->generation = s->generation;
-	c->scope = binding->state.scope;
 	asm volatile("" ::: "memory");
 	c->consistent = s->serial == serial && s->phase == SE_SNAPSHOT_ACTIVE;
 	c->known = c->consistent && c->handle && c->dev;
@@ -332,7 +336,19 @@ static __attribute__((noinline)) int em_anon_file(struct file *file)
 	unsigned long magic = 0;
 	umode_t mode = 0;
 	__u32 rdev = 0;
-	if (!file || BPF_CORE_READ_INTO(&inode, file, f_inode) || !inode ||
+	fmode_t fmode = 0;
+	__u32 backing = se_image_fmode_backing;
+	if (!file || BPF_CORE_READ_INTO(&fmode, file, f_mode))
+		return -1;
+	/* A backing file (FMODE_BACKING: the real file of an overlayfs
+	 * mapping) is a file, whatever its layer: overlayfs opens it on a
+	 * private clone of the layer mount, which also has the internal mount
+	 * namespace, so a layer on tmpfs would otherwise read as shmem. */
+	if ((backing == SE_IMAGE_FMODE_BACKING_24 ||
+	     backing == SE_IMAGE_FMODE_BACKING_25) &&
+	    (fmode & backing))
+		return 0;
+	if (BPF_CORE_READ_INTO(&inode, file, f_inode) || !inode ||
 	    BPF_CORE_READ_INTO(&mode, inode, i_mode) ||
 	    BPF_CORE_READ_INTO(&sb, inode, i_sb) || !sb ||
 	    BPF_CORE_READ_INTO(&magic, sb, s_magic))
@@ -617,20 +633,82 @@ static __attribute__((noinline)) int em_probe_judge(struct file *file,
 	return -EM_EACCES;
 }
 
+#define EM_RETRY 1
+
+/* One verdict against the record c that exec_map_cover read whole
+ * (c->consistent). how: vma_file (bit 0: file is a vma's file, at
+ * file_mprotect), modified (bit 1: the mapping has an anon_vma), hook << 8.
+ * Returns 0, -EACCES, or EM_RETRY when a publish moved the record during the
+ * image lookup: the caller judges again against the new record. */
+static __attribute__((noinline)) int em_verdict(struct em_cover *c, int class,
+						struct file *file, __u32 how)
+{
+	int vma_file = how & 1, modified = (how >> 1) & 1;
+	__u32 hook = how >> 8;
+	if (!c || !(c->flags & SE_EXEC_MAP_JUDGE))
+		return 0;
+	__u32 slot = c->slot;
+	struct file *path_file = vma_file ? 0 : file;
+	em_count(slot, EM_JUDGED);
+	if (hook == EM_HOOK_MPROTECT)
+		em_count(slot, EM_MPROTECT);
+	int anon = file ? em_anon_file(file) : EM_ANON;
+	if (anon < 0) {
+		em_count(slot, EM_UNKNOWN);
+		if (class == 2)
+			em_fault(EM_FAULT_UNKNOWN);
+		return em_refuse(c, class, EM_UNKNOWN, hook, file, path_file);
+	}
+	if (anon > 0 || modified) {
+		__u32 cell = modified && !anon ? EM_MODIFIED : (__u32)anon;
+		em_count(slot, cell);
+		if (c->flags & SE_EXEC_MAP_DENY_ANON)
+			return em_refuse(c, class, cell, hook, file, path_file);
+		return 0;
+	}
+	if ((c->flags & SE_EXEC_MAP_EXE_EXEMPT) && em_is_exe(file, vma_file)) {
+		em_count(slot, EM_ALLOW_EXE);
+		return 0;
+	}
+	int image = -1;
+	if (c->known)
+		image = vma_file ? em_class_vma(file, c->handle, c->dev) :
+				   em_class_outer(file, c->handle, c->dev);
+	if (!exec_map_still(c))
+		return EM_RETRY;
+	if (image == 1) {
+		em_count(slot, EM_ALLOW_IMAGE);
+		return 0;
+	}
+	__u32 cell = image == 0 ? EM_NOT_IMAGE : EM_UNKNOWN;
+	em_count(slot, cell);
+	/* Fail-closed class: Strict UNKNOWN only. An Audit UNKNOWN denies
+	 * nothing; it is counted (EM_UNKNOWN) and reported, never NotReady. */
+	if (cell == EM_UNKNOWN && class == 2)
+		em_fault(EM_FAULT_UNKNOWN);
+	return em_refuse(c, class, cell, hook, file, path_file);
+}
+
 /* Common body. file is the mapped file (null: MAP_ANONYMOUS); vma_file says
- * that it is a vma's file (file_mprotect); modified that the mapping has
- * private written pages. */
+ * that it is a vma's file (file_mprotect); modified that the mapping has an
+ * anon_vma. A publish that moves the record during a lookup gets one more
+ * full verdict against the new ACTIVE record (all of its flags): a publish
+ * must not break a mapping that both records allow. A second move is
+ * UNKNOWN. */
 static __always_inline int em_judge(struct file *file, int vma_file,
 				    int modified, __u32 hook)
 {
+	__u32 how = (vma_file ? 1U : 0U) | (modified ? 2U : 0U) | hook << 8;
 	struct em_cover c = {};
 	int class = exec_map_cover(&c);
 	if (!class)
 		return em_probe_judge(file, hook);
+	int retried = 0;
 	if (class != 3 && !c.consistent) {
 		/* A publish moved the record before it was read: read the new
 		 * ACTIVE record once more. */
 		em_count(c.slot, EM_RACE);
+		retried = 1;
 		class = exec_map_cover(&c);
 		if (!class)
 			return 0;
@@ -641,78 +719,33 @@ static __always_inline int em_judge(struct file *file, int vma_file,
 		em_fault(EM_FAULT_ROUTE);
 		return -EM_EACCES;
 	}
-	if (!c.consistent) {
-		/* Two publishes in one lookup: whether the gate is on is not
-		 * known. UNKNOWN: Strict denies, Audit reports. */
-		em_count(c.slot, EM_UNKNOWN);
-		if (class == 2)
-			em_fault(EM_FAULT_UNKNOWN);
-		return em_refuse(&c, class, EM_UNKNOWN, hook, file,
-				 vma_file ? 0 : file);
-	}
-	if (!(c.flags & SE_EXEC_MAP_JUDGE))
-		return 0;
-	__u32 slot = c.slot;
-	struct file *path_file = vma_file ? 0 : file;
-	em_count(slot, EM_JUDGED);
-	if (hook == EM_HOOK_MPROTECT)
-		em_count(slot, EM_MPROTECT);
-	int anon = file ? em_anon_file(file) : EM_ANON;
-	if (anon < 0) {
-		em_count(slot, EM_UNKNOWN);
-		if (class == 2)
-			em_fault(EM_FAULT_UNKNOWN);
-		return em_refuse(&c, class, EM_UNKNOWN, hook, file, path_file);
-	}
-	if (anon > 0 || modified) {
-		__u32 cell = modified && !anon ? EM_MODIFIED : (__u32)anon;
-		em_count(slot, cell);
-		if (c.flags & SE_EXEC_MAP_DENY_ANON)
-			return em_refuse(&c, class, cell, hook, file,
-					 path_file);
-		return 0;
-	}
-	if ((c.flags & SE_EXEC_MAP_EXE_EXEMPT) && em_is_exe(file, vma_file)) {
-		em_count(slot, EM_ALLOW_EXE);
-		return 0;
-	}
-	int image = -1;
-	if (c.known)
-		image = vma_file ? em_class_vma(file, c.handle, c.dev) :
-				   em_class_outer(file, c.handle, c.dev);
-	if (!exec_map_still(&c)) {
-		/* A publish moved the record. Judge once more against the new
-		 * ACTIVE record: a publish must not break a mapping that both
-		 * records allow. */
-		em_count(slot, EM_RACE);
-		class = exec_map_cover(&c);
-		if (!class)
-			return 0;
-		if (class == 3) {
-			em_fault(EM_FAULT_ROUTE);
-			return -EM_EACCES;
+	if (c.consistent) {
+		int r = em_verdict(&c, class, file, how);
+		if (r != EM_RETRY)
+			return r;
+		if (!retried) {
+			em_count(c.slot, EM_RACE);
+			class = exec_map_cover(&c);
+			if (!class)
+				return 0;
+			if (class == 3) {
+				em_fault(EM_FAULT_ROUTE);
+				return -EM_EACCES;
+			}
+			if (c.consistent) {
+				r = em_verdict(&c, class, file, how);
+				if (r != EM_RETRY)
+					return r;
+			}
 		}
-		if (c.consistent && !(c.flags & SE_EXEC_MAP_JUDGE))
-			return 0;
-		image = -1;
-		if (c.known)
-			image = vma_file ? em_class_vma(file, c.handle, c.dev) :
-					   em_class_outer(file, c.handle,
-							  c.dev);
-		if (!exec_map_still(&c))
-			image = -1;
 	}
-	if (image == 1) {
-		em_count(c.slot, EM_ALLOW_IMAGE);
-		return 0;
-	}
-	__u32 cell = image == 0 ? EM_NOT_IMAGE : EM_UNKNOWN;
-	em_count(c.slot, cell);
-	/* Fail-closed class: Strict UNKNOWN only. An Audit UNKNOWN denies
-	 * nothing; it is counted (EM_UNKNOWN) and reported, never NotReady. */
-	if (cell == EM_UNKNOWN && class == 2)
+	/* Two publishes in one lookup: whether the gate is on, or the image
+	 * fact, is not known. UNKNOWN: Strict denies, Audit reports. */
+	em_count(c.slot, EM_UNKNOWN);
+	if (class == 2)
 		em_fault(EM_FAULT_UNKNOWN);
-	return em_refuse(&c, class, cell, hook, file, path_file);
+	return em_refuse(&c, class, EM_UNKNOWN, hook, file,
+			 vma_file ? 0 : file);
 }
 
 /* A denial of an earlier LSM program stays. The prior verdict is the context

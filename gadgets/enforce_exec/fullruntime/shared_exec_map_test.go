@@ -13,11 +13,24 @@ import (
 
 func TestSharedExecMapFlags(t *testing.T) {
 	yes := true
-	imageOnly := &fullpolicy.Policy{Default: fullpolicy.Deny, Rules: []fullpolicy.Rule{
+	imageOnly := &fullpolicy.Policy{Mode: fullpolicy.Enforce, Default: fullpolicy.Deny, Rules: []fullpolicy.Rule{
 		{Action: fullpolicy.Allow, Target: fullpolicy.Target{FromImage: &yes}},
 		{Action: fullpolicy.Deny, Target: fullpolicy.Target{Path: []string{"/usr/bin/id"}}},
 	}}
-	pathAllow := &fullpolicy.Policy{Default: fullpolicy.Deny, Rules: []fullpolicy.Rule{
+	// Mixed modes (review 2, item 3): an audit policy with an enforce deny
+	// rule is a Strict binding whose audit default lets any program run.
+	auditDefault := &fullpolicy.Policy{Mode: fullpolicy.Audit, Default: fullpolicy.Deny, Rules: []fullpolicy.Rule{
+		{Action: fullpolicy.Allow, Target: fullpolicy.Target{FromImage: &yes}},
+		{Action: fullpolicy.Deny, Mode: fullpolicy.Enforce, Target: fullpolicy.Target{Path: []string{"/usr/bin/nc"}}},
+	}}
+	auditDeny := &fullpolicy.Policy{Mode: fullpolicy.Enforce, Default: fullpolicy.Deny, Rules: []fullpolicy.Rule{
+		{Action: fullpolicy.Allow, Target: fullpolicy.Target{FromImage: &yes}},
+		{Action: fullpolicy.Deny, Mode: fullpolicy.Audit, Target: fullpolicy.Target{Path: []string{"/tmp/**"}}},
+	}}
+	auditDefaultMode := &fullpolicy.Policy{Mode: fullpolicy.Enforce, Default: fullpolicy.Deny, DefaultMode: fullpolicy.Audit, Rules: []fullpolicy.Rule{
+		{Action: fullpolicy.Allow, Target: fullpolicy.Target{FromImage: &yes}},
+	}}
+	pathAllow := &fullpolicy.Policy{Mode: fullpolicy.Enforce, Default: fullpolicy.Deny, Rules: []fullpolicy.Rule{
 		{Action: fullpolicy.Allow, Target: fullpolicy.Target{FromImage: &yes}},
 		{Action: fullpolicy.Allow, Target: fullpolicy.Target{Path: []string{"/data/tool"}}},
 	}}
@@ -37,6 +50,9 @@ func TestSharedExecMapFlags(t *testing.T) {
 		{name: "judge, path allow", m: SharedExecMap{Judge: true}, source: pathAllow, handle: 7, want: sharedExecMapFlagJudge | sharedExecMapFlagExeExempt},
 		{name: "judge, default allow", m: SharedExecMap{Judge: true}, source: defaultAllow, handle: 7, want: sharedExecMapFlagJudge | sharedExecMapFlagExeExempt},
 		{name: "deny anonymous", m: SharedExecMap{Judge: true, DenyAnonymous: true}, source: imageOnly, handle: 7, want: sharedExecMapFlagJudge | sharedExecMapFlagDenyAnon},
+		{name: "audit policy, enforce deny rule", m: SharedExecMap{Judge: true}, source: auditDefault, handle: 7, want: sharedExecMapFlagJudge | sharedExecMapFlagExeExempt},
+		{name: "audit deny rule", m: SharedExecMap{Judge: true}, source: auditDeny, handle: 7, want: sharedExecMapFlagJudge | sharedExecMapFlagExeExempt},
+		{name: "audit default mode", m: SharedExecMap{Judge: true}, source: auditDefaultMode, handle: 7, want: sharedExecMapFlagJudge | sharedExecMapFlagExeExempt},
 		{name: "judge without index", m: SharedExecMap{Judge: true}, source: imageOnly, err: true, noIdx: true},
 		{name: "deny anonymous without judge", m: SharedExecMap{DenyAnonymous: true}, source: imageOnly, handle: 7, err: true},
 		{name: "judge without source", m: SharedExecMap{Judge: true}, handle: 7, err: true},

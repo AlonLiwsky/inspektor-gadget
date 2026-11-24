@@ -93,8 +93,8 @@ se_snapshot_metadata_valid(const struct se_snapshot_metadata *m, __u32 count,
 	     * reserved word stays zero (IDENT objects unchanged). */
 	    m->image_dev || m->exec_map_flags ||
 #endif
-	    m->exec_map_reserved ||
-	    !m->container_length || m->container_length > 255 ||
+	    m->exec_map_reserved || !m->container_length ||
+	    m->container_length > 255 ||
 	    ((m->role_writers | m->required_known) >> count))
 		return 0;
 	for (__u32 i = 0; i < 8; i++) {

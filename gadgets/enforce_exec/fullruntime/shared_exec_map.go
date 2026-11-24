@@ -97,12 +97,22 @@ func sharedExecMapFlags(m SharedExecMap, source *fullpolicy.Policy, imageHandle 
 	return flags, nil
 }
 
-// sharedPolicyMayAllowNonImage reports whether p can allow an exec whose
-// target is not known to be from the image: an allow default (or none
-// authored), or an allow rule without a target FromImage: true predicate.
+// sharedPolicyMayAllowNonImage reports whether p can let an exec of a target
+// that is not known to be from the image run: an allow default (or none
+// authored), an allow rule without a target FromImage: true predicate, or
+// anything in audit mode. A binding's class is the strongest mode of its
+// policy and rules, so a Strict binding can still run a program that an
+// audit default or an audit deny let through; the gate must then let that
+// program map its own file (the kernel maps it after the point of no
+// return, so a refusal would kill the task).
 func sharedPolicyMayAllowNonImage(p *fullpolicy.Policy) bool {
-	if p == nil || p.Default != fullpolicy.Deny {
+	if p == nil || p.Default != fullpolicy.Deny || p.Mode != fullpolicy.Enforce || p.DefaultMode == fullpolicy.Audit {
 		return true
+	}
+	for _, r := range p.Rules {
+		if r.Mode == fullpolicy.Audit {
+			return true
+		}
 	}
 	for _, r := range p.Rules {
 		if r.Action != fullpolicy.Allow {
