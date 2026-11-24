@@ -37,10 +37,23 @@ At start and while it runs, the node also proves:
   tracepoint without its LSM hook's mark, or when ftrace goes off.
 
 What is not proved: hook ordering and verdict semantics across the exec
-paths on a given kernel. There is no startup deny self-test: a test binding
-would hold one of the node's two route slots. The manual product-load run
+paths on a given kernel. There is no startup self-test of exec verdicts: a
+test binding would hold one of the node's two route slots. The manual product-load run
 (`gadgets/enforce_exec/test/product-load`) checks Strict and Audit verdicts on
 a chosen machine.
+
+The root barrier (`gadgets/common/root_barrier.h`, wired into the product
+objects) adds a start check of its own: `rootbarrier.Verify` checks each
+barrier hook's signature and live link, then runs a self-test that sees
+real `chroot`, `mount` and namespace operations denied, before the startup
+canary. A failure leaves the node NotReady. It adds preconditions:
+the agent needs `CAP_SYS_ADMIN` and `CAP_SYS_CHROOT`; the kernel needs
+the `userns_create` LSM hook (Linux 6.1 and later) and user namespaces
+enabled (`user.max_user_namespaces` > 0). The admission checks
+above probe neither: without the hook the barrier program cannot attach and
+the node does not start (the load error is not `ErrSharedNativeUnavailable`);
+without user namespaces the self-test fails and the node is NotReady. The fullruntime README, "Root barrier", has
+the details.
 
 The product objects can be rebuilt from the repository:
 `make enforce-exec-product-objects` rebuilds them in a pinned Debian trixie

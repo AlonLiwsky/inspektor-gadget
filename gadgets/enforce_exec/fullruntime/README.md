@@ -21,6 +21,8 @@ node runs (see [Shared engine: supported kernels](#shared-engine-supported-kerne
   this release (see
   [Shared engine: supported kernels](#shared-engine-supported-kernels)), and
   refuses everything else with `ErrSharedNativeUnavailable` and the reason.
+  Startup also verifies the root barrier (see [Root barrier](#root-barrier));
+  a failure there is NotReady and the node does not start.
   `Ready` returns nil, also with zero bindings, unless an attach receipt, the
   product reaper, a witness (credit at exit, exec capsule, birth park, facts),
   a fail-closed NotReady or Unknown, stopped health, a refused Strict namespace
@@ -357,10 +359,10 @@ image runs on every kernel the product gate admits.
 
 | Profile | Image (local reference) | Manifest digest | Index digest |
 |---|---|---|---|
-| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:2f161cc1edcbcd42fdfdce3c7ea746b260dfd071955d7fb25fab341ee32ee124` | `sha256:1397ee56fd71995e95fc6ae610c0c9b07d23d26e2a5110b1d6006bba308743fe` |
-| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:036e99e41408b669b879f925a942af68689c1734c2d9b0d8033207387f25de6a` | `sha256:e67bd898e7e9cf9e53d4c298ab018009357174f4ae1c8e903540088829cb1114` |
-| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:b65fc46b646442d746eb46cade87eda3a6d33144651e92e066adb9e7559e1bf0` | `sha256:f58271b21e84dc06d97b9345288020ad278874935e18e840b11d70e3ae8b761c` |
-| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:3b5bd67827694a55b8e7de90cedf12142d1d02b67ecce1bc92f893e3fb67c3ec` | `sha256:60609bd695295bf01fd1a4f6924953c65fcc17269d26ab572044a113d0c0639f` |
+| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:6e74512e72cc37e8d33633aad94219b457d69700fffcee3a9c0861230357ae43` | `sha256:55a4c3c70f45711b9db23738a5c9d7ce996e557b9c6111a9df1b7f88d3fc5571` |
+| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:48b5584528ce98f2b05463470a64ae994a73134f7d1ccf9434c2110e3bf5a182` | `sha256:dce925ec18ddf01d74bf299a0ec1d8e23097f7ce3259bcd0832dde8b55b782c9` |
+| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:d8a936ca27bb3f82abcbd09c3dc1841d31026c59d14b7612e88b5d759a4cc399` | `sha256:77866cfbafc68b6ccba44d0d03bd843e01675fbb175c7c8455bfb09c0b03e44f` |
+| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:a0e166fa8405bc4acd2caef50b05031fc035f40cc5009cfd82dd6e1ddef0384b` | `sha256:ec6d35126c0ddb6bc46a020ae7bd06cf795f41a053c66bb830ed2a363f8dd7d6` |
 
 The reference (tag) is not part of either digest.
 
@@ -546,6 +548,82 @@ Every host must follow these rules; the node enforces them by refusal.
 - **Strict needs the host pid and time namespaces.** Unless the agent runs
   in the initial pid and time namespaces, Strict publication is refused and
   product `Ready` reports NotReady ("strict publication refused").
+
+### Root barrier
+
+The shared candidate's D1 objects (the product objects included) carry the
+root barrier of `gadgets/common/root_barrier.h`
+(kubescape/inspektor-gadget#26). It stops a covered task from changing its
+root or its mount tree: `chroot`, `pivot_root`, a new user namespace, a clone
+or `unshare` with `CLONE_NEWNS`, `setns` into a mount or user namespace (or
+with type 0), `mount`, `move_mount`, `umount` and the new mount API.
+
+- **Who is covered.** The barrier reads the exec verdict's own route state:
+  a task is covered when its cgroup has an ACTIVE **Strict** route (an
+  adopting or latched one included). An Audit route, no route, or a route
+  that is withdrawn or being prepared covers nothing: Audit never blocks. A
+  route invariant fault (a locator outside the route slots, a route with no
+  valid class) is a Strict barrier fault: denied and counted. The route is
+  per exact cgroup, like the exec verdict
+  ([Scope, runtime helpers and operator consent](#scope-runtime-helpers-and-operator-consent)).
+- **Programs.** Seven `rb_*` programs are in the pinned attach set
+  (`sharedCandidateAttachSet`, 13 trampoline links in all). The barrier's
+  `task_alloc` body runs inline in `opaque_real_owner_child_source_candidate`,
+  right after the previous verdict check and before the birth claim: a
+  denied clone takes no birth claim, TASK or WORK (only the D1 witness mark,
+  created before the check, which the kernel frees with the task).
+- **Start check.** After the kernel gate admitted the kernel and every attach
+  receipt is present, a product node runs `rootbarrier.Verify`: BPF LSM
+  active, ftrace enabled, each hook signature, a live LSM link for each
+  barrier program (the inline `task_alloc` body matched by its program ID),
+  then a self-test that sees real operations denied. A failure is NotReady
+  (`ErrSharedNodeNotReady`): the node does not start. The attach canary does
+  not wait for the seven `rb_*` programs (their hooks do not fire during a
+  fork, exec and exit); the self-test proves each of them ran. After start,
+  each `rb_*` link is an attach receipt, checked on every `Ready`, and the
+  ftrace and livepatch re-read at every `Ready` covers the barrier too.
+  The start check adds preconditions to a product node: the agent needs
+  `CAP_SYS_ADMIN` and `CAP_SYS_CHROOT` (the self-test runs real `chroot`,
+  `mount` and namespace operations on one of its own threads), user
+  namespaces enabled (`CONFIG_USER_NS`, `user.max_user_namespaces` > 0: the
+  self-test creates one and needs it denied by the barrier), BPF LSM,
+  `kernel.ftrace_enabled=1` (`CONFIG_FUNCTION_TRACER`) and the
+  `userns_create` hook (Linux 6.1 and later; the kernel gate does not probe
+  it, but without it `rb_userns` cannot attach and the node does not start).
+  A qualification node
+  attaches the barrier but does not run the start check: it never reports
+  Ready.
+- **Faults.** The barrier's fault counter (`root_barrier_faults`) is a
+  fail-closed class of its own, like ADMISSION: never part of Total, its rate
+  per exec plus birth attempt (see
+  [Shared-node live health](#shared-node-live-health-fail-closed-rate-witness-and-accepted-g019-residuals)).
+  Denials are counted in `root_barrier_counters` only: they are not exec
+  verdict events.
+- **Container start.** The barrier must not judge the runtime's own root
+  setup (`pivot_root`, its mounts, masked and read-only paths), which runs
+  in the container cgroup. That holds when the host publishes the route
+  after that setup: for example from Inspektor Gadget's container hook
+  (`containercollection.WithContainerFanotifyEbpf`), which fires when `runc
+  create` has written its pid file, while the container init waits to exec
+  the workload. Measured with runc 1.4.3 and containerd 2.3.7: the last root
+  or mount call of the init came about 1.2 ms before that hook. A host that
+  publishes earlier, from an OCI `createRuntime` or `createContainer` hook
+  (they run before `pivot_root`), would see the container setup denied and
+  every Strict container fail to start.
+- **Runtime exec helpers (limit).** runc 1.2 and later start the `runc exec`
+  helper (`kubectl exec`, `crictl exec`) inside the container cgroup with
+  `CLONE_INTO_CGROUP`, before it joins the container's namespaces. In a
+  Strict cgroup the barrier then denies its `setns` into the mount namespace
+  and the exec fails, when the exec policy allows the helper's own exec in
+  that cgroup. When the exec policy denies the helper's exec (a default
+  deny), runc retries without `CLONE_INTO_CGROUP`, joins the namespaces
+  outside the cgroup, and the session that it starts in the cgroup is
+  covered. Measured with runc 1.4.3 and the barrier header covering one
+  cgroup.
+- **Not a replacement for the workload seccomp contract.** The barrier
+  covers only tasks of a Strict binding in its exact cgroup: never an Audit
+  binding, nor a task outside that cgroup. A host that requires the workload
+  seccomp contract keeps it.
 
 ### Future work (not implemented)
 
@@ -1246,7 +1324,13 @@ link).
   attach set, and must be **at most 8** (`nativeattach.MaxFamilyLinksPerHook`).
   The exec candidate needs at most **3** on any hook: bprm_execve 3, and 1
   each on task_free, task_alloc, security_bprm_creds_for_exec and
-  bprm_check_security.
+  bprm_check_security. The shared candidate's D1 objects also take one link
+  on each of the seven root barrier hooks (path_chroot, sb_pivotroot,
+  userns_create, capable, sb_mount, move_mount, sb_umount; see
+  [Root barrier](#root-barrier)), so `K` is 1 there. The link limit of those
+  trampolines was not measured; it is the same
+  `BPF_MAX_TRAMP_LINKS`, shared with every other BPF LSM user of the hook
+  (for example another security agent on `capable` or `sb_mount`).
 * **Packaged attach set.** The candidate's ELF has 13 programs on
   bprm_check_security; 11 are tail-call targets and must never be attached.
   `bpf/opaque_real_owner_child_candidate.programs.yaml` is the gadget.yaml
@@ -1256,8 +1340,10 @@ link).
   and leaves them out of `K`. `TestCandidateAttachSetDeclaration` and
   `TestCandidateAttachSetObjects` (with `IG_ENFORCE_EXEC_CANDIDATE_OBJECTS`)
   derive the attach set from that block plus the object and pin it.
-  The shared-node qualification path (Phase A, `shared_host.go`) pins the
-  steady state at **16 links**: 8 trampoline links
+  The shared-node qualification path (Phase A, `shared_host.go`) pinned the
+  steady state at **16 links** (before D1; the D1 attach set is 13
+  trampoline links and 5 probe links, `sharedCandidateAttachSet` and
+  `sharedCandidateProbeSet`): 8 trampoline links
   (`sharedCandidateAttachSet`: 2 on task_free (the product release and the
   exec capsule's death retire), task_alloc, 3 on bprm_execve,
   creds_for_exec, bprm_check_security) and 8 probe links that take no
@@ -1401,9 +1487,10 @@ Precondition: `CAP_SYS_ADMIN` over the container's mount namespace (a
 privileged container, or one granted `CAP_SYS_ADMIN`). A new mount
 namespace does not help the workload: it differs from the anchor, so every
 path fact of its execs is UNKNOWN. Accepted for now: run enforced
-containers without `CAP_SYS_ADMIN`. Follow-up: accept an attested shared
-root barrier (kubescape/inspektor-gadget#26) as an input, so the host can
-drop the capability precondition.
+containers without `CAP_SYS_ADMIN`. The [root barrier](#root-barrier) now
+denies such a mount to a task of a Strict binding in its exact cgroup. It
+does not cover Audit bindings, so this residual stays for them, and it does
+not replace the workload seccomp contract.
 
 ## Shared-node live health: fail-closed rate witness and accepted G019 residuals
 
@@ -1422,13 +1509,18 @@ through `FailClosedProductRate`:
 | State | Rule | Node health |
 |---|---|---|
 | Healthy | none of the below | - |
-| Degraded (`ErrSharedFailClosedDegraded`) | any fail-closed refusal (Strict), unevaluated child (Audit) or ADMISSION fault within 60 s (threshold 0); clears after a quiet window | `Ready`, `Inspect` (binding `Fault`), qualified operator readiness |
-| NotReady (`ErrSharedFailClosedNotReady`) | Total or ADMISSION rate above 0.1% over 5 min (over the node's age while it is younger) | as Degraded |
+| Degraded (`ErrSharedFailClosedDegraded`) | any fail-closed refusal (Strict), unevaluated child (Audit), ADMISSION fault or root barrier fault within 60 s (threshold 0); clears after a quiet window | `Ready`, `Inspect` (binding `Fault`), qualified operator readiness |
+| NotReady (`ErrSharedFailClosedNotReady`) | Total, ADMISSION or root barrier rate above 0.1% over 5 min (over the node's age while it is younger) | as Degraded |
 | Unknown (wraps NotReady) | unreadable witness, a counter moving backwards, or counts `FailClosedProductRate` refuses (ENTRY + ADMISSION + Total above the attempts); sticky until node teardown. A poller with no sample for 3 intervals is Unknown while stalled | as Degraded, and the `StopNode` result |
 
 ENTRY [11] and ADMISSION [12] are outside Total; the denominator of Total is
 the attempts minus ENTRY minus ADMISSION, and every rate is per attempt.
-ENTRY never degrades. A window's attempts start one sample before its base
+ENTRY never degrades. The root barrier class (`FailClosedRootBarrier`,
+`root_barrier_faults`, both cells) is outside Total too and degrades by its
+own rate per attempt; a barrier fault is judged on a root or mount operation,
+not on an attempt, so with no attempt in the window each fault counts as a
+whole attempt. A gated product object must carry the barrier's fault counter,
+or startup is refused. A window's attempts start one sample before its base
 sample, so an attempt counted before the base read whose failure lands after
 it (a fork's target re-admission) never reads as an inconsistent witness; the
 rate is diluted by at most one interval per window. `NodeEnforcer.FailClosedHealth`

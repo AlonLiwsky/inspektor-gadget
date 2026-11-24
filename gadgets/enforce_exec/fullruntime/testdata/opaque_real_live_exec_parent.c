@@ -685,6 +685,31 @@ int main(int argc, char **argv)
 			fflush(stdout);
 			continue;
 		}
+		/* FORKNS:1: one child created with clone(CLONE_NEWNS) that exits
+		 * at once without exec. The root barrier denies it for a Strict
+		 * route (inline in task_alloc, before the product's birth claim):
+		 * FORKED:-1:<errno>. CHROOT:1: one plain child that calls
+		 * chroot("/") and exits with 0 or its errno (root barrier,
+		 * path_chroot), without exec. */
+		if (!strcmp(line, "FORKNS:1\n") ||
+		    !strcmp(line, "CHROOT:1\n")) {
+			int newns = line[4] == 'N';
+			pid_t child =
+				newns ? (pid_t)syscall(SYS_clone,
+						       CLONE_NEWNS | SIGCHLD, 0,
+						       0, 0, 0) :
+					fork();
+			if (child < 0) {
+				printf("FORKED:-1:%d\n", errno);
+				fflush(stdout);
+				continue;
+			}
+			if (child == 0)
+				_exit(newns ? 0 : (chroot("/") ? errno : 0));
+			printf("FORKED:%d:%d\n", child, wait_exit(child));
+			fflush(stdout);
+			continue;
+		}
 		long long interval = 0;
 		if (sscanf(line, "FORKP:%d:%d:%lld\n", &count, &threads,
 			   &interval) == 3) {

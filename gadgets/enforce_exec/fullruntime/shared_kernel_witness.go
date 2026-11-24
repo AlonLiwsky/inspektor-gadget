@@ -358,7 +358,10 @@ var sharedStartKernelWitness = func(gc operators.GadgetContext, receipts map[str
 // hook that fires (bpf missing from lsm=, ftrace off, a trampoline the
 // kernel never calls). It enables BPF run statistics for its own duration,
 // forks and execs this binary as a canary (which exits at once), and
-// requires each receipt's program run count to have increased.
+// requires each receipt's program run count to have increased. The root
+// barrier's own programs (sharedRootBarrierPrograms) are not waited for:
+// their hooks do not fire during a fork, exec and exit, and the barrier
+// self-test proves them (verifySharedRootBarrier).
 func runSharedAttachCanary(receipts map[string]*operators.NativeAttachment) error {
 	return runSharedAttachCanaryWith(context.Background(), receipts, nil)
 }
@@ -372,6 +375,9 @@ func runSharedAttachCanaryWith(ctx context.Context, receipts map[string]*operato
 	runs := func() (map[string]uint64, error) {
 		out := make(map[string]uint64, len(receipts))
 		for name, r := range receipts {
+			if sharedRootBarrierPrograms[name] {
+				continue
+			}
 			p, err := ebpf.NewProgramFromID(ebpf.ProgramID(r.ProgramID))
 			if err != nil {
 				return nil, fmt.Errorf("attach canary: program %s: %w", name, err)
@@ -419,7 +425,7 @@ func runSharedAttachCanaryWith(ctx context.Context, receipts map[string]*operato
 			return err
 		}
 		silent = silent[:0]
-		for name := range receipts {
+		for name := range before {
 			if after[name] <= before[name] {
 				silent = append(silent, name+" ("+receipts[name].Target+")")
 			}

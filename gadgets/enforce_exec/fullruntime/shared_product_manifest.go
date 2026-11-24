@@ -12,10 +12,10 @@ package fullruntime
 // sharedProductManifestMaps and sharedProductManifestPrograms are the exact
 // map and program name sets of the shared product object, generated from
 // the product objects with sha256:
-//   - 4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7
-//   - 8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954
-//   - 92dc17d870ac543a8aef316a287e06538d503f8f34d293181436fb73caa1742e
-//   - b8fd0637c744a7960b0e6d25f19d3f8b9c461276a43583925e85421d5230552a
+//   - 3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31
+//   - a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e
+//   - f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba
+//   - fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d
 //
 // Product admission refuses any other name set (validateSharedProductManifest).
 var sharedProductManifestMaps = []string{
@@ -64,6 +64,9 @@ var sharedProductManifestMaps = []string{
 	"opaque_real_verdict_counters",
 	"opaque_real_verdict_events",
 	"opaque_real_work_sync",
+	"root_barrier_counters",
+	"root_barrier_faults",
+	"root_barrier_probe",
 	"se_admin",
 	"se_arena",
 	"se_arm_frame",
@@ -146,6 +149,13 @@ var sharedProductManifestPrograms = []string{
 	"opaque_real_route_publish",
 	"opaque_real_route_recycle",
 	"opaque_real_route_withdraw",
+	"rb_capable",
+	"rb_chroot",
+	"rb_move_mount",
+	"rb_pivotroot",
+	"rb_sb_mount",
+	"rb_sb_umount",
+	"rb_userns",
 	"real_owner_capsule_begin",
 	"real_owner_capsule_free",
 	"real_owner_capsule_terminal",

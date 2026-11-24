@@ -127,7 +127,9 @@ q() {
 # The product profiles, in pin order: name TASK WORK.
 PROFILES=("g19pkg64 64 8" "g19pkg128 128 32" "g19pkg256 256 32" "g19pkg512 512 16")
 
-SOURCES=(include gadgets/enforce_exec/full gadgets/enforce_exec/fullpolicy/bpf gadgets/enforce_exec/fullruntime/bpf)
+# gadgets/common/root_barrier.h: the root barrier, included by the product
+# source with a relative path.
+SOURCES=(include gadgets/common/root_barrier.h gadgets/enforce_exec/full gadgets/enforce_exec/fullpolicy/bpf gadgets/enforce_exec/fullruntime/bpf)
 if [[ ! -e $CANON_REPO ]]; then
 	mkdir -p -- "$CANON_REPO"
 	(cd -- "$repo" && tar -cf - "${SOURCES[@]}") | tar -xf - -C "$CANON_REPO"

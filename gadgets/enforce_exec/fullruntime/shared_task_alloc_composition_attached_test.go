@@ -14,6 +14,9 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
 	"golang.org/x/sys/unix"
+
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/common/rootbarrier"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
 // VM only: the product fork transaction next to a second,
@@ -33,6 +36,14 @@ import (
 //     birth park is taken or abandoned (none stale, latched or failed);
 //   - no fail-closed rate counts a fault, and no account is faulted;
 //   - the next fork of the same parent succeeds and settles.
+//
+// The inline root barrier (the barrier's task_alloc body, called by the
+// product source right after the previous verdict check, before the birth
+// claim): a clone(CLONE_NEWNS) of a Strict task is denied with EPERM before
+// the source counts a birth or parks a claim, with no fail-closed fault and
+// no barrier fault, and the barrier counts it; under Audit the same clone
+// succeeds and settles. A chroot of a covered child is denied under Strict
+// and succeeds under Audit.
 //
 // The product source must run in exactly one of the two orders (it is
 // logged which), so both paths are covered. Whether it ran is read from a
@@ -67,6 +78,9 @@ func TestSharedNodeTaskAllocCompositionAttached(t *testing.T) {
 					ran[order] = sharedTaskAllocComposition(t, cfg, class.class, order == "denier attached first")
 				})
 			}
+			t.Run("inline root barrier", func(t *testing.T) {
+				sharedTaskAllocInlineBarrier(t, cfg, class.class)
+			})
 			if t.Failed() {
 				return
 			}
@@ -262,4 +276,91 @@ func sharedTaskAllocNoFault(t *testing.T, f *sharedFCEnv, before sharedM4Witness
 		}
 	}
 	f.accounts() // fails on a faulted TASK or WORK account
+}
+
+// sharedTaskAllocBarrierCounts reads the root barrier's denials and faults of
+// the node's collection.
+func sharedTaskAllocBarrierCounts(t *testing.T, f *sharedFCEnv) (map[rootbarrier.Op]uint64, uint64) {
+	t.Helper()
+	mapOf := func(name string) *ebpf.Map {
+		value, _ := f.gc.GetVar(operators.MapPrefix + name)
+		m, _ := value.(*ebpf.Map)
+		if m == nil {
+			t.Fatalf("root barrier map %s not published", name)
+		}
+		return m
+	}
+	denials, err := rootbarrier.Denials(mapOf(rootbarrier.CountersMap))
+	if err != nil {
+		t.Fatal(err)
+	}
+	faults, err := rootbarrier.Faults(mapOf(rootbarrier.FaultsMap))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return denials, faults[rootbarrier.FaultDenied] + faults[rootbarrier.FaultAllowed]
+}
+
+// sharedTaskAllocInlineBarrier runs the inline root barrier case for class.
+func sharedTaskAllocInlineBarrier(t *testing.T, cfg sharedFCConfig, class int) {
+	f := sharedFCStart(t, cfg, "taskalloc-rb", class, nil)
+	route := f.slot(f.helper.ino)
+	parkBefore, err := f.node.BirthParkHealth()
+	if err != nil {
+		t.Fatalf("object has no birth park: %v", err)
+	}
+	witnessBefore := sharedM4ReadWitness(t, f.gc)
+	denialsBefore, faultsBefore := sharedTaskAllocBarrierCounts(t, f)
+	f.requireHealth("before the CLONE_NEWNS fork", SharedFailClosedHealthy)
+
+	exits := f.helper.round(t, "FORKNS:%d\n", 1)
+	f.settle("CLONE_NEWNS fork")
+	park := sharedTaskAllocParkSettled(t, f, parkBefore)
+	sharedTaskAllocNoClaim(t, f, route)
+	sharedTaskAllocNoFault(t, f, witnessBefore, "CLONE_NEWNS fork")
+	witness := sharedM4ReadWitness(t, f.gc)
+	births := witness.attempts[0] - witnessBefore.attempts[0]
+	denials, faults := sharedTaskAllocBarrierCounts(t, f)
+	cloneNS := denials[rootbarrier.OpCloneNS] - denialsBefore[rootbarrier.OpCloneNS]
+	t.Logf("class %d: CLONE_NEWNS fork %+v, birth attempts +%d, park delta %+v, barrier clone_ns denials +%d", class, exits, births, park, cloneNS)
+	if faults != faultsBefore {
+		t.Fatalf("root barrier faults +%d, want none", faults-faultsBefore)
+	}
+	if class == 2 {
+		if len(exits) != 1 || exits[0].pid != -1 || exits[0].code != int(unix.EPERM) {
+			t.Fatalf("Strict CLONE_NEWNS fork: %+v, want FORKED:-1:%d (EPERM)", exits, unix.EPERM)
+		}
+		if births != 0 || park.Parked != 0 {
+			t.Fatalf("Strict CLONE_NEWNS fork: birth attempts +%d, park %+v: the barrier must deny before the birth claim", births, park)
+		}
+		if cloneNS != 1 {
+			t.Fatalf("Strict CLONE_NEWNS fork: barrier clone_ns denials +%d, want 1", cloneNS)
+		}
+	} else {
+		if len(exits) != 1 || exits[0].pid <= 0 || exits[0].code != 0 {
+			t.Fatalf("Audit CLONE_NEWNS fork: %+v, want a child that exits 0", exits)
+		}
+		if births != 1 || cloneNS != 0 {
+			t.Fatalf("Audit CLONE_NEWNS fork: birth attempts +%d, barrier clone_ns denials +%d, want 1 and 0", births, cloneNS)
+		}
+	}
+	f.requireHealth("after the CLONE_NEWNS fork", SharedFailClosedHealthy)
+
+	// A covered child's chroot: denied under Strict, allowed under Audit.
+	exits = f.helper.round(t, "CHROOT:%d\n", 1)
+	f.settle("chroot child")
+	sharedTaskAllocParkSettled(t, f, parkBefore)
+	sharedTaskAllocNoClaim(t, f, route)
+	sharedTaskAllocNoFault(t, f, witnessBefore, "chroot child")
+	denials, faults = sharedTaskAllocBarrierCounts(t, f)
+	chroots := denials[rootbarrier.OpChroot] - denialsBefore[rootbarrier.OpChroot]
+	want, wantChroots := 0, uint64(0)
+	if class == 2 {
+		want, wantChroots = int(unix.EPERM), 1
+	}
+	if len(exits) != 1 || exits[0].pid <= 0 || exits[0].code != want || chroots != wantChroots || faults != faultsBefore {
+		t.Fatalf("class %d chroot child: %+v, barrier chroot denials +%d, faults +%d; want exit %d, %d denial(s), no fault", class, exits, chroots, faults-faultsBefore, want, wantChroots)
+	}
+	f.requireHealth("after the chroot child", SharedFailClosedHealthy)
+	t.Logf("class %d: inline root barrier ok, TASK/WORK %d/%d at baseline", class, f.tasks, f.works)
 }
