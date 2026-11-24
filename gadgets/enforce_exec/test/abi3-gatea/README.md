@@ -83,8 +83,9 @@ Prerequisites: root, amd64, cgroup v2 with `pids` already enabled in the root's
 `cgroup.subtree_control`, BPF LSM, kernel BTF, bpftool, libbpf compatible with the
 built runner, Bash and coreutils. **Never run this on a production host.**
 
-The wrapper accepts only the two BTF SHA-256 identities in
-[`KERNEL-MATRIX.md`](../../fullruntime/KERNEL-MATRIX.md). Recover their exact
+The wrapper accepts only two BTF SHA-256 identities (`12f7d627…` and
+`75980754…`; their artifacts were documented in the removed
+`fullruntime/KERNEL-MATRIX.md`, see git history). Recover their exact
 archived boot/config/module artifacts; a newly rebuilt kernel with a different
 BTF hash is not one of those artifacts. There is no hash-bypass option.
 

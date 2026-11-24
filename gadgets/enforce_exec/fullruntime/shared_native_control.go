@@ -360,7 +360,7 @@ func newSharedControl(ctx context.Context, profile SharedProfile, r sharedContro
 	if err != nil {
 		return nil, err
 	}
-	c := &sharedControl{resources: r, config: sharedNodeWire{NodeCookie: cookie, Nonce: nonce, ABI: OwnerDevelopmentABI, ProfileVersion: SharedProfileVersion, Bindings: uint32(profile.Bindings), Objects: uint32(admission.PolicyObjects), Cells: uint32(admission.ArenaCells)}}
+	c := &sharedControl{resources: r, config: sharedNodeWire{NodeCookie: cookie, Nonce: nonce, ABI: sharedNodeABI, ProfileVersion: SharedProfileVersion, Bindings: uint32(profile.Bindings), Objects: uint32(admission.PolicyObjects), Cells: uint32(admission.ArenaCells)}}
 	for i, count := range profile.PolicySlots {
 		c.config.Slots[i] = uint32(count)
 	}

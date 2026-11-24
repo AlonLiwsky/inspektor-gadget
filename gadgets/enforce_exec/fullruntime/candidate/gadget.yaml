@@ -2,10 +2,10 @@
 # (BuildSharedCandidateImage) is qualification-tag only. A qualification
 # binary (enforce_exec_shared_qualification tag, WithSharedNodeQualification)
 # admits it and that node never reports Ready. A product binary
-# (WithSharedNodeHost) admits the product image built from this metadata only
-# on a pinned kernel build (sharedProductPins: BTF, build-id, release), with
-# the pin's failure-frame attach_to symbols and a pinned product object
-# sha256; see ../README.md "Shared engine: supported kernels".
+# (WithSharedNodeHost) admits the product image built from this metadata on
+# every kernel the product kernel gate admits (SharedProductKernel), with no
+# attach_to override and a product object sha256 of this release; see
+# ../README.md "Shared engine: supported kernels".
 #
 # This is the PRODUCT image metadata (G019 section 8 packaging). The image's
 # gadget.yaml is this file merged with

@@ -41,7 +41,7 @@ type KernelHeader struct {
 // KernelPolicy offsets: UID0, rootRole8, default16 (0 absent,1 allow,2 deny),
 // mode20 (1 audit,2 enforce), rootEpoch24. Stable hashes are not generation-local IDs.
 // RootEpoch identifies the UID's first successful activation, not the current
-// revision. A persistent owner retains it across removal/re-addition; staged role
+// revision. The engine retains it across removal/re-addition; staged role
 // seeds from a failed attempt must never be accepted under another epoch.
 type KernelPolicy struct {
 	UID, RootRole uint64
@@ -108,7 +108,7 @@ type RuleMetadata struct {
 	PolicyID, Revision, Name, Origin string
 }
 type KernelProgram struct {
-	// Identities lets a persistent owner also check collisions against names in
+	// Identities lets the engine also check collisions against names in
 	// retained role state from older generations before committing this one.
 	Identities map[uint64]string
 	Entries    []Blob
@@ -201,8 +201,8 @@ func CompileKernel(policies []Policy, generation uint64, container string) (*Ker
 }
 
 // CompileKernelWithRoleEpochs preserves successful policy-UID activations across
-// revisions. Epochs are trusted persistent-owner state, never policy-authored
-// input. New UIDs use this attempt's generation. The owner records a new epoch
+// revisions. Epochs are trusted engine state, never policy-authored
+// input. New UIDs use this attempt's generation. The engine records a new epoch
 // only at successful publication; failed attempts cannot establish a root role.
 // This metadata does not bootstrap tasks or authorize seed writes by itself.
 func CompileKernelWithRoleEpochs(policies []Policy, generation uint64, container string, activated map[string]uint64) (*KernelProgram, error) {

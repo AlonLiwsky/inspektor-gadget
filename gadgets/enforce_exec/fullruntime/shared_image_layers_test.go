@@ -29,7 +29,7 @@ var (
 	testInit   = SharedInitIdentity{TGID: 4242, StartTicks: 987654, MountNS: 4026532901}
 )
 
-// testRootLine renders an AL2023 (kernel 6.1, containerd 2.x, SELinux)
+// testRootLine renders an EKS node (kernel 6.1, containerd 2.x, SELinux)
 // container root overlay mountinfo line.
 func testRootLine(minor int, superOptions string) string {
 	return fmt.Sprintf("1834 1650 0:%d / / rw,relatime master:841 - overlay overlay %s", minor, superOptions)
@@ -429,12 +429,12 @@ func TestSharedKernelDevEncoding(t *testing.T) {
 }
 
 func TestParseSharedMountinfo(t *testing.T) {
-	// AL2023 EKS node (kernel 6.1, containerd 2.x, SELinux), 12 lowers.
-	var al2023Lowers []string
+	// EKS node (kernel 6.1, containerd 2.x, SELinux), 12 lowers.
+	var eksLowers []string
 	for i := 112; i > 100; i-- {
-		al2023Lowers = append(al2023Lowers, testSnapFS(i))
+		eksLowers = append(eksLowers, testSnapFS(i))
 	}
-	al2023 := "2721 2490 0:388 / / rw,relatime master:1201 - overlay overlay rw,seclabel,lowerdir=" + strings.Join(al2023Lowers, ":") +
+	eks := "2721 2490 0:388 / / rw,relatime master:1201 - overlay overlay rw,seclabel,lowerdir=" + strings.Join(eksLowers, ":") +
 		",upperdir=" + testSnapFS(113) + ",workdir=" + testSnapRoot + "/113/work,uuid=on,nouserxattr"
 	tests := []struct {
 		name, line  string
@@ -445,7 +445,7 @@ func TestParseSharedMountinfo(t *testing.T) {
 		fstype      string
 		superOption string
 	}{
-		{name: "al2023 containerd root", line: al2023, minor: 388, mountPoint: "/", fstype: "overlay", superOption: "upperdir=" + testSnapFS(113)},
+		{name: "eks containerd root", line: eks, minor: 388, mountPoint: "/", fstype: "overlay", superOption: "upperdir=" + testSnapFS(113)},
 		{name: "no optional fields", line: "25 1 259:1 / / rw,noatime - xfs /dev/nvme0n1p1 rw,attr2", major: 259, minor: 1, mountPoint: "/", fstype: "xfs", superOption: "attr2"},
 		{name: "escaped space and comma", line: `40 25 0:50 / /mnt/a\040b rw shared:1 - overlay overlay rw,upperdir=/u\054x\040y`, minor: 50, mountPoint: "/mnt/a b", fstype: "overlay", superOption: "upperdir=/u,x y"},
 		{name: "multiple optional fields", line: "41 25 0:51 / /x rw shared:2 master:3 propagate_from:4 - tmpfs tmpfs rw", minor: 51, mountPoint: "/x", fstype: "tmpfs", superOption: "rw"},
@@ -475,7 +475,7 @@ func TestParseSharedMountinfo(t *testing.T) {
 			}
 		})
 	}
-	root, err := parseSharedRootMount(testMountinfo(al2023))
+	root, err := parseSharedRootMount(testMountinfo(eks))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,8 +483,8 @@ func TestParseSharedMountinfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.upper != testSnapFS(113) || fmt.Sprint(opts.lowers) != fmt.Sprint(al2023Lowers) {
-		t.Fatalf("al2023 options %+v", opts)
+	if opts.upper != testSnapFS(113) || fmt.Sprint(opts.lowers) != fmt.Sprint(eksLowers) {
+		t.Fatalf("eks options %+v", opts)
 	}
 	if _, err := parseSharedRootMount([]byte("garbage\n")); !errors.Is(err, ErrSharedImageAttestation) {
 		t.Fatalf("garbage mountinfo: %v", err)

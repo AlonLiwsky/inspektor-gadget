@@ -26,16 +26,10 @@ import (
 // TestBuildSharedCandidateImage: the image resolves under the normalized
 // reference to an index of one manifest for this GOARCH whose layers are the
 // packaged candidate metadata (geometry annotations) and the object; a rebuild
-// reuses the blobs; an entry outside the matrix or with an invalid profile is
-// refused.
+// reuses the blobs; an entry with an invalid profile is refused.
 func TestBuildSharedCandidateImage(t *testing.T) {
 	elf := sharedMinimalObject(t)
-	var release string
-	for _, p := range sharedProductPins {
-		release = p.Release
-		break
-	}
-	kernel := KernelMatrixEntry{Release: release, Profile: sharedCandidateQualificationProfile()}
+	kernel := KernelMatrixEntry{Profile: sharedCandidateQualificationProfile()}
 	store := memory.New()
 	ref, err := BuildSharedCandidateImage(t.Context(), store, elf, kernel)
 	if err != nil || ref != SharedCandidateImage {
@@ -122,25 +116,14 @@ func TestBuildSharedCandidateImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Setenv("IG_ENFORCE_EXEC_PROBED_KERNEL", "")
-	for name, bad := range map[string]KernelMatrixEntry{
-		"outside the matrix": {Release: "6.1.0-generic", Profile: kernel.Profile},
-		"invalid profile":    {Release: release},
-	} {
-		if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), elf, bad); err == nil {
-			t.Fatalf("%s: built", name)
-		}
+	if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), elf, KernelMatrixEntry{}); err == nil {
+		t.Fatal("invalid profile: built")
 	}
-	// Every pinned release builds and supports diagnostic overlays.
-	for _, own := range sharedProductPins {
-		entry := KernelMatrixEntry{Release: own.Release, Profile: kernel.Profile}
-		if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), elf, entry); err != nil {
-			t.Fatalf("%s: %v", own.Release, err)
-		}
-		entry.Diagnostic = true
-		if err := entry.validate(); err != nil {
-			t.Fatalf("diagnostic %s: %v", own.Release, err)
-		}
+	// The diagnostic twin validates like the product entry.
+	diagnostic := kernel
+	diagnostic.Diagnostic = true
+	if err := diagnostic.validate(); err != nil {
+		t.Fatalf("diagnostic: %v", err)
 	}
 	if _, err := BuildSharedCandidateImage(t.Context(), memory.New(), []byte("not an ELF"), kernel); err == nil || !strings.Contains(err.Error(), "candidate object") {
 		t.Fatalf("not an object: %v", err)

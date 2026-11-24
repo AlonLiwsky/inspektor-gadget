@@ -38,8 +38,8 @@ import (
 //	IG_D1_OBJECT        the D1 object (scripts/compile.sh d1oracle128)
 //	IG_D1_CGROUP_ROOT   a dedicated parent cgroup, basename ig15-d1-*
 //	IG_D1_HELPER        the static testdata/d1_oracle_helper.c build
-//	IG_ENFORCE_EXEC_PROBED_KERNEL=1  the test-only admission override
-//	                    (d1_unpinned_kernel_test.go)
+//	IG_SHARED_LIVE_KERNEL=1  this kernel's own overlay layout and
+//	                    FMODE_BACKING probe (TestMain)
 //
 // Root, initial pid/time namespaces, an isolated VM. The oracle creates
 // and removes /d1 on the root filesystem.
@@ -825,50 +825,8 @@ func TestD1OracleGenerationSwitch(t *testing.T) {
 	o.reconciled("generation switch")
 }
 
-// TestD1OracleRefusesUnpinnedKernel: without the test-only override the
-// engine refuses a kernel outside its pinned list; nothing is loaded. On a
-// pinned build it shows the converse: admitted and started without it.
-func TestD1OracleRefusesUnpinnedKernel(t *testing.T) {
-	object, _, _ := d1Env(t)
-	digest, err := kernelBTFDigest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	saved := sharedProbedKernelOverride
-	if _, pinned := sharedCandidateKernelBTF[digest]; pinned {
-		// A pinned build (the AL2023 qualification runs): the same gate,
-		// without the override, must ADMIT it, and the node must start.
-		sharedProbedKernelOverride = func() bool { return false }
-		defer func() { sharedProbedKernelOverride = saved }()
-		if err := verifySharedCandidateKernel(); err != nil {
-			t.Fatalf("pinned kernel (BTF %s) refused without the override: %v", digest, err)
-		}
-		node, _, ctx, err := startSharedCandidateNodeE(t, object, "IG_SHARED_M4_HANDLER_SYMBOL", nil, nil)
-		if err != nil {
-			t.Fatalf("StartNode on the pinned kernel without the override: %v", err)
-		}
-		if err := node.StopNode(context.WithoutCancel(ctx)); err != nil {
-			t.Fatalf("StopNode: %v", err)
-		}
-		t.Logf("pinned kernel (BTF %s): admitted and started without the override", digest)
-		return
-	}
-	sharedProbedKernelOverride = func() bool { return false }
-	defer func() { sharedProbedKernelOverride = saved }()
-	node, _, ctx, err := startSharedCandidateNodeE(t, object, "IG_SHARED_M4_HANDLER_SYMBOL", nil, nil)
-	if err == nil {
-		_ = node.StopNode(context.WithoutCancel(ctx))
-		t.Fatal("StartNode admitted an unpinned kernel without the override")
-	}
-	if !strings.Contains(err.Error(), "outside proved shared candidate matrix") {
-		t.Fatalf("refusal reason: %v", err)
-	}
-	t.Logf("refused (BTF %s): %v", digest, err)
-}
-
 // TestD1OracleRefusesWithoutBPFLSM: run on a boot WITHOUT bpf in the active
-// LSM list (IG_D1_NO_BPF_LSM_BOOT=1). Even with the test-only override the
-// engine refuses to start.
+// LSM list (IG_D1_NO_BPF_LSM_BOOT=1): the kernel admission refuses it.
 func TestD1OracleRefusesWithoutBPFLSM(t *testing.T) {
 	object, _, _ := d1Env(t)
 	if os.Getenv("IG_D1_NO_BPF_LSM_BOOT") != "1" {
@@ -880,9 +838,6 @@ func TestD1OracleRefusesWithoutBPFLSM(t *testing.T) {
 	}
 	if requireBPFLSM(string(lsm)) == nil {
 		t.Fatalf("this boot has the bpf LSM active (%s)", strings.TrimSpace(string(lsm)))
-	}
-	if !sharedProbedKernelOverride() {
-		t.Fatal(SharedProbedKernelEnv + "=1 required: the refusal must come from the LSM check, not the pin")
 	}
 	node, _, ctx, err := startSharedCandidateNodeE(t, object, "IG_SHARED_M4_HANDLER_SYMBOL", nil, nil)
 	if err == nil {
@@ -1289,7 +1244,7 @@ func TestD1OracleCanaryRefusesWithoutBPFLSM(t *testing.T) {
 		t.Fatalf("this boot has the bpf LSM active (%s)", strings.TrimSpace(string(lsm)))
 	}
 	if !sharedSkipLSMListGate() {
-		t.Fatal("IG_ENFORCE_EXEC_PROBED_KERNEL=1 and IG_ENFORCE_EXEC_SKIP_LSM_LIST_GATE=1 required in a qualification build")
+		t.Fatal(SharedSkipLSMListGateEnv + "=1 required in a qualification build")
 	}
 	node, _, ctx, err := startSharedCandidateNodeE(t, object, "IG_SHARED_M4_HANDLER_SYMBOL", nil, nil)
 	if err == nil {

@@ -5,8 +5,7 @@
 // the eBPF operator's native-resource path (enforcement families only). It
 // never runs for ordinary gadgets.
 //
-// Capacity model (G009, measured on the exact AL2023 6.12 and 6.18 kernels):
-// every BPF trampoline accepts at most TrampolineLinkCap links, shared by the
+// Capacity model: every BPF trampoline accepts at most TrampolineLinkCap links, shared by the
 // fentry, fexit, fmod_ret and LSM programs on it; one more attach fails with
 // E2BIG. An LSM hook X uses the trampoline of the kernel function bpf_lsm_X.
 //
@@ -35,8 +34,8 @@ import (
 )
 
 const (
-	// TrampolineLinkCap is BPF_MAX_TRAMP_LINKS as measured on both exact
-	// AL2023 kernels (G009 step 2): 38 links per trampoline.
+	// TrampolineLinkCap is BPF_MAX_TRAMP_LINKS on x86_64
+	// (include/linux/bpf.h): 38 links per trampoline.
 	TrampolineLinkCap = 38
 	// DefaultReservePerHook is R: links per trampoline left free for third
 	// parties (8 of 38, about 20%, covering the 1 preexisting stock link seen

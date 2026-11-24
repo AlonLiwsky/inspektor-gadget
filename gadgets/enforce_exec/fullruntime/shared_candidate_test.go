@@ -11,10 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
-
-	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 )
 
 // This models only the transport fault boundary. It does not attest candidate
@@ -311,93 +308,4 @@ int main(void) {
 			t.Log(string(out))
 		})
 	}
-}
-
-func TestSharedCandidateMetadataMatchesActualSeal(t *testing.T) {
-	var generated strings.Builder
-	for seed := 0; seed < 16; seed++ {
-		policies := make([]fullpolicy.Policy, 8)
-		refs := make([]fullpolicy.SharedPolicyRef, 8)
-		for i := range policies {
-			p := fullpolicy.Policy{ID: fmt.Sprintf("policy-%d", (i*5)%8), Revision: "r", RootRole: "root", Mode: fullpolicy.Audit}
-			if seed != 0 && (i+seed)%4 == 0 {
-				p.Mode = fullpolicy.Enforce
-			}
-			if (i+seed)%3 == 0 {
-				p.Default = fullpolicy.Deny
-			}
-			r := fullpolicy.Rule{Name: "r", Action: fullpolicy.Allow}
-			if seed != 0 && (i+seed)%5 == 0 {
-				r.Mode = fullpolicy.Enforce
-			} else if (i+seed)%2 == 0 {
-				r.Mode = fullpolicy.Audit
-			}
-			if (i+seed)%3 != 1 {
-				r.Actor.Role = []string{"root"}
-			}
-			if (i+seed)%4 == 0 {
-				r.Target.SetRole = "next"
-			} else if (i+seed)%2 == 0 {
-				r.Action = fullpolicy.Deny
-			}
-			p.Rules = []fullpolicy.Rule{r}
-			policies[i] = p
-			object, err := fullpolicy.CompileSharedPolicy(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			refs[(i+seed)%8] = fullpolicy.SharedPolicyRef{Object: object, RootEpoch: 1}
-		}
-		snapshot, err := fullpolicy.NewSharedSnapshot(7, 2, "app", refs)
-		if err != nil {
-			t.Fatal(err)
-		}
-		summary, err := snapshot.ExecutionMetadata()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if seed == 0 && (summary.ExecutionClass != 1 || summary.RequiredKnown != 0) {
-			t.Fatal("audit-only dependency gained strict requirement")
-		}
-		program, err := fullpolicy.CompileKernel(policies, 2, "app")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var required, writers uint32
-		for i := uint32(0); i < 8; i++ {
-			policy, err := fullpolicy.Decode[fullpolicy.KernelPolicy](program.Entries[fullpolicy.KernelPolicyBase+i])
-			if err != nil {
-				t.Fatal(err)
-			}
-			found := false
-			for j, ref := range refs {
-				if ref.Object.UID() == policy.UID {
-					found = true
-					if summary.RequiredKnown&(1<<j) != 0 {
-						required |= 1 << i
-					}
-					if summary.RoleWriters&(1<<j) != 0 {
-						writers |= 1 << i
-					}
-				}
-			}
-			if !found {
-				t.Fatal("missing compiled UID")
-			}
-		}
-		fmt.Fprintf(&generated, "/* shared metadata seed=%d */\n{static const unsigned char image[][288]={\n", seed)
-		for _, blob := range program.Entries {
-			generated.WriteString("{")
-			for _, b := range blob {
-				fmt.Fprintf(&generated, "%d,", b)
-			}
-			generated.WriteString("},\n")
-		}
-		generated.WriteString("};\nmemset(cells,0,sizeof(cells));memset(&work,0,sizeof(work));\n")
-		generated.WriteString("dispatch=(struct eo_dispatch){.scope_state=EO_SCOPE_ACTIVE,.session_cookie=7,.cgroup=42,.serial=1,.active={.generation=1,.execution_class=1,.policy_count=1}};\n")
-		fmt.Fprintf(&generated, "assert(!eo_candidate_begin_locked(&dispatch,7,2,%d));\n", len(program.Entries))
-		fmt.Fprintf(&generated, "for(__u32 key=0;key<%d;key++){struct eo_candidate_input input={.request={.session_cookie=7,.attempt=2,.entries=%d,.index=key,.bank=1}};memcpy(input.data,image[key],288);assert(!eo_candidate_write_cell(&dispatch,&input.request,input.data,&cells[1][key]));}\n", len(program.Entries), len(program.Entries))
-		fmt.Fprintf(&generated, "assert(eo_seal_candidate(&dispatch,7,2)==EO_OK);assert(dispatch.candidate.required_known_mask==%d);assert(dispatch.candidate.sealed_role_writer_mask==%d);assert(dispatch.candidate.sealed_class==%d);assert(!work.busy&&!work.reader.owned&&!dispatch.authority_readers&&!dispatch.bank_readers[1]);}\n", required, writers, summary.ExecutionClass)
-	}
-	runOwnerSealFixture(t, generated.String())
 }

@@ -100,9 +100,6 @@ func TestSharedImageClassifyAttached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sharedCandidateKernelBTF[digest] != release && !sharedProbedKernelOverride() {
-		t.Fatalf("release %q does not match BTF %s", release, digest)
-	}
 	t.Logf("kernel %s BTF %s overlay layout %d", release, digest, layout)
 	kernel, err := btf.LoadKernelSpec()
 	if err != nil {

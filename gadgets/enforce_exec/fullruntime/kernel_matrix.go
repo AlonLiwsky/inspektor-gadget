@@ -27,58 +27,6 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/host"
 )
 
-// SupportedKernelBTF identifies the original isolated proof artifact. This is NOT
-// a general Linux or released-kernel support claim. Expanding the exact matrix
-// requires isolated proof of overlay fields, task lifecycle and the mutex barrier.
-const SupportedKernelBTF = "12f7d6270d8090e944941d3ff77c13339cebe1c394f4ef0d27be1bff0d09561b"
-
-// SupportedKubernetesKernelBTF identifies the same pinned Linux source with the
-// additional fanotify, networking and CPU bandwidth configuration needed by the
-// isolated Kubernetes proof. It does not admit other builds of that source.
-const SupportedKubernetesKernelBTF = "759807546ae2feaf616dc65c73167439867bb393dc468a4bd39c0ab1bc267d51"
-
-func supportedKernelBTF(digest string) bool {
-	switch digest {
-	case SupportedKernelBTF, SupportedKubernetesKernelBTF:
-		return true
-	default:
-		return false
-	}
-}
-
-// sharedProductPin is one exact kernel build the shared product node is
-// qualified on (G011 pass 1; checklist step 0 values, mirrored in
-// testdata/shared_product_pins.tsv). The BTF digest alone does not identify a
-// build: the release and the vmlinux GNU build-id must match too.
-type sharedProductPin struct {
-	Release string // uname -r
-	BuildID string // vmlinux GNU build-id (hex) from /sys/kernel/notes
-	// Stage 1 (D1): no failure-frame symbols. The exec frame is
-	// lsm/bprm_creds_for_exec .. tp_btf/sys_exit on every kernel, so a pin
-	// carries no per-kernel handler choice.
-	//
-	// FmodeBacking is the FMODE_BACKING bit of this build
-	// (include/linux/fs.h; source-verified). The live probe only
-	// cross-checks it (kernel_probe.go sharedFmodeBacking).
-	FmodeBacking uint32
-	// ProductObjects is the set of product object sha256 (a subset of
-	// sharedProductObjects) QUALIFIED on this pinned build: the product
-	// admits only a (kernel, object) pair that ran its oracle there (S1
-	// review F1). Literal digests, never derived from sharedProductObjects:
-	// a rebuilt object is NOT qualified until it runs the oracle on the pin.
-	ProductObjects map[string]struct{}
-}
-
-// qualifiesProductObject reports whether digest is a product object of this
-// release that is qualified on pin.
-func (pin sharedProductPin) qualifiesProductObject(digest string) bool {
-	if !sharedProductObject(digest) {
-		return false
-	}
-	_, ok := pin.ProductObjects[digest]
-	return ok
-}
-
 // sharedProductObjects is the sha256 set of the product objects of THIS
 // release, by profile. D3: one CO-RE object per profile for every kernel
 // (they were one set per kernel build: the per-kernel objects differed only
@@ -87,10 +35,10 @@ func (pin sharedProductPin) qualifiesProductObject(digest string) bool {
 // pinned toolchain at the neutral paths; testdata/shared_product_objects.tsv
 // mirrors them.
 var sharedProductObjects = map[string]string{
-	"g19pkg64":  "f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba",
-	"g19pkg128": "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d",
-	"g19pkg256": "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e",
-	"g19pkg512": "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31",
+	"g19pkg64":  "8c5acc1eff4da8246ad02f010825c648b9c032be7c25759baf875df396f38954",
+	"g19pkg128": "4d67259c637343f100b8f5583b1fed53c121d3c25c155dfca2b036ba729b3ed7",
+	"g19pkg256": "92dc17d870ac543a8aef316a287e06538d503f8f34d293181436fb73caa1742e",
+	"g19pkg512": "b8fd0637c744a7960b0e6d25f19d3f8b9c461276a43583925e85421d5230552a",
 }
 
 // sharedProductObject reports whether digest is a product object of this
@@ -103,55 +51,6 @@ func sharedProductObject(digest string) bool {
 	}
 	return false
 }
-
-// sharedProductPins maps a vmlinux BTF sha256 to its pinned build.
-var sharedProductPins = map[string]sharedProductPin{
-	"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": {
-		Release:      "6.12.113-138.209.amzn2023.x86_64",
-		BuildID:      "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
-		FmodeBacking: sharedFmodeBacking24,
-		// Root barrier requalification (2026-11-22, EC2 on the pinned AMI):
-		// G035 product load run g035-6-12-20261122t094925z (build and 6.12,
-		// all 4 profiles: 74 PASS, 0 FAIL), the task_alloc composition with
-		// the inline barrier, the root barrier kernel test and the D3 core
-		// probe (46 of 46 programs loaded).
-		ProductObjects: map[string]struct{}{
-			"f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba": {}, // g19pkg64
-			"fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d": {}, // g19pkg128
-			"a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e": {}, // g19pkg256
-			"3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31": {}, // g19pkg512
-		},
-	},
-	"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
-		Release:      "6.18.56-125.164.amzn2023.x86_64",
-		BuildID:      "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
-		FmodeBacking: sharedFmodeBacking24,
-		// Root barrier requalification (2026-11-22, EC2 on the pinned AMI):
-		// G035 product load run g035-6-18-20261122t094934z (build and 6.18,
-		// all 4 profiles: 74 PASS, 0 FAIL), the task_alloc composition with
-		// the inline barrier, the root barrier kernel test and the D3 core
-		// probe (46 of 46 programs loaded).
-		ProductObjects: map[string]struct{}{
-			"f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba": {}, // g19pkg64
-			"fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d": {}, // g19pkg128
-			"a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e": {}, // g19pkg256
-			"3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31": {}, // g19pkg512
-		},
-	},
-}
-
-// sharedCandidateKernelBTF is the exact kernel matrix of the shared-node
-// candidate (G019 qualification builds): the BTF of the two AL2023 guest
-// kernels the candidate objects are compiled against (compile.sh vmlinux.h)
-// and qualified on, derived from sharedProductPins. It is not the
-// persistent-owner matrix above and admits nothing to that path.
-var sharedCandidateKernelBTF = func() map[string]string {
-	out := make(map[string]string, len(sharedProductPins))
-	for digest, pin := range sharedProductPins {
-		out[digest] = pin.Release
-	}
-	return out
-}()
 
 // Overlay exec-file private_data layouts consumed by se_image_classify through
 // the se_image_ovl_layout rodata constant (full/shared_image_classify.h
@@ -316,41 +215,18 @@ func liveSharedImageOverlayLayout() (uint32, error) {
 	return sharedImageOverlayLayout(overlay)
 }
 
-func verifySupportedKernel() error {
-	return verifyKernelBTF(supportedKernelBTF, "persistent-owner")
-}
-
-// verifySharedCandidateKernel admits only sharedCandidateKernelBTF. D3: with
-// the test-only probed-kernel override (qualification builds, explicit
-// opt-in) a kernel outside that matrix is admitted on its probes instead
-// (verifySharedProbedKernel: still x86_64, bpf LSM,
-// ftrace on, no livepatch).
+// verifySharedCandidateKernel admits the qualified candidate's kernel
+// (qualification builds only) on the product gate's checks
+// (admitKernelIdentity). The canary negative test may skip the LSM-list
+// check (sharedSkipLSMListGate) to show that the startup canary alone
+// refuses a kernel whose BPF LSM programs never run.
 func verifySharedCandidateKernel() error {
-	err := verifyKernelBTF(func(digest string) bool {
-		_, ok := sharedCandidateKernelBTF[digest]
-		return ok
-	}, "shared candidate")
-	if err == nil || !sharedProbedKernelOverride() {
-		return err
+	p := sharedProductKernelProbes
+	if sharedSkipLSMListGate() {
+		p.lsm = func() (string, error) { return "bpf", nil }
 	}
-	if perr := verifySharedProbedKernel(sharedProductKernelProbes); perr != nil {
-		return fmt.Errorf("%w; %w", err, perr)
-	}
-	return nil
-}
-
-func verifyKernelBTF(supported func(string) bool, matrix string) error {
-	if runtime.GOARCH != "amd64" {
-		return fmt.Errorf("%s matrix requires a proved x86_64 kernel", matrix)
-	}
-	digest, err := kernelBTFDigest()
-	if err != nil {
-		return err
-	}
-	if !supported(digest) {
-		return fmt.Errorf("kernel BTF is outside proved %s matrix (sha256 %s)", matrix, digest)
-	}
-	return checkKernelControls()
+	_, err := admitKernelIdentity(p)
+	return err
 }
 
 // sharedProductKernelProbe reads the running kernel's identity and controls
@@ -378,21 +254,29 @@ var sharedProductKernelProbes = sharedProductKernelProbe{
 // sharedProductKernelCheck is the product kernel gate; tests replace it.
 var sharedProductKernelCheck = verifySharedProductKernel
 
-// verifySharedProductKernel admits only an exact sharedProductPins build:
-// x86_64, a pinned vmlinux BTF digest, its release and GNU build-id, the bpf
-// LSM active, ftrace enabled and no livepatch (verifyKernelIdentity, the
-// check exported as VerifyKernel). It returns the BTF digest and its pin.
-// Every refusal wraps ErrSharedNativeUnavailable with the reason.
-func verifySharedProductKernel() (string, sharedProductPin, error) {
-	id, err := verifyKernelIdentity(sharedProductKernelProbes, sharedProductIdentities)
+// verifySharedProductKernel is the product kernel gate (admitKernelIdentity,
+// the check exported as AdmitKernel): amd64, a readable lowercase-hex vmlinux
+// BTF sha256, a non-empty release, a lowercase-hex GNU build-id, bpf LSM
+// active, ftrace enabled and no livepatch. Every kernel is admitted the same
+// way, on these checks; no build list is consulted. It returns the running
+// kernel's identity. Every refusal wraps both the *KernelCheckError and
+// ErrSharedNativeUnavailable.
+func verifySharedProductKernel() (KernelIdentity, error) {
+	id, err := admitKernelIdentity(sharedProductKernelProbes)
 	if err != nil {
-		return "", sharedProductPin{}, fmt.Errorf("shared product node refused: %w: %w", err, ErrSharedNativeUnavailable)
+		return KernelIdentity{}, fmt.Errorf("shared product node refused: %w: %w", err, ErrSharedNativeUnavailable)
 	}
-	pin, ok := sharedProductPins[id.BTF]
-	if !ok {
-		return "", sharedProductPin{}, fmt.Errorf("shared product node refused: no product pin for BTF %s: %w", id.BTF, ErrSharedNativeUnavailable)
-	}
-	return id.BTF, pin, nil
+	return id, nil
+}
+
+// SharedProductKernel is the product kernel gate on the running kernel
+// (amd64, a readable BTF digest, release and build-id, bpf LSM active,
+// ftrace enabled, no livepatch) and returns its identity for status
+// reporting. StartNode's product path and the product image admission run
+// the same gate. A refusal wraps both a *KernelCheckError (errors.As) and
+// ErrSharedNativeUnavailable.
+func SharedProductKernel() (KernelIdentity, error) {
+	return sharedProductKernelCheck()
 }
 
 // taintLivepatch is TAINT_LIVEPATCH (bit 15, include/linux/panic.h).
@@ -566,9 +450,9 @@ func readSysfsFile(path string, limit int64, what string) ([]byte, error) {
 
 // sharedImageOverlayConstants are the native constants (operators.
 // NativeConstantsKey) of one shared candidate collection load on the running
-// kernel: the se_image_ovl_layout of the exact matrix kernel (off the matrix
-// UNSET: the classifier then refuses every overlay file as UNKNOWN (AUTH),
-// never from-image), and the load's random nonzero se_verdict_load_epoch
+// kernel: the se_image_ovl_layout probed from the overlay BTF (UNSET when
+// it cannot be resolved: the classifier then refuses every overlay file as
+// UNKNOWN (AUTH), never from-image), and the load's random nonzero se_verdict_load_epoch
 // (review M7: task_cookie restarts per load, so verdict events are keyed by
 // (load_epoch, task_cookie, exec_id)).
 func sharedImageOverlayConstants() (map[string]any, error) {
@@ -584,8 +468,8 @@ func sharedImageOverlayConstants() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// FMODE_BACKING: the pinned bit on a pinned kernel (cross-checked by the
-	// live probe), the probed bit elsewhere (kernel_probe.go). Unset (0)
+	// FMODE_BACKING: the live probe's bit on every kernel (kernel_probe.go;
+	// a failed probe refuses). Unset (0)
 	// with a layout is refused by the classifier like an unset layout, with
 	// the reason; a failure is not cached, the next load computes it again.
 	backing := uint32(0)
@@ -696,22 +580,4 @@ func requireBPFLSM(lsm string) error {
 		}
 	}
 	return fmt.Errorf("BPF LSM not active")
-}
-
-func checkKernelControls() error {
-	lsm, err := readKernelLSM(kernelLSMRoots())
-	if err != nil {
-		return err
-	}
-	if err = requireBPFLSM(lsm); err != nil {
-		return err
-	}
-	ftrace, err := os.ReadFile("/proc/sys/kernel/ftrace_enabled")
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(string(ftrace)) != "1" {
-		return fmt.Errorf("ftrace is not enabled")
-	}
-	return nil
 }

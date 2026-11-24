@@ -29,12 +29,10 @@ var (
 // the gadget context's image name, and SharedNodeConfig.Image.
 const SharedCandidateImage = "local/shared-candidate:abi3-development"
 
-// KernelMatrixEntry is what the candidate image is built for on one exact
-// kernel of the shared candidate matrix (QUALIFICATION ONLY).
+// KernelMatrixEntry is what the candidate image is built with
+// (QUALIFICATION ONLY). The kernel is not part of it: one object per
+// profile runs on every kernel the gate admits.
 type KernelMatrixEntry struct {
-	// Release is the kernel's release of the shared candidate matrix
-	// (sharedCandidateKernelBTF, e.g. 6.12.113-138.209.amzn2023.x86_64).
-	Release string
 	// Profile is the object's compile-time geometry, written as the image's
 	// geometry annotations (the node's SharedNodeConfig.Profile).
 	Profile SharedProfile
@@ -43,20 +41,11 @@ type KernelMatrixEntry struct {
 }
 
 func (k KernelMatrixEntry) validate() error {
-	known := false
-	for _, release := range sharedCandidateKernelBTF {
-		known = known || release == k.Release
-	}
-	// D3: the test-only probed-kernel override admits a release outside
-	// the matrix (verifySharedCandidateKernel still gates the load).
-	if !known && !sharedProbedKernelOverride() {
-		return fmt.Errorf("kernel %q outside the shared candidate matrix", k.Release)
-	}
 	_, err := k.Profile.Validate()
 	return err
 }
 
-// sharedCandidateMetadata is the candidate image's gadget.yaml for elf on
+// sharedCandidateMetadata is the candidate image's gadget.yaml for elf with
 // kernel: sharedImageMetadata with, for a diagnostic twin, both diagnostic
 // overlays.
 func sharedCandidateMetadata(elf []byte, kernel KernelMatrixEntry) ([]byte, error) {
@@ -71,7 +60,7 @@ func sharedCandidateMetadata(elf []byte, kernel KernelMatrixEntry) ([]byte, erro
 }
 
 // BuildSharedCandidateImage pushes the shared candidate gadget image of elf
-// (the compiled candidate object) for kernel into store and tags it
+// (the compiled candidate object) with kernel into store and tags it
 // (QUALIFICATION ONLY): a config layer with sharedCandidateMetadata, the
 // object as the eBPF program layer, a manifest for this GOARCH and an index
 // tagged with the normalized reference the OCI handler resolves. It returns
@@ -85,7 +74,7 @@ func BuildSharedCandidateImage(ctx context.Context, store oras.Target, elf []byt
 // BuildSharedCandidateImageRef is BuildSharedCandidateImage tagged with ref
 // (a short reference, as SharedCandidateImage) instead of
 // SharedCandidateImage, so one store can hold several images (the product
-// layout of every kernel and profile). It returns ref.
+// layout of every profile). It returns ref.
 func BuildSharedCandidateImageRef(ctx context.Context, store oras.Target, elf []byte, kernel KernelMatrixEntry, ref string) (string, error) {
 	if store == nil {
 		return "", fmt.Errorf("missing image store")

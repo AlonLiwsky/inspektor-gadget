@@ -8,8 +8,6 @@ import pathlib
 import re
 
 KERNELS = {
-    "al2023-k612": "6.12.113-138.209.amzn2023.x86_64",
-    "al2023-k618": "6.18.56-125.164.amzn2023.x86_64",
     "debian12": "6.1.0-54-amd64",
 }
 CASES = ["graceful", "sigkill", "partial-move", "abi-skew", "cgroup-exit",

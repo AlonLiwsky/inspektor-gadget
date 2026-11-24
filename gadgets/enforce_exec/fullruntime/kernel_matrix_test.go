@@ -7,91 +7,22 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf/btf"
 )
 
-func TestSupportedKernelBTFExactMatrix(t *testing.T) {
-	for _, digest := range []string{SupportedKernelBTF, SupportedKubernetesKernelBTF} {
-		if !supportedKernelBTF(digest) {
-			t.Fatalf("known exact artifact rejected: %s", digest)
-		}
-		for _, unknown := range []string{"", digest[:63], digest + "0", "0" + digest[1:], strings.ToUpper(digest), digest + "\n", " " + digest} {
-			if supportedKernelBTF(unknown) {
-				t.Fatalf("nonexact artifact accepted: %q", unknown)
-			}
-		}
-	}
-	if supportedKernelBTF(strings.Repeat("0", 64)) {
-		t.Fatal("unknown digest accepted")
-	}
-}
-
-func TestOwnerBuilderKernelMatrixMatchesRuntime(t *testing.T) {
-	builder, err := os.ReadFile("../full/owner/build-archive.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, digest := range map[string]string{"expected_btf": SupportedKernelBTF, "kubernetes_btf": SupportedKubernetesKernelBTF} {
-		if !strings.Contains(string(builder), "\n"+name+"="+digest+"\n") {
-			t.Fatalf("builder %s differs from runtime matrix", name)
-		}
-	}
-}
-
-// TestSharedCandidateKernelMatrixIsSeparate: the shared product pins are
-// exactly the two qualified AL2023 kernel builds (every field literal), the
-// candidate matrix is derived from them, and neither shares anything with
-// the persistent-owner matrix in either direction.
-func TestSharedCandidateKernelMatrixIsSeparate(t *testing.T) {
-	want := map[string]sharedProductPin{
-		"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": {
-			Release: "6.12.113-138.209.amzn2023.x86_64", BuildID: "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
-			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba": {}, "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d": {}, "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e": {}, "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31": {}},
-		},
-		"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
-			Release: "6.18.56-125.164.amzn2023.x86_64", BuildID: "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
-			FmodeBacking: 1 << 24, ProductObjects: map[string]struct{}{"f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba": {}, "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d": {}, "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e": {}, "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31": {}},
-		},
-	}
-	if !reflect.DeepEqual(sharedProductPins, want) {
-		t.Fatalf("shared product pins %+v, want %+v", sharedProductPins, want)
-	}
-	if len(sharedCandidateKernelBTF) != len(want) {
-		t.Fatalf("shared candidate matrix %v", sharedCandidateKernelBTF)
-	}
-	for digest, pin := range want {
-		if sharedCandidateKernelBTF[digest] != pin.Release {
-			t.Errorf("candidate matrix %s = %q, want %q", digest, sharedCandidateKernelBTF[digest], pin.Release)
-		}
-		if supportedKernelBTF(digest) {
-			t.Errorf("shared candidate kernel %s admitted by the persistent-owner matrix", pin.Release)
-		}
-	}
-	for _, digest := range []string{SupportedKernelBTF, SupportedKubernetesKernelBTF} {
-		if _, ok := sharedCandidateKernelBTF[digest]; ok {
-			t.Errorf("persistent-owner kernel %s in the shared candidate matrix", digest)
-		}
-		if _, ok := sharedProductPins[digest]; ok {
-			t.Errorf("persistent-owner kernel %s in the shared product pins", digest)
-		}
-	}
-}
-
 // TestMain makes the node-level unit tests host-independent: the overlay
-// layout read is faked (as on a matrix kernel with overlay loaded) unless a
-// live VM test (IG_SHARED_OVL_BTF / IG_SHARED_OVL_AUTOLOAD) uses the real one,
-// or the binary runs on an exact shared-candidate kernel: there every
-// attached test loads real objects, whose classifier must get that kernel's
-// own layout (a faked 6.18 OVL_FILE on 6.12 dereferenced the realfile as an
-// ovl_file: every image fact READ_FAULT/UNKNOWN, G020 6.12 image failure).
+// layout read and the FMODE_BACKING probe are faked unless the binary runs
+// attached tests on a live kernel, where every loaded object's classifier
+// must get that kernel's own layout (a faked OVL_FILE layout on a realfile
+// kernel dereferences the realfile as an ovl_file: every image fact
+// READ_FAULT/UNKNOWN). Live: IG_SHARED_OVL_BTF=1, IG_SHARED_OVL_AUTOLOAD=1,
+// the product attached tests (IG_SHARED_PRODUCT_LAYOUT) or
+// IG_SHARED_LIVE_KERNEL=1 (the qualification attached tests).
 func TestMain(m *testing.M) {
-	// D3: under the test-only probed-kernel override the attached tests run
-	// on a stock kernel and need its real layout and FMODE_BACKING probe too.
-	if os.Getenv("IG_SHARED_OVL_BTF") != "1" && os.Getenv("IG_SHARED_OVL_AUTOLOAD") != "1" && !onSharedCandidateKernel() && !sharedProbedKernelOverride() {
+	if !sharedLiveKernelTest() {
 		overlayLayoutReader = func() (uint32, error) { return sharedImageOverlayLayoutOvlFile, nil }
 		overlayModuleLoader = func() error { return nil }
 		fmodeBackingReader = func(uint32) (uint32, error) { return sharedFmodeBacking24, nil }
@@ -99,39 +30,21 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// onSharedCandidateKernel: the running kernel's BTF is one of the exact
-// shared-candidate matrix kernels.
-func onSharedCandidateKernel() bool {
-	digest, err := kernelBTFDigest()
-	if err != nil {
-		return false
-	}
-	_, ok := sharedCandidateKernelBTF[digest]
-	return ok
+// sharedLiveKernelTest reports whether this test binary runs attached tests
+// on a live kernel (TestMain).
+func sharedLiveKernelTest() bool {
+	return os.Getenv("IG_SHARED_OVL_BTF") == "1" || os.Getenv("IG_SHARED_OVL_AUTOLOAD") == "1" ||
+		os.Getenv("IG_SHARED_PRODUCT_LAYOUT") != "" || os.Getenv("IG_SHARED_LIVE_KERNEL") == "1"
 }
 
-// sharedImageOverlayLayoutsPinned are the source-verified layouts of the two
-// pinned builds (6.12 fs/overlayfs/file.c:170, 6.18 file.c:92-95,232). D3:
-// production no longer has this table (the layout is derived from the
-// overlay BTF shape); the tests keep it to assert that the derivation gives
-// the source-verified value on the pinned builds.
-var sharedImageOverlayLayoutsPinned = map[string]uint32{
-	"6.12.113-138.209.amzn2023.x86_64": sharedImageOverlayLayoutRealFile,
-	"6.18.56-125.164.amzn2023.x86_64":  sharedImageOverlayLayoutOvlFile,
-}
-
-// TestSharedImageOverlayLayoutExactMatrix: the shape derivation gives every
-// pinned kernel its source-verified layout, and the values match the
+// TestSharedImageOverlayLayoutValues: the shape derivation gives each
+// layout's synthetic overlay BTF its layout, and the values match the
 // classifier header.
-func TestSharedImageOverlayLayoutExactMatrix(t *testing.T) {
-	if len(sharedImageOverlayLayoutsPinned) != len(sharedCandidateKernelBTF) {
-		t.Fatalf("layout matrix %v differs from kernel matrix %v", sharedImageOverlayLayoutsPinned, sharedCandidateKernelBTF)
-	}
-	for _, release := range sharedCandidateKernelBTF {
-		want := sharedImageOverlayLayoutsPinned[release]
+func TestSharedImageOverlayLayoutValues(t *testing.T) {
+	for _, want := range []uint32{sharedImageOverlayLayoutRealFile, sharedImageOverlayLayoutOvlFile} {
 		got, err := sharedImageOverlayLayout(overlaySpecForLayout(t, want))
-		if err != nil || got != want || got == sharedImageOverlayLayoutUnset {
-			t.Errorf("%s: layout %d err %v, want %d", release, got, err, want)
+		if err != nil || got != want {
+			t.Errorf("layout %d err %v, want %d", got, err, want)
 		}
 	}
 	header, err := os.ReadFile("../full/shared_image_classify.h")
@@ -149,7 +62,7 @@ func TestSharedImageOverlayLayoutExactMatrix(t *testing.T) {
 	}
 }
 
-// overlaySpecForLayout builds a synthetic overlay module BTF: 6.18 shape
+// overlaySpecForLayout builds a synthetic overlay module BTF: the ovl_file shape
 // (struct ovl_file {file *realfile; file *upperfile}) or, for the realfile
 // layout, a spec without struct ovl_file.
 func overlaySpecForLayout(t *testing.T, layout uint32) *btf.Spec {

@@ -3,15 +3,15 @@
 
 // Command productimages packages the shared product objects that
 // build-product.sh wrote (OBJECTS/<profile>.bpf.o; stage 1: one CO-RE object
-// per profile for every kernel) into an OCI image layout, one image per
-// pinned kernel x profile
-// (fullruntime.BuildSharedProductImage), tagged with its local reference,
+// per profile for every kernel) into an OCI image layout, one kernel-neutral
+// image per profile (fullruntime.BuildSharedProductImage), tagged with its
+// local reference enforce-exec-shared:<profile>,
 // and fails unless every manifest and index digest equals
 // fullruntime.SharedProductImagePins. It prints one OK or FAIL line per
 // image with the built digests (a FAIL line also the pinned ones), so a pin
 // rotation reads the new digests from its output. With -json it writes one
-// entry per built image: {btf, release, profile, image, objectSha256,
-// manifestDigest, indexDigest}.
+// entry per built image: {profile, image, objectSha256, manifestDigest,
+// indexDigest}.
 //
 // Usage: productimages [-json FILE] -objects DIR -layout DIR
 package main
@@ -31,8 +31,6 @@ import (
 )
 
 type entry struct {
-	BTF            string `json:"btf"`
-	Release        string `json:"release"`
 	Profile        string `json:"profile"`
 	Image          string `json:"image"`
 	ObjectSHA256   string `json:"objectSha256"`
@@ -72,7 +70,7 @@ func run(ctx context.Context, objects, layout, out string) error {
 		if err != nil {
 			return err
 		}
-		got, err := fullruntime.BuildSharedProductImage(ctx, store, elf, pin.BTF, pin.Profile)
+		got, err := fullruntime.BuildSharedProductImage(ctx, store, elf, pin.Profile)
 		switch {
 		case errors.Is(err, fullruntime.ErrSharedProductImageMismatch):
 			fmt.Printf("FAIL %s manifest %s index %s, pinned %s %s\n", got.Image, got.ManifestDigest, got.IndexDigest, pin.ManifestDigest, pin.IndexDigest)
@@ -82,7 +80,7 @@ func run(ctx context.Context, objects, layout, out string) error {
 		default:
 			fmt.Printf("OK   %s manifest %s index %s\n", got.Image, got.ManifestDigest, got.IndexDigest)
 		}
-		built = append(built, entry{got.BTF, got.Release, got.Profile, got.Image, got.ObjectSHA256, got.ManifestDigest, got.IndexDigest})
+		built = append(built, entry{got.Profile, got.Image, got.ObjectSHA256, got.ManifestDigest, got.IndexDigest})
 	}
 	if out != "" {
 		data, err := json.MarshalIndent(built, "", "  ")
