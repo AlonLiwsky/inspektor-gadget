@@ -359,10 +359,10 @@ image runs on every kernel the product gate admits.
 
 | Profile | Image (local reference) | Manifest digest | Index digest |
 |---|---|---|---|
-| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:6e74512e72cc37e8d33633aad94219b457d69700fffcee3a9c0861230357ae43` | `sha256:55a4c3c70f45711b9db23738a5c9d7ce996e557b9c6111a9df1b7f88d3fc5571` |
-| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:48b5584528ce98f2b05463470a64ae994a73134f7d1ccf9434c2110e3bf5a182` | `sha256:dce925ec18ddf01d74bf299a0ec1d8e23097f7ce3259bcd0832dde8b55b782c9` |
-| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:d8a936ca27bb3f82abcbd09c3dc1841d31026c59d14b7612e88b5d759a4cc399` | `sha256:77866cfbafc68b6ccba44d0d03bd843e01675fbb175c7c8455bfb09c0b03e44f` |
-| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:a0e166fa8405bc4acd2caef50b05031fc035f40cc5009cfd82dd6e1ddef0384b` | `sha256:ec6d35126c0ddb6bc46a020ae7bd06cf795f41a053c66bb830ed2a363f8dd7d6` |
+| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:299da23e6469707a15344947670093f81fc3656e76c92164dda9c8945f548cb5` | `sha256:a809c884bce1a72e2ee7e0875ad4d4eccb59c52c9782a5f837a22f82b0da27c6` |
+| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:6020fd3fd8e689cfc42e176557b58617e8ebaecfaa69a09cbfe6597deb7ec8e7` | `sha256:0a23502c7ae93b5b5c70865d93078cf44d2496c689a7d10a6b24a5a12e15cab2` |
+| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:897876a95d13bbed4c42ce7f903f49eefd524b27c64a958cafc8450daf1160f2` | `sha256:e9f53b7f260d13f327dd2ae493c287fbb1f1028dc5fd91878aee45f95e7bb44d` |
+| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:a5f011fc8d6bc166942d94f284d3c410dbd91eb12b5f05ddb7095ee7ac6af748` | `sha256:d494441b9d4ac829e16bc355db4bc29c29db9b2b7cea5369ae94dc5fe79458a7` |
 
 The reference (tag) is not part of either digest.
 
@@ -625,7 +625,7 @@ with type 0), `mount`, `move_mount`, `umount` and the new mount API.
   binding, nor a task outside that cgroup. A host that requires the workload
   seccomp contract keeps it.
 
-### Executable-mapping gate (proposal)
+### Executable-mapping gate
 
 The exec verdict runs at `bprm_check_security`, so it sees only the program
 that starts. Code can also run through a mapping, with no exec: the dynamic
@@ -634,47 +634,91 @@ objects carry a gate for this (`full/shared_exec_map.h`): `em_mmap_file`
 (`lsm/mmap_file`, a new mapping with `PROT_EXEC`) and `em_file_mprotect`
 (`lsm/file_mprotect`, an `mprotect` that adds `PROT_EXEC`).
 
+- **Switch.** `SharedBindingPolicy.ExecMap` (`Judge`, `DenyAnonymous`), off
+  by default. The publisher writes it into the binding's snapshot metadata
+  (`se_snapshot_metadata.exec_map_flags`), so the gate, the image handle and
+  the policy change in one publish. The publisher refuses `Judge` with
+  `ErrSharedImageIndexUnavailable` when the binding has no sealed image set;
+  the caller decides whether to publish the policy without the gate. BPF
+  refuses the metadata when `JUDGE` has no handle or an option has no
+  `JUDGE`.
 - **Rule.** The gate judges the mapped file by its image provenance
   (`se_image_classify`) and reads no path. From the image: allowed. Not from
-  the image, or UNKNOWN (a memfd, no image index, a read fault, a snapshot
-  record that moved during the lookup): Strict denies (`EACCES`), Audit
-  allows and counts. So a policy publish that lands during a lookup makes
-  Strict deny one image mapping; when that is the ELF loader's mapping at
-  exec, the kernel kills the task. A retry, or a claim, is an open item. For `file_mprotect` on overlayfs, `vma->vm_file` is the
+  the image, or UNKNOWN (a read fault, a snapshot record that moved twice
+  during the lookup): Strict denies (`EACCES`), Audit allows and reports. A
+  policy publish that moves the record during a lookup is retried once
+  against the new ACTIVE record, so a publish does not break a mapping that
+  both records allow. For `file_mprotect` on overlayfs, `vma->vm_file` is the
   backing file; the gate checks that the outer path it was opened for is on
   the container's own overlay, then runs the classifier's layer checks.
-- **Anonymous executable memory** (a JIT), and a written private file
-  mapping made executable, are allowed and counted. A binding can ask to
-  deny them. That option is not W^X: a writable and executable private
+- **Anonymous memory** is allowed and counted, and judged as "not from the
+  image" only under `DenyAnonymous`: a `MAP_ANONYMOUS` mapping (a JIT), a file
+  on a kernel-internal shmem or hugetlbfs mount (memfd, `MAP_SHARED |
+  MAP_ANONYMOUS`, SysV shm including `shmat` with `SHM_EXEC`, a hugetlb
+  memfd: classifier premise P12), and `/dev/zero`. A JIT that maps its code
+  twice (one RW view, one RX view of a memfd or of shared memory) runs. A
+  written private file mapping made executable is the same class: its
+  written pages hold the workload's own bytes. A file on a tmpfs that
+  userspace mounted (`/dev/shm`, POSIX `shm_open`) is a file: not from the
+  image. `DenyAnonymous` is not W^X: a writable and executable private
   mapping of an image file, an `mprotect` that adds `PROT_WRITE` to an
-  executable mapping, `shmat` with `SHM_EXEC`, `brk` under
-  `READ_IMPLIES_EXEC` and writes through `/proc/self/mem` are not judged. A
-  JIT that maps its code through a memfd (for example .NET) is UNKNOWN, so
-  Strict denies it.
+  executable mapping, `brk` under `READ_IMPLIES_EXEC` and writes through
+  `/proc/self/mem` are not judged. With `DenyAnonymous`, an image library
+  with text relocations is denied (its written mapping is the anonymous
+  class).
+- **Program-file exemption.** When the policy can allow a program that is
+  not from the image (an allow default, or an allow rule without a target
+  `FromImage: true`), the publisher sets `EXE_EXEMPT`: a mapping of the
+  program file that the exec verdict allowed for this process is allowed,
+  in both hooks (so text relocations of that program work). The file is the
+  engine's own record, written at `bprm_committed_creds` on the thread group
+  leader (`exec_map_exe`), never `mm->exe_file`, which userspace can change
+  (`PR_SET_MM_EXE_FILE`, `PR_SET_MM_MAP`). A child made by fork without exec
+  has no record of its own and gets no exemption.
 - **Coverage.** The same as the root barrier: the ACTIVE route of the task's
-  exact cgroup, Strict enforces, Audit counts. The gate takes no claim: it
+  exact cgroup, Strict enforces, Audit reports. The gate takes no claim: it
   reads the route's ACTIVE snapshot record under the route lock, classifies,
-  and checks under the lock that the same record is still ACTIVE.
-- **Not done.** The per-binding switch is the map `exec_map_gate`, keyed by
-  cgroup ID, written by the test (`TestSharedNodeExecMapAttached`); nothing
-  in the publisher sets it, so by default the gate judges no mapping (a
-  route invariant fault is still denied, as in the root barrier). That map
-  is writable from userspace, so a product object must not carry it, like
-  `opaque_real_owner_child_gate`: the switch has to come from the
-  authenticated configuration before the product pins are updated. Results
-  are counters, not verdict events. There is no self-test and no fail-closed
-  class for the gate's faults, and the attach canary does not wait for
-  `em_file_mprotect`. The product object pins are not updated.
-- **What it gives.** No executable mapping of a file that is not from the
-  image, in a Strict binding. It does not stop image code from running other
-  image code: the loader started by hand on an image program
-  (`ld.so /usr/bin/id`) maps only image files. An exec deny rule for the
-  loader's path closes that one case, with no kernel change; an image
-  interpreter that maps an image program's segments itself stays open, and
-  so does code copied into anonymous memory unless the binding denies it.
-- **Image index.** A binding with no image index makes every executable
-  file mapping UNKNOWN, so Strict would deny every dynamic exec. The
-  publisher must refuse to turn the gate on for such a binding (open item).
+  and checks under the lock that the same record is still ACTIVE. That is
+  enough because `active_serial` is never reused in one slot incarnation,
+  and an ACTIVE record holds its image reference.
+- **Verdicts.** One event per denied (Strict) or would-deny (Audit) mapping
+  on its own ring, `exec_map_events`, the `execmap` datasource
+  (`SharedExecMapDataSource`): the hook, the file's dev and inode, the
+  reason, the class, the route generation, and a path at `mmap` (information
+  only, never an input of the verdict). A `dlopen` loop in Audit therefore
+  never pushes out exec verdicts; a full ring counts `exec_map_event_counters`
+  LOST, and the verdict never depends on delivery. Counters per binding slot
+  and per CPU: `exec_map_counters`.
+- **Fail closed.** A route invariant fault in a covered cgroup denies every
+  executable mapping there, in Audit too, with or without the gate: the
+  class is not known, as for the root barrier. So one route fault breaks
+  every dynamic exec, `dlopen` and JIT in that cgroup. `exec_map_faults`
+  counts these faults and UNKNOWN results. It is a fail-closed class of its
+  own (`FailClosedExecMap`, `SharedFailClosedHealth.ExecMap`), like the
+  barrier: outside Total, Degraded on a fault in the last 60 s, NotReady
+  above 0.1 % over 5 min.
+- **Self-test.** At start, after the root barrier's check and before the
+  attach canary, `verifySharedExecMap` names one agent thread in
+  `exec_map_probe` (a random thread name). For that thread only, the gate
+  judges an uncovered mapping as Strict with no image index. Both programs
+  must refuse a file mapping (the agent's own binary) and mark the probe
+  entry; anonymous memory and a memfd mapped `PROT_EXEC` must stay allowed.
+  A failure is NotReady. The entry only adds denials, to one agent thread.
+  The attach canary still does not wait for `em_file_mprotect` (a fork,
+  exec and exit need not call it); the self-test proves it.
+- **What it gives.** It stops the loader, `LD_PRELOAD` and `dlopen` from
+  mapping a file that is not from the image, in a Strict binding. Code that
+  the workload copies or writes into memory itself is the anonymous class.
+  It does not stop image code from running other image code: the loader
+  started by hand on an image program (`ld.so /usr/bin/id`) maps only image
+  files. An exec deny rule for the loader's path closes that case, with no
+  kernel change; an image interpreter that maps an image program's segments
+  itself stays open.
+- **Known limits.** Libraries that a device hook bind-mounts from the host
+  (the NVIDIA container toolkit's `libcuda.so`, `libnvidia-ml.so`) and native
+  code installed at run time (`pip install` of a native wheel, a native addon
+  in a writable `node_modules`, a Java library that unpacks a `.so` to
+  `/tmp`) are not from the image: Strict denies them, Audit reports them.
 
 ### Future work (not implemented)
 
@@ -1379,7 +1423,7 @@ link).
   on each of the seven root barrier hooks (path_chroot, sb_pivotroot,
   userns_create, capable, sb_mount, move_mount, sb_umount; see
   [Root barrier](#root-barrier)) and on mmap_file and file_mprotect (the
-  [executable-mapping gate](#executable-mapping-gate-proposal)), so `K` is 1
+  [executable-mapping gate](#executable-mapping-gate)), so `K` is 1
   there. The link limit of those trampolines was not measured; it is the same
   `BPF_MAX_TRAMP_LINKS`, shared with every other BPF LSM user of the hook
   (for example another security agent on `capable` or `sb_mount`).

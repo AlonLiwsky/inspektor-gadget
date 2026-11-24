@@ -471,8 +471,38 @@ static __always_inline void em_exec_record(struct linux_binprm *bprm)
 	e->valid = ok;
 }
 
-/* 1 when file is the program file of the current thread group's record. */
-static __attribute__((noinline)) int em_is_exe(struct file *file)
+/* {dev, ino} of the outer (overlay) file of a vma's file: on overlayfs
+ * vma->vm_file is the real backing file, whose user_path is the outer path
+ * it was opened for (P4/P5). Any other file is its own identity. */
+static __attribute__((noinline)) int em_vma_file_id(struct file *real,
+						    __u32 *dev, __u64 *ino)
+{
+	__u32 offset = se_image_user_path_offset(0, 0);
+	__u32 backing = se_image_fmode_backing;
+	fmode_t mode = 0;
+	if (!real || BPF_CORE_READ_INTO(&mode, real, f_mode))
+		return 0;
+	if (!(backing == SE_IMAGE_FMODE_BACKING_24 ||
+	      backing == SE_IMAGE_FMODE_BACKING_25) ||
+	    !offset || !(mode & backing))
+		return em_file_id(real, dev, ino);
+	struct path user_path = {};
+	struct inode *inode = 0;
+	*dev = 0;
+	*ino = 0;
+	if (bpf_probe_read_kernel(&user_path, sizeof(user_path),
+				  (void *)real + offset) ||
+	    !user_path.dentry ||
+	    BPF_CORE_READ_INTO(&inode, user_path.dentry, d_inode) || !inode ||
+	    BPF_CORE_READ_INTO(ino, inode, i_ino) ||
+	    BPF_CORE_READ_INTO(dev, inode, i_sb, s_dev))
+		return 0;
+	return 1;
+}
+
+/* 1 when file is the program file of the current thread group's record.
+ * vma_file: file is a vma's file (file_mprotect). */
+static __attribute__((noinline)) int em_is_exe(struct file *file, int vma_file)
 {
 	struct task_struct *task = bpf_get_current_task_btf();
 	struct task_struct *leader = task->group_leader;
@@ -483,7 +513,8 @@ static __attribute__((noinline)) int em_is_exe(struct file *file)
 		return 0;
 	__u32 dev = 0;
 	__u64 ino = 0;
-	if (!em_file_id(file, &dev, &ino))
+	if (vma_file ? !em_vma_file_id(file, &dev, &ino) :
+		       !em_file_id(file, &dev, &ino))
 		return 0;
 	return ino == e->ino && dev == e->dev;
 }
@@ -607,7 +638,7 @@ static __always_inline int em_judge(struct file *file, int vma_file,
 					 path_file);
 		return 0;
 	}
-	if ((c.flags & SE_EXEC_MAP_EXE_EXEMPT) && em_is_exe(file)) {
+	if ((c.flags & SE_EXEC_MAP_EXE_EXEMPT) && em_is_exe(file, vma_file)) {
 		em_count(slot, EM_ALLOW_EXE);
 		return 0;
 	}

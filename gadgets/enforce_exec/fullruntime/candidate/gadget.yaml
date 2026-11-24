@@ -100,6 +100,35 @@ datasources:
       load_epoch:
         annotations:
           description: random nonzero epoch of the collection load that emitted the event; qualifies task_cookie across reloads
+  # The executable-mapping gate (full/shared_exec_map.h): one event per
+  # denied (Strict) or would-deny (Audit) executable mapping, on its own
+  # ring (exec_map_events), so mapping verdicts never push out exec verdicts.
+  execmap:
+    fields:
+      generation:
+        annotations:
+          description: route generation of the judged snapshot record
+      ino:
+        annotations:
+          description: inode number of the mapped file (0 for anonymous memory)
+      dev:
+        annotations:
+          description: kernel dev_t of the mapped file's superblock
+      hook:
+        annotations:
+          description: 1 mmap_file, 2 file_mprotect
+      reason:
+        annotations:
+          description: why it is refused (enum em_cell; 3 not from the image, 4 unknown, 5 anonymous, 6 written private mapping, 11 shmem or memfd, 12 /dev/zero)
+      exec_class:
+        annotations:
+          description: binding execution class (1 Audit, would deny; 2 Strict, denied)
+      deny:
+        annotations:
+          description: 1 when the mapping was refused
+      path:
+        annotations:
+          description: path of the mapped file at mmap (information only, never an input of the verdict; empty at mprotect)
 # The product object's tail-call slots (sharedProductTailCalls, pinned at
 # admission). The eBPF operator installs each target in its PROG_ARRAY at
 # load, before any hook attaches, and freezes the arrays: the birth

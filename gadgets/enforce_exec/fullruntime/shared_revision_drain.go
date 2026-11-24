@@ -56,12 +56,12 @@ type SharedRevisionStatus struct {
 }
 
 // se_bindings value layout (struct se_shared_binding): the two records of
-// struct se_binding_snapshots start at 64, each struct se_snapshot is 784
+// struct se_binding_snapshots start at 64, each struct se_snapshot is 792
 // bytes with claims (its readers) at 40. Pinned to the headers' BTF by
 // TestSharedRevisionDrainLayoutMatchesBTF.
 const (
 	sharedBindingRecordsOffset = 64
-	sharedSnapshotBytes        = 784
+	sharedSnapshotBytes        = 792
 	sharedSnapshotClaimsOffset = 40
 )
 
