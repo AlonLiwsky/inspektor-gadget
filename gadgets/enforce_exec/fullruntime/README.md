@@ -359,10 +359,10 @@ image runs on every kernel the product gate admits.
 
 | Profile | Image (local reference) | Manifest digest | Index digest |
 |---|---|---|---|
-| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:f91202bca1b44c824d9c9f5d3c9b3cb511849911033df0c4c1a5b088a0dc1b1b` | `sha256:bd25d522891dd10ef440b75eac5c06bda07878be63c850d44fffdbc3c53e32e7` |
-| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:d15759aada4a4be4228a36e0b560af94d48d5c0c830973ca123dda20bb7bc464` | `sha256:752c1a06659f1b08cb02898ee2ee20ff57dfe8879a72619002bb921e9725dc15` |
-| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:7b7d53be77b390e3f5c2a86f97f43c4f5f796645525112ffb7f3376a04784cb8` | `sha256:2c15f887ce5a947e80bd5c6ca824032e3fadda4d6d1fa9b5a921bdf582076386` |
-| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:191ae182d36b88a2f9932604c81565b1b50fb1a71a9ba3d6181e2364d1af8e77` | `sha256:173d2ab3a499c82485ccfdc771c0418b8993d3c406c8149685802cd8cd77b0da` |
+| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:a9dc9b071235fe23f6c8c017205207de981e3e3027ed83bc71f866a9725e0cbe` | `sha256:a0b840559fdc2b279fd348dbdba2fe04db22fd678c1ccc212c08949546f567af` |
+| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:2ee2a94d79f542b4d2cc5f9884f5d042d13a15da029222faad9d98ff6d5f504a` | `sha256:28bfd7baf37186736208be3a6c14e512727e092476751ac39e125bce2f56e7fa` |
+| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:234d4503a7b404f0f1d3a6e73091a1e16abfe31a8eb074c60c08c167cd8d798b` | `sha256:5383ebb1727703680ea0a382a64a340c574e056b718f350a04cbc88551cc70b6` |
+| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:81099c3bdf48344fb9c24d20733bb87e963c460c677f305ddb165bb0afb9e358` | `sha256:f70d58eed1321ca684385eab9878ffd936e6fe465851180d68ac4b2864e4a229` |
 
 The reference (tag) is not part of either digest.
 
@@ -729,6 +729,10 @@ objects carry a gate for this (`full/shared_exec_map.h`): `em_mmap_file`
   code installed at run time (`pip install` of a native wheel, a native addon
   in a writable `node_modules`, a Java library that unpacks a `.so` to
   `/tmp`) are not from the image: Strict denies them, Audit reports them.
+  So is a POSIX shared memory file (`shm_open`, a file on the `/dev/shm`
+  tmpfs): its path is visible and writable by other processes, so it stays a
+  file, not anonymous memory. JITs that map code twice use a memfd, which is
+  anonymous memory.
 
 ### Future work (not implemented)
 

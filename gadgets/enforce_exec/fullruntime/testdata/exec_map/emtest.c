@@ -106,7 +106,8 @@ int main(int argc, char **argv)
 		if (rw == MAP_FAILED)
 			return fail("mmap rw view");
 		memcpy(rw, code, sizeof(code));
-		void *rx = mmap(0, 4096, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+		void *rx =
+			mmap(0, 4096, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
 		if (rx == MAP_FAILED)
 			return fail("mmap rx view");
 		return run_code(rx, "dual");
@@ -143,8 +144,9 @@ int main(int argc, char **argv)
 		}
 		shmctl(id, IPC_RMID, 0);
 		if (x == (void *)-1)
-			return fail(!strcmp(op, "shmatx") ? "shmat exec" :
-							     "mprotect exec shm");
+			return fail(!strcmp(op, "shmatx") ?
+					    "shmat exec" :
+					    "mprotect exec shm");
 		return run_code(x, "shm");
 	}
 	/* /dev/zero mapped PROT_EXEC, private or shared. */
@@ -153,7 +155,8 @@ int main(int argc, char **argv)
 		if (fd < 0)
 			return fail("open /dev/zero");
 		int flags = !strcmp(op, "zerox") ? MAP_PRIVATE : MAP_SHARED;
-		unsigned char *p = mmap(0, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+		unsigned char *p = mmap(0, 4096,
+					PROT_READ | PROT_WRITE | PROT_EXEC,
 					flags, fd, 0);
 		if (p == MAP_FAILED)
 			return fail("mmap exec /dev/zero");
@@ -171,7 +174,8 @@ int main(int argc, char **argv)
 		if (write(fd, code, sizeof(code)) != sizeof(code) ||
 		    ftruncate(fd, 4096))
 			return fail("write /dev/shm");
-		void *p = mmap(0, 4096, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+		void *p =
+			mmap(0, 4096, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
 		if (p == MAP_FAILED)
 			return fail("mmap exec /dev/shm");
 		return run_code(p, "posixshm");

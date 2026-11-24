@@ -469,8 +469,7 @@ static __attribute__((noinline)) int em_class_vma(struct file *real,
 }
 
 /* {dev, ino} of a file; 0 on a read fault. */
-static __always_inline int em_file_id(struct file *file, __u32 *dev,
-				      __u64 *ino)
+static __always_inline int em_file_id(struct file *file, __u32 *dev, __u64 *ino)
 {
 	struct inode *inode = 0;
 	*dev = 0;
@@ -489,8 +488,8 @@ static __always_inline int em_file_id(struct file *file, __u32 *dev,
 static __always_inline void em_exec_record(struct linux_binprm *bprm)
 {
 	struct task_struct *task = bpf_get_current_task_btf();
-	struct em_exe *e = bpf_task_storage_get(
-		&exec_map_exe, task, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
+	struct em_exe *e = bpf_task_storage_get(&exec_map_exe, task, 0,
+						BPF_LOCAL_STORAGE_GET_F_CREATE);
 	if (!e)
 		return;
 	__u32 dev = 0;
@@ -560,9 +559,10 @@ static __always_inline void em_event_count(__u32 key)
 /* One event for a denied or would-deny mapping. path_file: the outer file
  * of an mmap (trusted hook argument), for the information-only path; 0 for
  * file_mprotect. The verdict never depends on delivery. */
-static __attribute__((noinline)) void
-em_emit(const struct em_cover *c, int class, __u32 cell_hook,
-	struct file *file, struct file *path_file)
+static __attribute__((noinline)) void em_emit(const struct em_cover *c,
+					      int class, __u32 cell_hook,
+					      struct file *file,
+					      struct file *path_file)
 {
 	/* cell_hook: reason | hook << 8 (BPF calls take five arguments). */
 	__u32 cell = cell_hook & 0xff, hook = cell_hook >> 8;
@@ -598,8 +598,7 @@ em_emit(const struct em_cover *c, int class, __u32 cell_hook,
 /* The verdict of one judged mapping. cell is the reason. Returns 0 or
  * -EACCES. */
 static __always_inline int em_refuse(const struct em_cover *c, int class,
-				     __u32 cell, __u32 hook,
-				     struct file *file,
+				     __u32 cell, __u32 hook, struct file *file,
 				     struct file *path_file)
 {
 	em_emit(c, class, cell | hook << 8, file, path_file);
@@ -751,13 +750,12 @@ static __always_inline int em_judge(struct file *file, int vma_file,
 /* A denial of an earlier LSM program stays. The prior verdict is the context
  * word after the hook's arguments (ROOT_BARRIER_PRIOR); the range check keeps
  * the LSM return range visible to the verifier. */
-#define EM_KEEP_DENY(prior)                                             \
-	do {                                                            \
-		__s64 em_prior = (prior);                               \
-		if (em_prior)                                           \
-			return em_prior < 0 && em_prior >= -4095 ?      \
-				       em_prior :                       \
-				       -EM_EACCES;                      \
+#define EM_KEEP_DENY(prior)                                                    \
+	do {                                                                   \
+		__s64 em_prior = (prior);                                      \
+		if (em_prior)                                                  \
+			return em_prior < 0 && em_prior >= -4095 ? em_prior :  \
+								   -EM_EACCES; \
 	} while (0)
 
 SEC("lsm/mmap_file")
