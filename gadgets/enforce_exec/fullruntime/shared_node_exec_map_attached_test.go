@@ -598,7 +598,7 @@ func TestSharedNodeExecMapAttached(t *testing.T) {
 	for _, g := range []SharedExecMap{{}, {Judge: true}, {}, {Judge: true}} {
 		setGate(g, "bench")
 		for _, name := range names {
-			o := run(name, "emtest bench /usr/lib64/libc.so.6 300000")
+			o := run(name, "emtest bench /usr/bin/true 300000")
 			t.Logf("BENCH gate=%+v %s: %s", g, name, o.out)
 		}
 	}
