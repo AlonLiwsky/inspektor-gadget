@@ -108,6 +108,9 @@ datasources:
       generation:
         annotations:
           description: route generation of the judged snapshot record
+      scope:
+        annotations:
+          description: binding scope cookie (an event is attributed only to the binding with this scope)
       ino:
         annotations:
           description: inode number of the mapped file (0 for anonymous memory)

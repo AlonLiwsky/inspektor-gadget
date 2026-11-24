@@ -132,6 +132,7 @@ struct {
 /* One event per denied or would-deny mapping. */
 struct exec_map_event {
 	__u64 generation; /* route generation of the judged snapshot record */
+	__u64 scope; /* the binding's scope cookie (se_binding_snapshots.scope) */
 	__u64 cgroup;
 	__u64 ino; /* inode number of the mapped file (0: anonymous) */
 	__u64 load_epoch; /* se_verdict_load_epoch */
@@ -146,7 +147,7 @@ struct exec_map_event {
 	char comm[16];
 	char path[256]; /* mmap_file only, information only; empty otherwise */
 };
-_Static_assert(sizeof(struct exec_map_event) == 336, "exec map event wire");
+_Static_assert(sizeof(struct exec_map_event) == 344, "exec map event wire");
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1 << 20);
@@ -195,7 +196,7 @@ struct {
  * binding's. A record is immutable once PREPARED, so an unchanged serial
  * means unchanged metadata. */
 struct em_cover {
-	__u64 cgroup, serial, handle, generation;
+	__u64 cgroup, serial, handle, generation, scope;
 	__u32 slot, incarnation, record, dev, known, flags, consistent,
 		reserved;
 };
@@ -260,6 +261,7 @@ static __attribute__((noinline)) int exec_map_cover(struct em_cover *c)
 	c->known = 0;
 	c->flags = 0;
 	c->generation = 0;
+	c->scope = 0;
 	c->consistent = 0;
 	struct se_shared_binding *binding =
 		bpf_map_lookup_elem(&se_bindings, &slot);
@@ -277,6 +279,7 @@ static __attribute__((noinline)) int exec_map_cover(struct em_cover *c)
 	c->dev = s->metadata.image_dev;
 	c->flags = s->metadata.exec_map_flags;
 	c->generation = s->generation;
+	c->scope = binding->state.scope;
 	asm volatile("" ::: "memory");
 	c->consistent = s->serial == serial && s->phase == SE_SNAPSHOT_ACTIVE;
 	c->known = c->consistent && c->handle && c->dev;
@@ -556,6 +559,7 @@ em_emit(const struct em_cover *c, int class, __u32 cell_hook,
 		return;
 	}
 	e->generation = c->generation;
+	e->scope = c->scope;
 	e->cgroup = c->cgroup;
 	e->load_epoch = se_verdict_load_epoch;
 	(void)em_file_id(file, &e->dev, &e->ino);

@@ -74,7 +74,7 @@ func (c *execMapCollector) operator() operators.DataOperator {
 			return fmt.Errorf("missing %q datasource", SharedExecMapDataSource)
 		}
 		fields := map[string]datasource.FieldAccessor{}
-		for _, name := range []string{"generation", "cgroup", "ino", "load_epoch", "dev", "hook", "reason", "exec_class", "deny", "host_pid", "slot", "comm", "path"} {
+		for _, name := range []string{"generation", "scope", "cgroup", "ino", "load_epoch", "dev", "hook", "reason", "exec_class", "deny", "host_pid", "slot", "comm", "path"} {
 			if fields[name] = ds.GetField(name); fields[name] == nil {
 				return fmt.Errorf("execmap datasource lacks field %s", name)
 			}
@@ -93,6 +93,7 @@ func (c *execMapCollector) operator() operators.DataOperator {
 				errs = append(errs, err)
 			}
 			u64("generation", &e.generation)
+			u64("scope", &e.scope)
 			u64("cgroup", &e.cgroup)
 			u64("ino", &e.ino)
 			u64("load_epoch", &e.loadEpoch)
@@ -409,7 +410,7 @@ func TestSharedNodeExecMapAttached(t *testing.T) {
 			return false
 		}
 		for _, e := range o.events {
-			if e.execClass != class || (e.deny == 1) != (class == 2) || e.hook < 1 || e.hook > 2 || e.generation == 0 {
+			if e.execClass != class || (e.deny == 1) != (class == 2) || e.hook < 1 || e.hook > 2 || e.generation == 0 || e.scope == 0 {
 				return false
 			}
 			if (e.reason == emNotImage || e.reason == emUnknown) && e.ino == 0 {
