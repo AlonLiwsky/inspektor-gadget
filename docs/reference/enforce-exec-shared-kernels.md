@@ -42,6 +42,17 @@ would hold one of the node's two route slots. The manual product-load run
 (`gadgets/enforce_exec/test/product-load`) checks Strict and Audit verdicts on
 a chosen machine.
 
+The root barrier (`gadgets/common/root_barrier.h`, wired into the product
+objects) adds a start check of its own: `rootbarrier.Verify` checks each
+barrier hook's signature and live link, then runs a self-test that sees
+real `chroot`, `mount` and namespace operations denied, before the startup
+canary. A failure leaves the node NotReady. It adds three preconditions:
+the agent needs `CAP_SYS_ADMIN` and `CAP_SYS_CHROOT`, and the kernel needs
+the `userns_create` LSM hook (Linux 6.1 and later). The admission checks
+above do not probe that hook; without it the barrier program cannot attach
+and the node does not start. The fullruntime README, "Root barrier", has
+the details.
+
 The product objects can be rebuilt from the repository:
 `make enforce-exec-product-objects` rebuilds them in a pinned Debian trixie
 container with the pinned toolchain (Debian `clang-21` `1:21.1.8-3~bpo13+2`,
