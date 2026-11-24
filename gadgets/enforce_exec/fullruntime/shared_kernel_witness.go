@@ -480,5 +480,39 @@ func sharedAttachCanaryDeadlineError(silent []string, childErr error) error {
 		return fmt.Errorf("attach canary: %w", cause)
 	}
 	sort.Strings(silent)
-	return fmt.Errorf("attach canary: attached but never ran during a fork+exec+exit: %s: %w", strings.Join(silent, ", "), cause)
+	programs := make([]string, 0, len(silent))
+	for _, entry := range silent {
+		name, _, _ := strings.Cut(entry, " (")
+		programs = append(programs, name)
+	}
+	return &AttachCanarySilentError{Programs: programs, err: fmt.Errorf("attach canary: attached but never ran during a fork+exec+exit: %s: %w", strings.Join(silent, ", "), cause)}
+}
+
+// ErrAttachCanarySilent marks an attach canary that measured at least one
+// attached program that never ran before its deadline. Every other canary
+// failure (run statistics, an unreadable program, a failed child, a deadline
+// before the first sample) says nothing about the hooks and is not this.
+var ErrAttachCanarySilent = errors.New("attach canary: attached program never ran")
+
+// AttachCanarySilentError is a canary deadline with silent programs. It
+// keeps the deadline error's message and causes, adds
+// ErrAttachCanarySilent, and names the silent programs (receipt names,
+// sorted by their entry in the message).
+type AttachCanarySilentError struct {
+	Programs []string
+	err      error
+}
+
+func (e *AttachCanarySilentError) Error() string   { return e.err.Error() }
+func (e *AttachCanarySilentError) Unwrap() []error { return []error{ErrAttachCanarySilent, e.err} }
+
+// RunAttachCanary runs the attach canary (runSharedAttachCanaryWith) for
+// programs that are not the exec engine's: it requires the run count of each
+// receipt's program to increase while canaryCmd runs, repeating canaryCmd
+// until every program ran or its 5-second budget ends. canaryCmd must reach
+// every receipt's hook and change nothing on the node; nil runs this binary
+// with the exec canary environment (a fork, an exec and an exit). A silent
+// program is ErrAttachCanarySilent.
+func RunAttachCanary(ctx context.Context, receipts map[string]*operators.NativeAttachment, canaryCmd []string) error {
+	return runSharedAttachCanaryWith(ctx, receipts, canaryCmd)
 }

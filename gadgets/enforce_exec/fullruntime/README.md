@@ -260,6 +260,11 @@ refuses with `ErrSharedKernelWitness` wrapping
 backoff (a fresh load counts from zero; `StartNodeRetrying` bounds the
 attempts and doubles the wait up to a cap). A refusal with ftrace seen off, the
 ksym unresolved or a failed mark creation is not retryable for this boot.
+The canary is also public as `RunAttachCanary(ctx, receipts, canaryCmd)` for
+programs outside this engine (node-agent's privilege, network and file
+sections run it with their own child). A silent program is
+`ErrAttachCanarySilent` (`*AttachCanarySilentError` names the programs); any
+other canary failure says nothing about the hooks and is not marked.
 
 **Witness memory (DaemonSet sizing).** A mark lives in BPF task storage,
 allocated with `GFP_ATOMIC` from the BPF memory allocator and charged to the
