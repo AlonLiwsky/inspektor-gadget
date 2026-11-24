@@ -700,7 +700,6 @@ func TestSharedProductImageSourcePins(t *testing.T) {
 	}
 	publisher := read("bpf/opaque_real_owner_product_publisher.h")
 	image := read("bpf/opaque_real_owner_product_image.h")
-	program := read("../full/program.bpf.c")
 	snapshot := read("../full/shared_snapshot.h")
 	for _, pin := range []struct {
 		name, source, text string
@@ -719,7 +718,6 @@ func TestSharedProductImageSourcePins(t *testing.T) {
 		{"handle is the consumed sequence", image, "__u64 sequence = r->header.sequence;", 1},
 		{"keys through bpf_loop", image, "bpf_loop(count, real_owner_image_step, 0, 0);", 1},
 		{"uncertain counted", image, "SE_IMAGE_CLASS_INSERT_UNCERTAIN : SE_IMAGE_CLASS_DELETE_UNCERTAIN);", 1},
-		{"legacy image maps not in the shared node", program, "#ifndef ENFORCE_EXEC_SHARED_NODE static __always_inline int origin_ready(void);", 1},
 		{"metadata image validity", snapshot, "!m->image_handle != !m->image_dev || (m->image_dev >> 20) ||", 1},
 	} {
 		if got := strings.Count(pin.source, squashSpace(pin.text)); got != pin.count {

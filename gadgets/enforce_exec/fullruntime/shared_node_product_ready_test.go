@@ -58,7 +58,7 @@ func startSharedProductTestNode(t *testing.T) (*NodeEnforcer, *sharedFakeNativeH
 	oldNS := sharedNamespaceCheck
 	sharedNamespaceCheck = func() error { return nil }
 	t.Cleanup(func() { sharedNamespaceCheck = oldNS })
-	k := pinnedProductKernel(sharedProductPinDigests()[0])
+	k := arbitraryProductKernel()
 	useProductKernel(t, k)
 	host := &sharedFakeNativeHost{manifest: sharedProductExactManifest()}
 	pub := &sharedReportingPublisher{sharedFakePublisher: newSharedFakePublisher()}
@@ -281,7 +281,7 @@ func TestSharedProductStartupGate(t *testing.T) {
 		oldNS := sharedNamespaceCheck
 		sharedNamespaceCheck = func() error { return namespace }
 		t.Cleanup(func() { sharedNamespaceCheck = oldNS })
-		useProductKernel(t, pinnedProductKernel(sharedProductPinDigests()[0]))
+		useProductKernel(t, arbitraryProductKernel())
 		manifest := sharedProductExactManifest()
 		if !product {
 			manifest = sharedProductFakeManifest()

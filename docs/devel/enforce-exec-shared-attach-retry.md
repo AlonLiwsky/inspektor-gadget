@@ -24,5 +24,5 @@ receives every refusal, and nil once it no longer applies.
 - `stop` must treat a missing instance as success (return nil).
 - The host must not run two `StartNode` calls for the same gadget ID at once.
 
-Details: `gadgets/enforce_exec/fullruntime/README.md`, "Attach capacity,
-readiness and the owner cap".
+Details: `gadgets/enforce_exec/fullruntime/README.md`, "Attach capacity
+and readiness".

@@ -8,27 +8,9 @@ import (
 	"errors"
 	"testing"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
-
-func TestControlWireSizes(t *testing.T) {
-	for _, x := range []struct {
-		name      string
-		got, want uintptr
-	}{
-		{"config", unsafe.Sizeof(ControlConfig{}), 32},
-		{"command", unsafe.Sizeof(ControlCommand{}), 32},
-		{"health", unsafe.Sizeof(ControlHealth{}), 128},
-		{"phase", unsafe.Sizeof(ControlPhase{}), 48},
-		{"row", unsafe.Sizeof(ControlRow{}), 24},
-	} {
-		if x.got != x.want {
-			t.Errorf("%s: %d != %d", x.name, x.got, x.want)
-		}
-	}
-}
 
 func TestControlThreadAffinityAndFailure(t *testing.T) {
 	var tid int

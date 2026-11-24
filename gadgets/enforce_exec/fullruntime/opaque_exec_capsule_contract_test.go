@@ -16,7 +16,7 @@ import (
 // shared_route.h helpers. It is the original-class replacement for the
 // current-route fallback that TestOpaqueSourceModeHeaderlessMigrationContract
 // keeps as a deliberate counterexample. Kernel serialization and hook
-// coverage are proved separately on the exact AL2023 kernels.
+// coverage are not proved here.
 // capsuleLaterVariants compiles each capsule contract without and with the
 // later-admission report (SE_CAP_REPORT_LATER): its later-bit scenario
 // requires the bit exactly on later admissions of the same exec when it is

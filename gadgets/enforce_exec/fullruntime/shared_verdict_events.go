@@ -16,9 +16,8 @@ import (
 )
 
 // Verdict events (G020): one legacy-compatible verdict event per evaluated
-// pass, emitted by the product object's global emitter. Its counters map has
-// the shape of the persistent owner's verdict counters (owner.go
-// validateCounterMap): a PERCPU_ARRAY of three u64 cells.
+// pass, emitted by the product object's global emitter. Its counters map is
+// a PERCPU_ARRAY of three u64 cells (validateCounterMap).
 const (
 	SharedVerdictCountersMap = "opaque_real_verdict_counters"
 	// SharedVerdictRingMap is the node-wide ring buffer of the "verdict"

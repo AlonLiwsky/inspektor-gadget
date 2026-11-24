@@ -414,7 +414,7 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 		if node != nil && node.config.RecoveryDevelopment {
 			gc.SetVar(operators.NativeRecoveryTestRunKey, true)
 		}
-		// G020: the image classifier's overlay layout for this exact kernel
+		// G020: the image classifier's overlay layout for the running kernel
 		// and this load's verdict epoch. Without an epoch no constants are
 		// installed: admission then refuses a product object (M8).
 		if constants, err := sharedImageOverlayConstants(); err == nil {
@@ -600,21 +600,20 @@ func sharedSetDiff(a, b []string) []string {
 	return out
 }
 
-// admitSharedProductImage binds the product image to the running pinned
-// kernel build: the kernel gate (re-run here, at instantiation); every
-// probe program's effective target (resources, after any attach_to
-// override) is its section's target, the failure-frame ones the pin's
-// symbols (also in the image metadata); and the loaded eBPF object's sha256
-// (operators.NativeProgramDigestKey) is one of the pin's QUALIFIED product
-// objects (sharedProductPin.ProductObjects).
+// admitSharedProductImage admits the product image on the running kernel:
+// the product kernel gate (SharedProductKernel, re-run here, at
+// instantiation); every probe program's effective target (resources, after
+// any attach_to override) is its section's own target; and the loaded eBPF
+// object's sha256 (operators.NativeProgramDigestKey) is one of this
+// release's product objects (sharedProductObjects), on every kernel alike.
 // Every refusal wraps ErrSharedNativeUnavailable.
 func admitSharedProductImage(gc operators.GadgetContext, metadata *viper.Viper, resources *operators.NativeResources) error {
-	_, pin, err := sharedProductKernelCheck()
+	kernel, err := sharedProductKernelCheck()
 	if err != nil {
 		return err
 	}
 	refuse := func(cause error) error {
-		return fmt.Errorf("shared product image refused on %s: %w: %w", pin.Release, cause, ErrSharedNativeUnavailable)
+		return fmt.Errorf("shared product image refused on %s: %w: %w", kernel.Release, cause, ErrSharedNativeUnavailable)
 	}
 	if resources == nil {
 		return refuse(fmt.Errorf("missing native resources"))
@@ -638,12 +637,7 @@ func admitSharedProductImage(gc operators.GadgetContext, metadata *viper.Viper, 
 		return refuse(fmt.Errorf("eBPF object digest unavailable"))
 	}
 	if !sharedProductObject(digest) {
-		return refuse(fmt.Errorf("eBPF object sha256 %s is not a pinned product object", digest))
-	}
-	// S1 review F1: the (kernel, object) pair must be qualified, not only
-	// the kernel and the object separately.
-	if !pin.qualifiesProductObject(digest) {
-		return refuse(fmt.Errorf("eBPF object sha256 %s is a product object of this release but is not qualified on pinned kernel %s", digest, pin.Release))
+		return refuse(fmt.Errorf("eBPF object sha256 %s is not a product object of this release", digest))
 	}
 	return nil
 }
@@ -670,9 +664,6 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 			}
 		}()
 	}
-	if owner, _ := gc.GetVar(ownerKey); owner != nil {
-		return nil, fmt.Errorf("shared and per-binding owner options are mutually exclusive")
-	}
 	recoveryAnnotation := metadata.GetString("annotations.enforce-exec-shared-recovery")
 	if (node.config.RecoveryDevelopment && recoveryAnnotation != "1") || (!node.config.RecoveryDevelopment && recoveryAnnotation != "") || !node.config.ABI3Development || gc.ImageName() != node.config.Image || metadata.GetString("annotations.enforce-exec-owner-abi") != "3" || !metadata.GetBool("annotations.enforce-exec-owner-development") || metadata.GetString("annotations.enforce-exec-shared-profile") != "1" || metadata.GetBool("annotations.enforce-exec") || metadata.GetBool("annotations.enforce-exec-full") {
 		return nil, fmt.Errorf("shared image/native capability mismatch")
@@ -694,8 +685,9 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 	}
 	value, _ := gc.GetVar(operators.NativeResourcesKey)
 	resources, _ := value.(*operators.NativeResources)
-	// The product node binds the kernel and the image first (pinned build,
-	// every probe target, the object bytes), before any resource admission.
+	// The product node binds the kernel and the image first (kernel
+	// admission, every probe target, the object bytes), before any resource
+	// admission.
 	if node.host.product {
 		if err = admitSharedProductImage(gc, metadata, resources); err != nil {
 			return nil, err
@@ -704,15 +696,14 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 	if err = node.admitSharedResources(resources); err != nil {
 		return nil, err
 	}
-	// The qualified candidate runs on its own exact kernel matrix (the
-	// product node was checked above); every other shared image keeps the
-	// persistent-owner matrix.
+	// The qualified candidate (qualification builds only) is admitted on the
+	// product gate's checks (the product node was checked above); no other
+	// shared node runs a collection.
 	if !node.host.product {
-		verifyKernel := verifySupportedKernel
-		if node.host.qualified && sharedQualificationBuild {
-			verifyKernel = verifySharedCandidateKernel
+		if !node.host.qualified || !sharedQualificationBuild {
+			return nil, fmt.Errorf("shared image requires a product or qualification node")
 		}
-		if err = verifyKernel(); err != nil {
+		if err = verifySharedCandidateKernel(); err != nil {
 			return nil, err
 		}
 	}
@@ -1128,7 +1119,7 @@ func (n *NodeEnforcer) startLiveCandidate(gc operators.GadgetContext, admitted *
 		}
 	}
 	// The root barrier of a product node: verified once every link is
-	// present, after the kernel gate admitted the build
+	// present, after the kernel gate admitted the kernel
 	// (admitSharedProductImage). A failure is NotReady.
 	if n.host.product {
 		verify := n.host.rootBarrier

@@ -2,36 +2,60 @@
 title: enforce_exec shared engine kernels
 sidebar_position: 910
 description: >
-  The exact kernel builds the experimental enforce_exec shared engine
-  enforces on, and why every other kernel is refused.
+  How the experimental enforce_exec shared engine admits a kernel, and what
+  that admission does and does not prove.
 ---
 
-The experimental `enforce_exec` shared engine (the product shared node) is an
-allowlist: it enforces only on the exact AL2023 kernel builds it was qualified
-on, and refuses every other kernel at agent start with a reported reason.
+The experimental `enforce_exec` shared engine (the product shared node) is
+one CO-RE object per profile for every kernel. It admits every x86_64 kernel
+the same way, on probes run at agent start and while the agent runs, and
+refuses any other kernel at agent start with a reported reason
+(`ErrSharedNativeUnavailable`).
 
-| Release | Plain AL2023 AMI release | EKS-optimized AMI release |
-|---|---|---|
-| `6.12.113-138.209.amzn2023.x86_64` | `al2023-ami-2023.12.20261026.1-kernel-6.12-x86_64` | `amazon-eks-node-al2023-x86_64-standard-1.35-v20261031` |
-| `6.18.56-125.164.amzn2023.x86_64` | `al2023-ami-2023.12.20261102.0-kernel-6.18-x86_64` | `amazon-eks-node-al2023-x86_64-standard-1.36-v20261031` |
+Admission checks (`fullruntime.SharedProductKernel`, exported for other
+sections as `AdmitKernel`):
 
-A build is identified by its vmlinux BTF sha256, GNU build-id and release
-together. The build-ids come from the vmlinux of the AL2023 repo kernel RPMs
-and were confirmed live from `/sys/kernel/notes` in G011 pass 2 (plain AMIs) and pass 2b (EKS AMIs). The outer failure-frame
-symbol (`do_execveat_common.isra.0`) was first recorded by the 2026-11-09 preflight on the same AMIs; it was confirmed in the kallsyms symbol list on both pinned kernels in G011 pass 2 (`outer-symbol` rows) and pass 2b (identity `symbols` rows). Pass 1 ran the
-qualification build; product-build admission and Ready on both pinned kernels
-of the plain AMIs are proven (G011 pass 2, run g011p2-20261115t143731-5a41, 116 PASS / 0 FAIL).
-The EKS AMIs carry the same kernel builds as qualified; EKS product Ready is
-proven (G011 pass 2b, run g011eks-20261115t163442-6da1, 120 PASS / 0 FAIL): a default-build node-agent reached product Ready True on both.
-Limits of that evidence: SELinux was Permissive, and the EKS AMIs carry taint
-12288 (out-of-tree or unsigned modules), which is allowed (only the livepatch
-bit is gated).
+- architecture amd64;
+- a readable identity: the vmlinux BTF sha256 (lowercase hex), a non-empty
+  release and a lowercase-hex GNU build-id from `/sys/kernel/notes`. The
+  identity is reported for status and logs; it is never matched against a
+  list;
+- `bpf` in the active LSM list;
+- `kernel.ftrace_enabled=1` and no livepatch (`TAINT_LIVEPATCH` clear). Both
+  are re-read at every readiness check (`CheckKernelRuntime`). Other taints,
+  such as out-of-tree or unsigned modules, are allowed.
 
-The rule is to keep nodes on these kernel builds: pin the AMI releases, with no
-in-place kernel update, no automatic AMI upgrade and no livepatch. Any newer or
-other kernel is refused until it is qualified and pinned in a new release.
+At start and while it runs, the node also proves:
 
-The pinned product objects can be rebuilt from the repository:
+- the object's own load checks every type, field, kfunc and attach target
+  it uses (CO-RE relocation and the verifier);
+- `FMODE_BACKING` and the overlay layout are probed live; a failed
+  `FMODE_BACKING` probe refuses (image-origin facts are unavailable and the
+  node is Degraded);
+- a startup canary proves every attached program runs;
+- a live witness latches NotReady when an exec or fork reaches its
+  tracepoint without its LSM hook's mark, or when ftrace goes off.
+
+What is not proved: hook ordering and verdict semantics across the exec
+paths on a given kernel. There is no startup self-test of exec verdicts: a
+test binding would hold one of the node's two route slots. The manual product-load run
+(`gadgets/enforce_exec/test/product-load`) checks Strict and Audit verdicts on
+a chosen machine.
+
+The root barrier (`gadgets/common/root_barrier.h`, wired into the product
+objects) adds a start check of its own: `rootbarrier.Verify` checks each
+barrier hook's signature and live link, then runs a self-test that sees
+real `chroot`, `mount` and namespace operations denied, before the startup
+canary. A failure leaves the node NotReady. It adds preconditions:
+the agent needs `CAP_SYS_ADMIN` and `CAP_SYS_CHROOT`; the kernel needs
+the `userns_create` LSM hook (Linux 6.1 and later) and user namespaces
+enabled (`user.max_user_namespaces` > 0). The admission checks
+above probe neither: without the hook the barrier program cannot attach and
+the node does not start (the load error is not `ErrSharedNativeUnavailable`);
+without user namespaces the self-test fails and the node is NotReady. The fullruntime README, "Root barrier", has
+the details.
+
+The product objects can be rebuilt from the repository:
 `make enforce-exec-product-objects` rebuilds them in a pinned Debian trixie
 container with the pinned toolchain (Debian `clang-21` `1:21.1.8-3~bpo13+2`,
 `libbpf-dev` `1:1.5.0-3`, from one snapshot.debian.org timestamp) and
@@ -39,16 +63,11 @@ compares their sha256 with the pins; a CI job runs the same scripts. The
 build compiles at fixed neutral paths (`/src/...`), so the objects are
 byte-identical from any checkout and carry no build-host path.
 `make enforce-exec-product-images` also packages each object into its
-product gadget image and compares the manifest and index digests with
-`fullruntime.SharedProductImagePins()`. The images are not published to a
-registry: the node-agent image build rebuilds them into its `tracers.tar`
-and checks the manifest digest; the builder fails on any digest that
-differs from the pins.
-Loading them on the two AL2023 kernels stays a manual EC2 gate.
-
-**The current object pins are not yet requalified.** They are the
-neutral-path rebuild that replaced the G011-qualified objects; the kernel
-builds are unchanged, and requalification on both AMIs is pending (G035).
+product gadget image (one image per profile) and compares the manifest and
+index digests with `fullruntime.SharedProductImagePins()`. The images are
+not published to a registry: the node-agent image build rebuilds them into
+its `tracers.tar` and checks the manifest digest; the builder fails on any
+digest that differs from the pins.
 
 Limits every host must plan for (details in the README sections "Geometry
 limits" and "Host contract"):
@@ -58,7 +77,7 @@ limits" and "Host contract"):
   refusal is reported as `ErrSharedNativeUnavailable` (fail closed), so
   there is no shared enforcement on it;
 - at most 2 enforced containers per node, and a fixed TASK quota per
-  container (128 in the `g19pkg128` object used by the EC2 runs). Threads count
+  container (128 in the `g19pkg128` object node-agent uses). Threads count
   against it. A third binding is refused with `ErrSharedBindingCapacity`;
   TASK exhaustion is reported only node-wide, through the fail-closed rate
   witness;
@@ -69,8 +88,6 @@ limits" and "Host contract"):
   and the Audit/Strict mode cannot change on a running container: both need
   a new container;
 - Strict needs the agent in the host pid and time namespaces;
-- the legacy per-binding `Owner` does not run on AL2023: it refuses at
-  gadget start there. AL2023 is served only by the shared product node;
 - a mount over a path inside the container's root after adoption is not
   prevented (accepted residual; it needs `CAP_SYS_ADMIN` in the container).
 
@@ -82,8 +99,7 @@ tombstone (`REAL_OWNER_EXIT_STALE`; `exit_credit.go`, `sharedLiveExitCredit.chec
 in `shared_host.go`). This is expected and fail closed; recovery is to restart
 the node-agent. `StopNode` reports the same error after a complete teardown.
 
-The full statement, the reasons for the allowlist, the operational limits
-(including that an agent crash leaves enforcement off until the agent
-restarts, and the unproven configurations) and the future approaches are in
-the
+The full statement, the operational limits (including that an agent crash
+leaves enforcement off until the agent restarts, and the unproven
+configurations) and the future approaches are in the
 [shared engine README](https://github.com/kubescape/inspektor-gadget/blob/main/gadgets/enforce_exec/fullruntime/README.md#shared-engine-supported-kernels).

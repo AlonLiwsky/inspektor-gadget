@@ -84,7 +84,9 @@ gadgets/enforce_exec/test/abi3-gatea/ingress/build.sh /tmp/gatea-ingress-build
 ```
 
 After independent review, execute only on an owned disposable root host with
-one of the two exact BTF identities in `fullruntime/KERNEL-MATRIX.md`:
+one of the two exact BTF identities the wrapper accepts (`12f7d627…`,
+`75980754…`; their artifacts were documented in the removed
+`fullruntime/KERNEL-MATRIX.md`, see git history):
 
 ```sh
 IG_ABI3_GATE_A_DISPOSABLE=1 \

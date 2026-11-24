@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/cilium/ebpf"
 	specs "github.com/opencontainers/image-spec/specs-go"
@@ -122,8 +121,8 @@ func pushSharedImage(ctx context.Context, store oras.Target, elf, metadata []byt
 }
 
 // sharedProductImageArch is the platform of every product image: the pinned
-// objects target x86 (-D__TARGET_ARCH_x86) and the pinned kernels are
-// x86_64, whatever GOARCH builds the image.
+// objects target x86 (-D__TARGET_ARCH_x86) and the product kernel gate
+// admits only x86_64 kernels, whatever GOARCH builds the image.
 const sharedProductImageArch = "amd64"
 
 // sharedProductImageRepository is the local name of the product images in
@@ -143,7 +142,7 @@ var sharedProductProfiles = []struct {
 // work) object. Its geometry is compiled into the object and annotated on
 // the image (two bindings, the product policy objects 4/0/0/0, 8 accepted
 // UIDs, 2/1 inode facts, 128 image roots per binding, 8192 exit tombstones),
-// as the AL2023 qualification ran it. The budget fields (CompileBytes 8 MiB,
+// as the attached product tests run it. The budget fields (CompileBytes 8 MiB,
 // CompileConcurrency 2, TelemetryBytes 4096, RolloutBytes 4096,
 // CandidateBytes 1 MiB, PossibleCPUs 64) are host-side runtime limits, not in
 // the object or the image digests: these values are the qualification
@@ -160,76 +159,60 @@ func sharedProductImageProfile(task, work uint64) SharedProfile {
 	}
 }
 
-// sharedProductImageName is the local image reference of profile on
-// release: enforce-exec-shared:<profile>-al2023-<kernel version>.
-func sharedProductImageName(profile, release string) string {
-	return sharedProductImageRepository + ":" + profile + "-al2023-" + strings.TrimSuffix(release, ".amzn2023.x86_64")
+// sharedProductImageName is the local image reference of profile:
+// enforce-exec-shared:<profile>. A product image is kernel-neutral (one CO-RE
+// object per profile for every kernel).
+func sharedProductImageName(profile string) string {
+	return sharedProductImageRepository + ":" + profile
 }
 
 // sharedProductImagePin is one row of testdata/shared_product_images.tsv.
 type sharedProductImagePin struct {
-	BTF, Profile                        string
+	Profile                             string
 	ObjectSHA256, ManifestDigest, Index string
 }
 
 // sharedProductImagePins are the product images built from the pinned
-// objects (pinset p1, neutral build paths), one per kernel x profile, in
-// pin order. TestSharedProductImagePinsMatchTestdata requires them to equal
+// objects (pinset p1, neutral build paths), one per profile, in profile
+// order. TestSharedProductImagePinsMatchTestdata requires them to equal
 // testdata/shared_product_images.tsv; the product-objects CI job rebuilds
-// the objects and the images and requires these digests. Stage 1: one
-// object per profile for both kernels, qualified on both (ProductObjects),
-// so a profile's two images have the same digests.
+// the objects and the images and requires these digests. The image
+// reference (its tag) is not part of either digest.
 var sharedProductImagePins = []sharedProductImagePin{
 	{
-		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg64", ObjectSHA256: "f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba",
+		Profile: "g19pkg64", ObjectSHA256: "f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba",
 		ManifestDigest: "sha256:6e74512e72cc37e8d33633aad94219b457d69700fffcee3a9c0861230357ae43", Index: "sha256:55a4c3c70f45711b9db23738a5c9d7ce996e557b9c6111a9df1b7f88d3fc5571",
 	},
 	{
-		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg128", ObjectSHA256: "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d",
+		Profile: "g19pkg128", ObjectSHA256: "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d",
 		ManifestDigest: "sha256:48b5584528ce98f2b05463470a64ae994a73134f7d1ccf9434c2110e3bf5a182", Index: "sha256:dce925ec18ddf01d74bf299a0ec1d8e23097f7ce3259bcd0832dde8b55b782c9",
 	},
 	{
-		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg256", ObjectSHA256: "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e",
+		Profile: "g19pkg256", ObjectSHA256: "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e",
 		ManifestDigest: "sha256:d8a936ca27bb3f82abcbd09c3dc1841d31026c59d14b7612e88b5d759a4cc399", Index: "sha256:77866cfbafc68b6ccba44d0d03bd843e01675fbb175c7c8455bfb09c0b03e44f",
 	},
 	{
-		BTF: "0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82", Profile: "g19pkg512", ObjectSHA256: "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31",
-		ManifestDigest: "sha256:a0e166fa8405bc4acd2caef50b05031fc035f40cc5009cfd82dd6e1ddef0384b", Index: "sha256:ec6d35126c0ddb6bc46a020ae7bd06cf795f41a053c66bb830ed2a363f8dd7d6",
-	},
-	{
-		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg64", ObjectSHA256: "f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba",
-		ManifestDigest: "sha256:6e74512e72cc37e8d33633aad94219b457d69700fffcee3a9c0861230357ae43", Index: "sha256:55a4c3c70f45711b9db23738a5c9d7ce996e557b9c6111a9df1b7f88d3fc5571",
-	},
-	{
-		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg128", ObjectSHA256: "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d",
-		ManifestDigest: "sha256:48b5584528ce98f2b05463470a64ae994a73134f7d1ccf9434c2110e3bf5a182", Index: "sha256:dce925ec18ddf01d74bf299a0ec1d8e23097f7ce3259bcd0832dde8b55b782c9",
-	},
-	{
-		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg256", ObjectSHA256: "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e",
-		ManifestDigest: "sha256:d8a936ca27bb3f82abcbd09c3dc1841d31026c59d14b7612e88b5d759a4cc399", Index: "sha256:77866cfbafc68b6ccba44d0d03bd843e01675fbb175c7c8455bfb09c0b03e44f",
-	},
-	{
-		BTF: "d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee", Profile: "g19pkg512", ObjectSHA256: "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31",
+		Profile: "g19pkg512", ObjectSHA256: "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31",
 		ManifestDigest: "sha256:a0e166fa8405bc4acd2caef50b05031fc035f40cc5009cfd82dd6e1ddef0384b", Index: "sha256:ec6d35126c0ddb6bc46a020ae7bd06cf795f41a053c66bb830ed2a363f8dd7d6",
 	},
 }
 
 // SharedProductImagePin is one product gadget image: the image built by
-// BuildSharedProductImage from the pinned object of Profile for the kernel
-// with vmlinux BTF sha256 BTF.
+// BuildSharedProductImage from the pinned product object of Profile. It is
+// kernel-neutral: the same image runs on every kernel the product kernel
+// gate (SharedProductKernel) admits.
 type SharedProductImagePin struct {
-	// BTF and Release identify the pinned kernel build.
-	BTF, Release string
 	// Profile names the object geometry (g19pkg64/128/256/512).
 	Profile string
-	// Image is the local image reference in an image archive (tracers.tar).
+	// Image is the local image reference in an image archive (tracers.tar):
+	// enforce-exec-shared:<profile>.
 	Image string
 	// ObjectSHA256 is the sha256 of the pinned product object.
 	ObjectSHA256 string
 	// ManifestDigest is the linux/amd64 manifest and IndexDigest the image
 	// index. IG does not check either at run time (its runtime binding is
-	// the (kernel, object) qualification and the geometry annotations); the
-	// consumer (node-agent) pins the manifest digest.
+	// the product object digest and the geometry annotations); the consumer
+	// (node-agent) pins the manifest digest.
 	ManifestDigest, IndexDigest string
 	// SharedProfile is the object's profile: the geometry compiled into the
 	// object, and the qualification sizes of the host-side runtime budgets
@@ -237,14 +220,13 @@ type SharedProductImagePin struct {
 	SharedProfile SharedProfile
 }
 
-// SharedProductImagePins returns every pinned product image, in pin order
-// (kernel, then profile). The slice is a copy.
+// SharedProductImagePins returns every pinned product image, one per
+// profile, in profile order (g19pkg64, 128, 256, 512). The slice is a copy.
 func SharedProductImagePins() []SharedProductImagePin {
 	out := make([]SharedProductImagePin, 0, len(sharedProductImagePins))
 	for _, p := range sharedProductImagePins {
-		kernel := sharedProductPins[p.BTF]
 		pin := SharedProductImagePin{
-			BTF: p.BTF, Release: kernel.Release, Profile: p.Profile, Image: sharedProductImageName(p.Profile, kernel.Release),
+			Profile: p.Profile, Image: sharedProductImageName(p.Profile),
 			ObjectSHA256: p.ObjectSHA256, ManifestDigest: p.ManifestDigest, IndexDigest: p.Index,
 		}
 		for _, q := range sharedProductProfiles {
@@ -257,20 +239,16 @@ func SharedProductImagePins() []SharedProductImagePin {
 	return out
 }
 
-// buildSharedProductImage pushes the product image of elf for the pinned
-// kernel btf and the product profile into store and tags it with its
-// normalized local reference. It checks neither elf nor the digests against
-// the pins (tests use it on non-product objects).
-func buildSharedProductImage(ctx context.Context, store oras.Target, elf []byte, btf, profile string) (SharedProductImagePin, error) {
+// buildSharedProductImage pushes the product image of elf for the product
+// profile into store and tags it with its normalized local reference. It
+// checks neither elf nor the digests against the pins (tests use it on
+// non-product objects).
+func buildSharedProductImage(ctx context.Context, store oras.Target, elf []byte, profile string) (SharedProductImagePin, error) {
 	var none SharedProductImagePin
 	if store == nil {
 		return none, fmt.Errorf("missing image store")
 	}
-	kernel, ok := sharedProductPins[btf]
-	if !ok {
-		return none, fmt.Errorf("no product pin for BTF %s", btf)
-	}
-	out := SharedProductImagePin{BTF: btf, Release: kernel.Release, Profile: profile, Image: sharedProductImageName(profile, kernel.Release)}
+	out := SharedProductImagePin{Profile: profile, Image: sharedProductImageName(profile)}
 	found := false
 	for _, q := range sharedProductProfiles {
 		if q.Name == profile {
@@ -305,27 +283,26 @@ func buildSharedProductImage(ctx context.Context, store oras.Target, elf []byte,
 var ErrSharedProductImageMismatch = errors.New("product image digest differs from its pin")
 
 // BuildSharedProductImage builds the product image of elf, the pinned
-// product object of profile for the kernel with vmlinux BTF sha256 btf,
-// into store, tagged with its local reference (SharedProductImagePin.Image,
-// normalized under the IG default domain), and checks it against
-// SharedProductImagePins. It refuses an object whose sha256 is not that
-// pin's. When the built manifest or index digest differs from the pin it
-// returns the built image (with its digests) and an error wrapping
-// ErrSharedProductImageMismatch; the image is still in store, so the caller
-// must not ship it.
-func BuildSharedProductImage(ctx context.Context, store oras.Target, elf []byte, btf, profile string) (SharedProductImagePin, error) {
+// product object of profile, into store, tagged with its local reference
+// (SharedProductImagePin.Image, normalized under the IG default domain), and
+// checks it against SharedProductImagePins. It refuses an object whose
+// sha256 is not that pin's. When the built manifest or index digest differs
+// from the pin it returns the built image (with its digests) and an error
+// wrapping ErrSharedProductImageMismatch; the image is still in store, so the
+// caller must not ship it.
+func BuildSharedProductImage(ctx context.Context, store oras.Target, elf []byte, profile string) (SharedProductImagePin, error) {
 	sum := sha256.Sum256(elf)
 	object := hex.EncodeToString(sum[:])
 	var pin *sharedProductImagePin
 	for i, p := range sharedProductImagePins {
-		if p.BTF == btf && p.Profile == profile && p.ObjectSHA256 == object {
+		if p.Profile == profile && p.ObjectSHA256 == object {
 			pin = &sharedProductImagePins[i]
 		}
 	}
 	if pin == nil {
-		return SharedProductImagePin{}, fmt.Errorf("object sha256 %s is not the pinned %s object for BTF %s", object, profile, btf)
+		return SharedProductImagePin{}, fmt.Errorf("object sha256 %s is not the pinned %s object", object, profile)
 	}
-	built, err := buildSharedProductImage(ctx, store, elf, btf, profile)
+	built, err := buildSharedProductImage(ctx, store, elf, profile)
 	if err != nil {
 		return SharedProductImagePin{}, err
 	}

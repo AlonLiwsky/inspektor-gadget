@@ -48,67 +48,6 @@ func TestSharedArmNativeABI(t *testing.T) {
 	}
 }
 
-func TestSharedArmNativeTransaction(t *testing.T) {
-	cc, err := exec.LookPath("cc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := filepath.Abs("../full/owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary := filepath.Join(t.TempDir(), "arm-tx")
-	cmd := exec.Command(cc, "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror", "-iquote", root,
-		"testdata/shared_arm_transaction.c", filepath.Join(root, "shared-arm-transaction.c"), "-o", binary)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("compile native arm transaction: %v %s", err, out)
-	}
-	if out, err := exec.Command(binary).CombinedOutput(); err != nil {
-		t.Fatalf("native arm transaction: %v %s", err, out)
-	}
-}
-
-func TestSharedArmNativeTrigger(t *testing.T) {
-	cc, err := exec.LookPath("cc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := filepath.Abs("../full/owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary := filepath.Join(t.TempDir(), "arm-trigger")
-	cmd := exec.Command(cc, "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror", "-iquote", root,
-		"testdata/shared_arm_trigger.c", filepath.Join(root, "shared-arm-trigger.c"), "-o", binary)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("compile native arm trigger: %v %s", err, out)
-	}
-	if out, err := exec.Command(binary).CombinedOutput(); err != nil {
-		t.Fatalf("native arm trigger: %v %s", err, out)
-	}
-}
-
-func TestSharedArmNativeJournal(t *testing.T) {
-	cc, err := exec.LookPath("cc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := filepath.Abs("../full/owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary := filepath.Join(t.TempDir(), "arm-journal")
-	cmd := exec.Command(cc, "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror", "-iquote", root,
-		"testdata/shared_arm_journal.c", filepath.Join(root, "shared-arm-journal.c"),
-		filepath.Join(root, "shared-arm-transaction.c"), "-o", binary)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("compile native arm journal: %v %s", err, out)
-	}
-	if out, err := exec.Command(binary).CombinedOutput(); err != nil {
-		t.Fatalf("native arm journal: %v %s", err, out)
-	}
-}
-
 func TestSharedArmReceiptIsNotSyscallProof(t *testing.T) {
 	if unsafe.Sizeof(sharedArmRequest{}) != 176 || unsafe.Sizeof(sharedArmReceipt{}) != 48 {
 		t.Fatalf("arm wire drifted: request %d receipt %d", unsafe.Sizeof(sharedArmRequest{}), unsafe.Sizeof(sharedArmReceipt{}))

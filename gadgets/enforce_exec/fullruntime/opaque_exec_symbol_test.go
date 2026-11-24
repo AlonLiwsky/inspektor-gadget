@@ -105,7 +105,7 @@ func TestOpaqueDiagnosticExecOuterSymbol(t *testing.T) {
 	}{
 		{"base", "00000000 T do_execveat_common\n", "do_execveat_common", false},
 		{"Rocky", "00000000 t do_execveat_common.isra.38\n", "do_execveat_common.isra.38", false},
-		{"AL2023", "00000000 t do_execveat_common.isra.0\n", "do_execveat_common.isra.0", false},
+		{"isra.0", "00000000 t do_execveat_common.isra.0\n", "do_execveat_common.isra.0", false},
 		{"unrelated", "00000000 t __pfx_do_execveat_common.isra.0\n00000000 T __x64_sys_execve\n00000000 t do_execveat_common.isra.0\n", "do_execveat_common.isra.0", false},
 		{"none", "", "", true},
 		{"ambiguous", "00000000 t do_execveat_common\n00000000 t do_execveat_common.isra.0\n", "", true},

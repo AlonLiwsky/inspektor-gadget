@@ -388,7 +388,7 @@ func newSharedProductControl(ctx context.Context, p SharedProfile, manifest *ope
 		return nil, err
 	}
 	c := &sharedProductControl{
-		config:   sharedNodeWire{NodeCookie: cookie, Nonce: nonce, ABI: OwnerDevelopmentABI, ProfileVersion: SharedProfileVersion, Bindings: uint32(p.Bindings), Objects: uint32(admission.PolicyObjects), Cells: uint32(admission.ArenaCells)},
+		config:   sharedNodeWire{NodeCookie: cookie, Nonce: nonce, ABI: sharedNodeABI, ProfileVersion: SharedProfileVersion, Bindings: uint32(p.Bindings), Objects: uint32(admission.PolicyObjects), Cells: uint32(admission.ArenaCells)},
 		programs: programs,
 	}
 	for i, count := range p.PolicySlots {

@@ -55,29 +55,21 @@ func TestSharedNodeExecveCheckAttached(t *testing.T) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		t.Fatal(err)
 	}
+	// The expectation follows the feature: AT_EXECVE_CHECK exists iff
+	// linux_binprm has is_check (an executable regular file then passes
+	// the check); without it the flag is EINVAL.
 	var uts unix.Utsname
 	if err := unix.Uname(&uts); err != nil {
 		t.Fatal(err)
 	}
 	release := unix.ByteSliceToString(uts.Release[:])
-	wantCheck := 0 // 6.18: an executable regular file passes the check
-	switch {
-	case strings.HasPrefix(release, "6.12."):
+	wantCheck := 0
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := btfMemberOffsetAny(kernel, "linux_binprm", "is_check"); err != nil {
 		wantCheck = int(unix.EINVAL)
-	case strings.HasPrefix(release, "6.18."):
-	default:
-		// D3: on a probed kernel the expectation follows the feature, not
-		// the release: AT_EXECVE_CHECK exists iff linux_binprm has is_check.
-		if !sharedProbedKernelOverride() {
-			t.Fatalf("kernel %s: want AL2023 6.12 or 6.18", release)
-		}
-		kernel, err := btf.LoadKernelSpec()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := btfMemberOffsetAny(kernel, "linux_binprm", "is_check"); err != nil {
-			wantCheck = int(unix.EINVAL)
-		}
 	}
 	files := newSharedFactFiles(t)
 	c := &sharedVerdictCollector{}
