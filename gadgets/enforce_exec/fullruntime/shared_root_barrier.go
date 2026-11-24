@@ -57,7 +57,7 @@ func sharedRootBarrierHooks(receipts map[string]*operators.NativeAttachment) ([]
 }
 
 // verifySharedRootBarrier is the barrier's start check of a product node.
-// It runs in startLiveCandidate after the kernel gate admitted the build
+// It runs in startLiveCandidate after the kernel gate admitted the kernel
 // (admitSharedProductImage) and after every attach receipt passed its
 // presence check (nativeattach.CheckPresent): rootbarrier.Verify attests
 // that BPF LSM is active, ftrace is enabled, each hook signature matches and

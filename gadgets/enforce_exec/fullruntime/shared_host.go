@@ -1114,7 +1114,7 @@ func (n *NodeEnforcer) startLiveCandidate(gc operators.GadgetContext, admitted *
 		}
 	}
 	// The root barrier of a product node: verified once every link is
-	// present, after the kernel gate admitted the build
+	// present, after the kernel gate admitted the kernel
 	// (admitSharedProductImage). A failure is NotReady.
 	if n.host.product {
 		verify := n.host.rootBarrier

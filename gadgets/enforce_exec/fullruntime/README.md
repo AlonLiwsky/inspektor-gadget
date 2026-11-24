@@ -359,10 +359,10 @@ image runs on every kernel the product gate admits.
 
 | Profile | Image (local reference) | Manifest digest | Index digest |
 |---|---|---|---|
-| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:2f161cc1edcbcd42fdfdce3c7ea746b260dfd071955d7fb25fab341ee32ee124` | `sha256:1397ee56fd71995e95fc6ae610c0c9b07d23d26e2a5110b1d6006bba308743fe` |
-| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:036e99e41408b669b879f925a942af68689c1734c2d9b0d8033207387f25de6a` | `sha256:e67bd898e7e9cf9e53d4c298ab018009357174f4ae1c8e903540088829cb1114` |
-| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:b65fc46b646442d746eb46cade87eda3a6d33144651e92e066adb9e7559e1bf0` | `sha256:f58271b21e84dc06d97b9345288020ad278874935e18e840b11d70e3ae8b761c` |
-| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:3b5bd67827694a55b8e7de90cedf12142d1d02b67ecce1bc92f893e3fb67c3ec` | `sha256:60609bd695295bf01fd1a4f6924953c65fcc17269d26ab572044a113d0c0639f` |
+| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:6e74512e72cc37e8d33633aad94219b457d69700fffcee3a9c0861230357ae43` | `sha256:55a4c3c70f45711b9db23738a5c9d7ce996e557b9c6111a9df1b7f88d3fc5571` |
+| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:48b5584528ce98f2b05463470a64ae994a73134f7d1ccf9434c2110e3bf5a182` | `sha256:dce925ec18ddf01d74bf299a0ec1d8e23097f7ce3259bcd0832dde8b55b782c9` |
+| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:d8a936ca27bb3f82abcbd09c3dc1841d31026c59d14b7612e88b5d759a4cc399` | `sha256:77866cfbafc68b6ccba44d0d03bd843e01675fbb175c7c8455bfb09c0b03e44f` |
+| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:a0e166fa8405bc4acd2caef50b05031fc035f40cc5009cfd82dd6e1ddef0384b` | `sha256:ec6d35126c0ddb6bc46a020ae7bd06cf795f41a053c66bb830ed2a363f8dd7d6` |
 
 The reference (tag) is not part of either digest.
 
@@ -584,7 +584,9 @@ with type 0), `mount`, `move_mount`, `umount` and the new mount API.
   ftrace and livepatch re-read at every `Ready` covers the barrier too.
   The start check adds preconditions to a product node: the agent needs
   `CAP_SYS_ADMIN` and `CAP_SYS_CHROOT` (the self-test runs real `chroot`,
-  `mount` and namespace operations on one of its own threads), BPF LSM,
+  `mount` and namespace operations on one of its own threads), user
+  namespaces enabled (`CONFIG_USER_NS`, `user.max_user_namespaces` > 0: the
+  self-test creates one and needs it denied by the barrier), BPF LSM,
   `kernel.ftrace_enabled=1` (`CONFIG_FUNCTION_TRACER`) and the
   `userns_create` hook (Linux 6.1 and later; the kernel gate does not probe
   it, but without it `rb_userns` cannot attach and the node does not start).
@@ -1325,8 +1327,8 @@ link).
   bprm_check_security. The shared candidate's D1 objects also take one link
   on each of the seven root barrier hooks (path_chroot, sb_pivotroot,
   userns_create, capable, sb_mount, move_mount, sb_umount; see
-  [Root barrier](#root-barrier)), so `K` is 1 there. Those trampolines were
-  not probed by `test/al2023-trampoline-cap`; their limit is the same
+  [Root barrier](#root-barrier)), so `K` is 1 there. The link limit of those
+  trampolines was not measured; it is the same
   `BPF_MAX_TRAMP_LINKS`, shared with every other BPF LSM user of the hook
   (for example another security agent on `capable` or `sb_mount`).
 * **Packaged attach set.** The candidate's ELF has 13 programs on
