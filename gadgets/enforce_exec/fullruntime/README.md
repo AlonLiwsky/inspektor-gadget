@@ -720,8 +720,10 @@ objects carry a gate for this (`full/shared_exec_map.h`): `em_mmap_file`
   It does not stop image code from running other image code: the loader
   started by hand on an image program (`ld.so /usr/bin/id`) maps only image
   files. An exec deny rule for the loader's path closes that case, with no
-  kernel change; an image interpreter that maps an image program's segments
-  itself stays open.
+  kernel change: node-agent adds it itself (`node-agent-loader-deny` on
+  `/**/ld-*.so*`) to every exec section that denies by path or by default.
+  An image interpreter that maps an image program's segments itself stays
+  open.
 - **Known limits.** Libraries that a device hook bind-mounts from the host
   (the NVIDIA container toolkit's `libcuda.so`, `libnvidia-ml.so`) and native
   code installed at run time (`pip install` of a native wheel, a native addon
