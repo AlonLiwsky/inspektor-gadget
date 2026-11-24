@@ -29,8 +29,8 @@ static struct bpf_spin_lock authority_lock;
 _Static_assert(sizeof(struct se_object) == 72, "object state wire");
 _Static_assert(sizeof(struct se_shared_object) == 80, "locked object wire");
 _Static_assert(sizeof(struct se_pin_ticket) == 40, "ticket wire");
-_Static_assert(sizeof(struct se_snapshot) == 784, "snapshot wire");
-_Static_assert(sizeof(struct se_shared_binding) == 1632,
+_Static_assert(sizeof(struct se_snapshot) == 792, "snapshot wire");
+_Static_assert(sizeof(struct se_shared_binding) == 1648,
 	       "two-snapshot binding wire");
 static int pause_count;
 static void pause_after_release(void *binding)

@@ -209,6 +209,13 @@ type FailClosedRateVerdict struct {
 	// threshold sets Degraded.
 	Barrier     uint64
 	BarrierRate float64
+	// ExecMap and ExecMapRate are the executable-mapping gate's faults
+	// (exec_map_faults: route invariant faults, all denied, plus UNKNOWN
+	// results) and their rate per attempt (FailClosedExecMap, product
+	// objects only). A class of its own, like the barrier: never part of
+	// Total, and an ExecMapRate above the threshold sets Degraded.
+	ExecMap     uint64
+	ExecMapRate float64
 }
 
 // FailClosedRate maps two snapshots of the fail-closed rate witness to a
@@ -309,22 +316,36 @@ func FailClosedProductRate(before, after [FailClosedRateCounters]uint64, attempt
 // whole attempt (BarrierRate = Barrier), so it is never diluted to zero. A
 // count that moved backwards is an error: the verdict is unknown.
 func FailClosedRootBarrier(v *FailClosedRateVerdict, before, after, attempts uint64, threshold float64) error {
+	return failClosedOwnClass(v, &v.Barrier, &v.BarrierRate, "root barrier", before, after, attempts, threshold)
+}
+
+// FailClosedExecMap adds the executable-mapping gate class to a product
+// verdict v, with the rule of FailClosedRootBarrier. before and after are
+// two snapshots of exec_map_faults (both cells summed). A gate fault is
+// judged on a mapping, not on an attempt, so it is not bounded by attempts
+// either.
+func FailClosedExecMap(v *FailClosedRateVerdict, before, after, attempts uint64, threshold float64) error {
+	return failClosedOwnClass(v, &v.ExecMap, &v.ExecMapRate, "executable-mapping gate", before, after, attempts, threshold)
+}
+
+// failClosedOwnClass is a fault class outside Total (FailClosedRootBarrier).
+func failClosedOwnClass(v *FailClosedRateVerdict, count *uint64, rate *float64, name string, before, after, attempts uint64, threshold float64) error {
 	if math.IsNaN(threshold) || threshold < 0 || threshold > 1 {
 		return fmt.Errorf("fail-closed rate threshold %v outside [0, 1]", threshold)
 	}
 	if after < before {
-		return fmt.Errorf("root barrier fault counter moved backwards (%d -> %d)", before, after)
+		return fmt.Errorf("%s fault counter moved backwards (%d -> %d)", name, before, after)
 	}
-	v.Barrier = after - before
-	v.BarrierRate = 0
-	if v.Barrier == 0 {
+	*count = after - before
+	*rate = 0
+	if *count == 0 {
 		return nil
 	}
-	v.BarrierRate = float64(v.Barrier)
+	*rate = float64(*count)
 	if attempts > 0 {
-		v.BarrierRate /= float64(attempts)
+		*rate /= float64(attempts)
 	}
-	if v.BarrierRate > threshold {
+	if *rate > threshold {
 		v.Degraded = true
 	}
 	return nil

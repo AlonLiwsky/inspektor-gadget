@@ -724,8 +724,8 @@ func TestSharedProductImageSourcePins(t *testing.T) {
 			t.Errorf("%s: %d occurrences, want %d", pin.name, got, pin.count)
 		}
 	}
-	if !regexp.MustCompile(`structse_snapshot_metadata\{[^}]*__u32image_dev;\};`).MatchString(snapshot) {
-		t.Error("se_snapshot_metadata.image_dev is not the last word")
+	if !regexp.MustCompile(`structse_snapshot_metadata\{[^}]*__u32image_dev;__u32exec_map_flags,exec_map_reserved;\};`).MatchString(snapshot) {
+		t.Error("se_snapshot_metadata does not end with image_dev, exec_map_flags, exec_map_reserved")
 	}
 }
 

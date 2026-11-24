@@ -105,7 +105,7 @@ func sharedProductManifest(p SharedProfile) *operators.NativeResources {
 	maps.Copy(r.Maps, product)
 	b := uint32(p.Bindings)
 	r.Maps["se_routes"] = operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: sharedProductRouteAnchorBytes, MaxEntries: b}
-	r.Maps["se_bindings"] = operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1632, MaxEntries: b}
+	r.Maps["se_bindings"] = operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1648, MaxEntries: b}
 	r.Maps["se_route_index"] = operators.NativeMapResource{Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: 8, MaxEntries: b}
 	for _, name := range sharedProductCommands {
 		r.Programs[name] = operators.NativeProgramResource{Type: uint32(ebpf.Syscall)}

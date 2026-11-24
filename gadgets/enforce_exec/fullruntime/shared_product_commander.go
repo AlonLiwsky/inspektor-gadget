@@ -25,9 +25,9 @@ const (
 	sharedStageReclaim  = 6
 
 	sharedProductStageRequestBytes   = 352 // struct opaque_real_policy_stage_request
-	sharedProductPublishRequestBytes = 512 // struct opaque_real_route_publish_request
+	sharedProductPublishRequestBytes = 520 // struct opaque_real_route_publish_request
 	sharedProductObjectBytes         = 80  // struct se_shared_object (lock, se_object)
-	sharedSnapshotMetadataBytes      = 408 // struct se_snapshot_metadata
+	sharedSnapshotMetadataBytes      = 416 // struct se_snapshot_metadata
 )
 
 // sharedObjectPhase values (SE_OBJECT_*).
@@ -199,6 +199,8 @@ type sharedPublishFields struct {
 	// overlay's kernel dev_t (G020); both zero without one.
 	imageHandle uint64
 	imageDev    uint32
+	// execMap: se_snapshot_metadata.exec_map_flags (sharedExecMapFlags).
+	execMap uint32
 }
 
 func sharedProductPublishBody(f sharedPublishFields) ([]byte, error) {
@@ -216,9 +218,14 @@ func sharedProductPublishBody(f sharedPublishFields) ([]byte, error) {
 	if (f.imageHandle == 0) != (f.imageDev == 0) || f.imageDev>>sharedKernelMinorBits != 0 {
 		return nil, fmt.Errorf("image handle %d with overlay dev %#x", f.imageHandle, f.imageDev)
 	}
+	if f.execMap&^sharedExecMapFlagsKnown != 0 || (f.execMap&sharedExecMapFlagJudge != 0 && f.imageHandle == 0) ||
+		(f.execMap != 0 && f.execMap&sharedExecMapFlagJudge == 0) {
+		return nil, fmt.Errorf("executable-mapping flags %#x with image handle %d", f.execMap, f.imageHandle)
+	}
 	// struct se_snapshot_metadata: root_epochs[8], policy_uids[8],
 	// image_handle, role_writers, required_known, container_length,
-	// container[256], image_dev. One policy (count 1).
+	// container[256], image_dev, exec_map_flags, exec_map_reserved. One
+	// policy (count 1).
 	m := b[80 : 80+sharedSnapshotMetadataBytes]
 	le.PutUint64(m[0:], f.policy.RootEpoch)
 	le.PutUint64(m[64:], f.policy.UID)
@@ -226,6 +233,7 @@ func sharedProductPublishBody(f sharedPublishFields) ([]byte, error) {
 	le.PutUint32(m[144:], uint32(len(f.container)))
 	copy(m[148:], f.container)
 	le.PutUint32(m[404:], f.imageDev)
+	le.PutUint32(m[sharedExecMapMetadataOffset:], f.execMap)
 	return b, nil
 }
 
@@ -480,6 +488,10 @@ func (c *productCommander) publishFirst(ctx context.Context, slot uint32, cgroup
 		}
 		imageHandle, imageDev = 0, 0
 	}
+	execMap, err := sharedExecMapFlags(policy.ExecMap, policy.Source, imageHandle)
+	if err != nil {
+		return 0, joinIfErr(fmt.Errorf("publish slot %d: %w", slot, err), c.image.discard(context.WithoutCancel(ctx), slot))
+	}
 	object, generation, err := c.stage(ctx, compiled)
 	if err != nil {
 		return 0, joinIfErr(err, c.image.discard(context.WithoutCancel(ctx), slot))
@@ -490,7 +502,7 @@ func (c *productCommander) publishFirst(ctx context.Context, slot uint32, cgroup
 	body, err := sharedProductPublishBody(sharedPublishFields{
 		cgroup: cgroup, scope: scope, objectGeneration: generation, init: init, initRole: compiled.RootRole,
 		slot: slot, class: compiled.Class, object: object, bank: slot, policy: compiled, container: policy.Container,
-		imageHandle: imageHandle, imageDev: imageDev,
+		imageHandle: imageHandle, imageDev: imageDev, execMap: execMap,
 	})
 	if err != nil {
 		c.discard(context.WithoutCancel(ctx), object)
@@ -581,10 +593,15 @@ func (c *productCommander) revise(ctx context.Context, slot uint32, cgroup uint6
 		c.discard(context.WithoutCancel(ctx), object)
 		return 0, fmt.Errorf("revise slot %d (FromImage policy): %w: the binding has no sealed image set", slot, ErrSharedImageIndexUnavailable)
 	}
+	execMap, err := sharedExecMapFlags(policy.ExecMap, policy.Source, imageHandle)
+	if err != nil {
+		c.discard(context.WithoutCancel(ctx), object)
+		return 0, fmt.Errorf("revise slot %d: %w", slot, err)
+	}
 	body, err := sharedProductPublishBody(sharedPublishFields{
 		cgroup: cgroup, scope: record.scope, generationExpected: route.State.Generation, objectGeneration: generation,
 		initRole: compiled.RootRole, slot: slot, class: compiled.Class, object: object, bank: slot, policy: compiled, container: policy.Container,
-		imageHandle: imageHandle, imageDev: imageDev,
+		imageHandle: imageHandle, imageDev: imageDev, execMap: execMap,
 	})
 	if err != nil {
 		c.discard(context.WithoutCancel(ctx), object)

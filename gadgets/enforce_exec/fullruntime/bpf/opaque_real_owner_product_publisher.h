@@ -307,7 +307,7 @@ struct opaque_real_route_publish_request {
 	__u32 slot, execution_class, object_slot, init_tgid, bank, reserved;
 	struct se_snapshot_metadata metadata;
 };
-_Static_assert(sizeof(struct opaque_real_route_publish_request) == 512,
+_Static_assert(sizeof(struct opaque_real_route_publish_request) == 520,
 	       "product publish request wire");
 
 /* Request fields read from the syscall ctx with a fixed offset on the

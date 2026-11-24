@@ -44,7 +44,7 @@ func TestOpaqueRealRouteAdmissionProbeKernelLoad(t *testing.T) {
 	}{
 		"se_route_index": {ebpf.Hash, 8, 8, 2, unix.BPF_F_RDONLY},
 		"se_routes":      {ebpf.Array, 4, 88, 2, unix.BPF_F_RDONLY},
-		"se_bindings":    {ebpf.Array, 4, 1632, 2, unix.BPF_F_RDONLY},
+		"se_bindings":    {ebpf.Array, 4, 1648, 2, unix.BPF_F_RDONLY},
 		"se_epoch_index": {ebpf.Hash, 16, 4, 32, unix.BPF_F_RDONLY},
 		"se_epoch_bank":  {ebpf.Array, 4, 32, 32, unix.BPF_F_RDONLY},
 	} {

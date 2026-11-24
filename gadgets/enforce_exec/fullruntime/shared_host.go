@@ -134,6 +134,11 @@ type sharedHostState struct {
 	// override them.
 	rootBarrier       func(operators.GadgetContext, map[string]*operators.NativeAttachment) error
 	rootBarrierFaults func(operators.GadgetContext) (sharedRootBarrierFaultRead, error)
+	// execMap replaces the executable-mapping gate's start self-test
+	// (verifySharedExecMap), execMapFaults its fault reader
+	// (borrowSharedExecMapFaults). Tests only.
+	execMap       func(operators.GadgetContext) error
+	execMapFaults func(operators.GadgetContext) (sharedRootBarrierFaultRead, error)
 	// newProductPublisher replaces borrowSharedProductPublisher (G1).
 	// Package tests only.
 	newProductPublisher func(operators.GadgetContext, *operators.NativeResources) (SharedRoutePublisher, error)
@@ -1129,6 +1134,16 @@ func (n *NodeEnforcer) startLiveCandidate(gc operators.GadgetContext, admitted *
 		if err := verify(gc, receipts); err != nil {
 			return err
 		}
+		// The executable-mapping gate's self-test: both em_* programs
+		// must refuse a file mapping of a probe thread. It runs before the
+		// canary, which cannot prove em_file_mprotect. A failure is NotReady.
+		verifyMap := n.host.execMap
+		if verifyMap == nil {
+			verifyMap = verifySharedExecMap
+		}
+		if err := verifyMap(gc); err != nil {
+			return err
+		}
 	}
 	// D1 objects (the d1_witness map): every attached program must have run
 	// before the node is live, then the kernel witness is armed.
@@ -1765,6 +1780,7 @@ func startLiveSharedNodeOnce(ctx context.Context, config SharedNodeConfig, run f
 	n.host.factStats = q.factStats
 	n.host.failClosed, n.host.failClosedClock = q.failClosed, q.failClosedClock
 	n.host.rootBarrier, n.host.rootBarrierFaults = q.rootBarrier, q.rootBarrierFaults
+	n.host.execMap, n.host.execMapFaults = q.execMap, q.execMapFaults
 	n.host.newProductPublisher = q.newProductPublisher
 	n.host.verdictCounters, n.host.verdictClock = q.verdictCounters, q.verdictClock
 	n.host.imageSource = q.imageSource

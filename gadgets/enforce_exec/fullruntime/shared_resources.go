@@ -26,7 +26,7 @@ type sharedResourceUsage struct {
 const sharedProtocolRodataMaxBytes uint32 = 4096
 
 // One pending admin request per NODE, not per binding or compile worker. This
-// includes Go struct padding and its retained pointer (1136 bytes on admitted
+// includes Go struct padding and its retained pointer (1144 bytes on admitted
 // amd64), but not allocator overhead or any claim of physical RSS bounds.
 const sharedPendingCommandNativeBytes = uint64(unsafe.Sizeof(sharedPendingCommand{})) + uint64(unsafe.Sizeof((*sharedPendingCommand)(nil)))
 
@@ -73,10 +73,10 @@ func sharedProtocolGeometry(profile SharedProfile, admission SharedAdmission) ma
 	return map[string]operators.NativeMapResource{
 		"se_configuration": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 56, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
 		"se_admin":         {Type: uint32(ebpf.TaskStorage), KeySize: 4, ValueSize: 8, Flags: unix.BPF_F_NO_PREALLOC},
-		"se_commands":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1112, MaxEntries: 1, Flags: unix.BPF_F_WRONLY},
+		"se_commands":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1120, MaxEntries: 1, Flags: unix.BPF_F_WRONLY},
 		"se_receipts":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 48, MaxEntries: 1, Flags: unix.BPF_F_RDONLY},
 		"se_objects":       {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 80, MaxEntries: uint32(admission.PolicyObjects), Flags: unix.BPF_F_RDONLY},
-		"se_bindings":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1632, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
+		"se_bindings":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1648, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
 		"se_routes":        {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 88, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
 		"se_route_index":   {Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: 8, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
 		"se_arena":         {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 288, MaxEntries: uint32(admission.ArenaCells), Flags: unix.BPF_F_RDONLY},

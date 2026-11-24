@@ -83,7 +83,7 @@ struct se_control_receipt {
 	__u32 operation, status, value, reserved;
 };
 _Static_assert(sizeof(struct se_node_config) == 56, "shared config wire");
-_Static_assert(sizeof(struct se_control_command) == 1112,
+_Static_assert(sizeof(struct se_control_command) == 1120,
 	       "shared command wire");
 _Static_assert(sizeof(struct se_control_receipt) == 48, "shared receipt wire");
 _Static_assert(sizeof(struct se_arena_cell) == 288, "shared arena cell wire");

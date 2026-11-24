@@ -17,7 +17,7 @@ import (
 // These are caller-layout premises only, not a Cilium marshaling allocation
 // bound. No map/program operation is needed to inspect the actual Go payloads.
 func TestSharedCommandReceiptNativeScalarLayout(t *testing.T) {
-	if unsafe.Sizeof(sharedCommandWire{}) != 1112 || unsafe.Sizeof(sharedReceiptWire{}) != 48 {
+	if unsafe.Sizeof(sharedCommandWire{}) != 1120 || unsafe.Sizeof(sharedReceiptWire{}) != 48 {
 		t.Fatal("native command/receipt size differs from fixed map value size")
 	}
 	for _, tc := range []struct {
@@ -97,7 +97,7 @@ func TestSharedNativeControlWire(t *testing.T) {
 	for _, v := range []struct {
 		value any
 		size  int
-	}{{sharedNodeWire{}, 56}, {sharedCommandWire{}, 1112}, {sharedReceiptWire{}, 48}, {sharedPinWire{}, 40}, {sharedSnapshotMetadataWire{}, 408}} {
+	}{{sharedNodeWire{}, 56}, {sharedCommandWire{}, 1120}, {sharedReceiptWire{}, 48}, {sharedPinWire{}, 40}, {sharedSnapshotMetadataWire{}, 416}} {
 		if got := binary.Size(v.value); got != v.size {
 			t.Fatalf("wire %T=%d want%d", v.value, got, v.size)
 		}

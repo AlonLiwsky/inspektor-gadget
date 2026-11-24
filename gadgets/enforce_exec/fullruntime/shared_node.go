@@ -205,6 +205,8 @@ type SharedBindingPolicy struct {
 	Class, Fallback, Rules, SetRole uint32
 	Source                          *fullpolicy.Policy
 	Container                       string
+	// ExecMap is the binding's executable-mapping gate (off by default).
+	ExecMap SharedExecMap
 	// program is the compiled Source (set by BindingSession.Publish), the
 	// source of the root epoch; object is its scope-neutral shared object
 	// (fullpolicy.CompileSharedPolicy: no generation, container or epoch),
@@ -214,6 +216,9 @@ type SharedBindingPolicy struct {
 }
 
 func (p SharedBindingPolicy) validate() error {
+	if err := p.ExecMap.validate(p.Source); err != nil {
+		return err
+	}
 	if p.Source != nil {
 		if p.Source.RootRole == "" {
 			return fmt.Errorf("shared binding policy %s has no root role", p.Source.ID)
@@ -491,6 +496,11 @@ type SharedNodeQualification struct {
 	// (borrowSharedRootBarrierFaults). Package tests only.
 	rootBarrier       func(gc operators.GadgetContext, receipts map[string]*operators.NativeAttachment) error
 	rootBarrierFaults func(gc operators.GadgetContext) (sharedRootBarrierFaultRead, error)
+	// execMap replaces the executable-mapping gate's start self-test
+	// (verifySharedExecMap), execMapFaults its fault reader
+	// (borrowSharedExecMapFaults). Package tests only.
+	execMap       func(gc operators.GadgetContext) error
+	execMapFaults func(gc operators.GadgetContext) (sharedRootBarrierFaultRead, error)
 	// newProductPublisher replaces the product publisher borrowed from the
 	// host gadget context (borrowSharedProductPublisher). Package tests only.
 	newProductPublisher func(operators.GadgetContext, *operators.NativeResources) (SharedRoutePublisher, error)

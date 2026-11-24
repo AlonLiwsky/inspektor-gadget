@@ -8029,6 +8029,10 @@ int BPF_PROG(opaque_real_owner_reader_success_probe, struct linux_binprm *bprm)
 {
 	d1_witness_count(D1_WIT_LSM_COMMIT);
 	d1_exec_mark();
+#ifdef ENFORCE_EXEC_SHARED_EXEC_MAP_H
+	/* The executable-mapping gate's exec record (program-file exemption). */
+	em_exec_record(bprm);
+#endif
 	__u64 key = (__u64)bpf_get_current_task_btf();
 #else
 SEC("tp_btf/sched_process_exec")

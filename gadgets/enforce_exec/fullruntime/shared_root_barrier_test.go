@@ -72,6 +72,10 @@ func sharedRootBarrierStart(t *testing.T, programs []string, verifyErr error) ([
 		verified = receipts
 		return verifyErr
 	}
+	n.host.execMap = func(operators.GadgetContext) error {
+		calls = append(calls, "execmap")
+		return nil
+	}
 	old := sharedStartKernelWitness
 	sharedStartKernelWitness = func(operators.GadgetContext, map[string]*operators.NativeAttachment, time.Duration, []string) (*sharedLiveKernelWitness, error) {
 		calls = append(calls, "canary")
@@ -94,7 +98,7 @@ func sharedAttachedPrograms() []string {
 // never runs; a missing rb_* program refuses the start before both.
 func TestSharedRootBarrierVerifiedBeforeCanary(t *testing.T) {
 	calls, verified, err := sharedRootBarrierStart(t, sharedAttachedPrograms(), nil)
-	if !slices.Equal(calls, []string{"verify", "canary"}) || !errors.Is(err, errSharedRootBarrierCanaryReached) {
+	if !slices.Equal(calls, []string{"verify", "execmap", "canary"}) || !errors.Is(err, errSharedRootBarrierCanaryReached) {
 		t.Fatalf("start order %v (%v), want the barrier check before the canary", calls, err)
 	}
 	for name := range sharedRootBarrierPrograms {

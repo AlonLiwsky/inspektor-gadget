@@ -55,7 +55,7 @@ func sharedFailClosedQuiet(n uint64) func(*sharedFailClosedFake) {
 func newSharedFailClosedTest(t *testing.T, product, gated bool) (*sharedLiveFailClosed, *sharedFailClosedFake) {
 	t.Helper()
 	w := &sharedFailClosedFake{at: time.Unix(1_000_000, 0)}
-	f, err := newSharedLiveFailClosed(w.read, nil, product, gated, SharedFailClosedPollInterval, w.clock)
+	f, err := newSharedLiveFailClosed(w.read, nil, nil, product, gated, SharedFailClosedPollInterval, w.clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestSharedFailClosedUnknown(t *testing.T) {
 	})
 	t.Run("unreadable at start", func(t *testing.T) {
 		w := &sharedFailClosedFake{err: syscall.EPERM}
-		if _, err := newSharedLiveFailClosed(w.read, nil, true, true, SharedFailClosedPollInterval, w.clock); !errors.Is(err, syscall.EPERM) {
+		if _, err := newSharedLiveFailClosed(w.read, nil, nil, true, true, SharedFailClosedPollInterval, w.clock); !errors.Is(err, syscall.EPERM) {
 			t.Fatalf("unreadable baseline: %v", err)
 		}
 	})
@@ -296,7 +296,7 @@ func TestSharedFailClosedPollerStops(t *testing.T) {
 		return w.read()
 	}
 	count := func() int { mu.Lock(); defer mu.Unlock(); return reads }
-	f, err := newSharedLiveFailClosed(read, nil, true, true, SharedFailClosedPollMin, nil)
+	f, err := newSharedLiveFailClosed(read, nil, nil, true, true, SharedFailClosedPollMin, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func TestSharedFailClosedRootBarrier(t *testing.T) {
 		t.Helper()
 		w := &sharedFailClosedFake{at: time.Unix(1_000_000, 0)}
 		barrier := func() (uint64, error) { return *faults, *readErr }
-		f, err := newSharedLiveFailClosed(w.read, barrier, true, true, SharedFailClosedPollInterval, w.clock)
+		f, err := newSharedLiveFailClosed(w.read, barrier, nil, true, true, SharedFailClosedPollInterval, w.clock)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -566,7 +566,7 @@ func TestSharedFailClosedRootBarrier(t *testing.T) {
 	w.tick(f, sharedFailClosedQuiet(10))
 	requireFailClosedState(t, f, SharedFailClosedUnknown, "barrier counter unreadable")
 
-	if _, err := newSharedLiveFailClosed((&sharedFailClosedFake{}).read, func() (uint64, error) { return 0, nil }, false, false, SharedFailClosedPollInterval, nil); err == nil {
+	if _, err := newSharedLiveFailClosed((&sharedFailClosedFake{}).read, func() (uint64, error) { return 0, nil }, nil, false, false, SharedFailClosedPollInterval, nil); err == nil {
 		t.Fatal("a barrier class on a legacy witness was accepted")
 	}
 }

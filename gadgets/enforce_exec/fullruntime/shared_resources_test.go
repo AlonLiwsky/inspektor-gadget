@@ -25,10 +25,10 @@ func sharedResourcesFixture() (SharedProfile, *operators.NativeResources) {
 		Maps: map[string]operators.NativeMapResource{
 			"se_configuration": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 56, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
 			"se_admin":         {Type: uint32(ebpf.TaskStorage), KeySize: 4, ValueSize: 8, MaxEntries: 0, Flags: unix.BPF_F_NO_PREALLOC},
-			"se_commands":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1112, MaxEntries: 1, Flags: unix.BPF_F_WRONLY},
+			"se_commands":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1120, MaxEntries: 1, Flags: unix.BPF_F_WRONLY},
 			"se_receipts":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 48, MaxEntries: 1, Flags: unix.BPF_F_RDONLY},
 			"se_objects":       {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 80, MaxEntries: 8, Flags: unix.BPF_F_RDONLY},
-			"se_bindings":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1632, MaxEntries: 2, Flags: unix.BPF_F_RDONLY},
+			"se_bindings":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1648, MaxEntries: 2, Flags: unix.BPF_F_RDONLY},
 			"se_routes":        {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 88, MaxEntries: 2, Flags: unix.BPF_F_RDONLY},
 			"se_route_index":   {Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: 8, MaxEntries: 2, Flags: unix.BPF_F_RDONLY},
 			"se_arena":         {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 288, MaxEntries: 23552, Flags: unix.BPF_F_RDONLY},
@@ -64,10 +64,10 @@ func TestSharedResourcesExactProtocolAccounting(t *testing.T) {
 	p, r := sharedResourcesFixture()
 	got := checkSharedResources(t, p, r, true)
 	want := sharedResourceUsage{
-		MapPayloadBytes:     56 + 1112 + 48 + 8*80 + 2*1632 + 2*88 + 2*8 + 23552*288,
+		MapPayloadBytes:     56 + 1120 + 48 + 8*80 + 2*1648 + 2*88 + 2*8 + 23552*288,
 		AdminPayloadBytes:   8,
 		ProgramInstructions: 17, ProgramBytes: 17 * 8,
-		NativeAllowanceBytes: 2*(8<<20) + (1 << 20) + 4096 + 4096 + sharedPendingCommandNativeBytes + 2*2*sharedSnapshotMetadataNativeBytes + 184 + 14888,
+		NativeAllowanceBytes: 2*(8<<20) + (1 << 20) + 4096 + 4096 + sharedPendingCommandNativeBytes + 2*2*sharedSnapshotMetadataNativeBytes + 184 + 14984,
 	}
 	want.LogicalBytes = want.MapPayloadBytes + want.AdminPayloadBytes + want.ProgramBytes + want.NativeAllowanceBytes
 	if got != want {
@@ -206,7 +206,7 @@ func TestSharedResourcesRejectProfileAndAccountingOverflow(t *testing.T) {
 
 func TestSharedPendingCommandLogicalAccounting(t *testing.T) {
 	actual := uint64(unsafe.Sizeof(sharedPendingCommand{})) + uint64(unsafe.Sizeof((*sharedPendingCommand)(nil)))
-	if runtime.GOARCH == "amd64" && actual != 1136 {
+	if runtime.GOARCH == "amd64" && actual != 1144 {
 		t.Fatalf("admitted amd64 pending command layout changed: %d", actual)
 	}
 	if actual != sharedPendingCommandNativeBytes {

@@ -12,10 +12,10 @@ package fullruntime
 // sharedProductManifestMaps and sharedProductManifestPrograms are the exact
 // map and program name sets of the shared product object, generated from
 // the product objects with sha256:
-//   - 6293c0b559b72ee283c05d5ab2bdbf459dad8e5e1a26117953cf5f96588015d4
-//   - 7e479f5d6569cefb0efc2002e7bedc7743d1e4b2907a605e9c01e548d8d0925f
-//   - 9e31954eb33903a0b283c7fc31ac8451bfcb9eaddf897543790b20dfbe6eb481
-//   - f386434da3b943abef86412e0e4122527d4d15d57334fb5946d20508ce893a44
+//   - 1d716b0343750487ba5586a7bf28c3629d364c03c8c09dfdc33deeade1dc0c58
+//   - 4383ad4986d4c097e32e8332124c860eda09aea9908e8be685341fbc51aca0b7
+//   - dfd0cfea87c72b1e8fb182cadd879840374c06b666ab59297f99b5e9216954e6
+//   - e010ec0f56e775122d3f01f159e4e11511df8a6ecf16e5056ea4bb8681905525
 //
 // Product admission refuses any other name set (validateSharedProductManifest).
 var sharedProductManifestMaps = []string{
@@ -24,8 +24,12 @@ var sharedProductManifestMaps = []string{
 	"d1_exec_marks",
 	"d1_fork_marks",
 	"d1_witness",
+	"exec_map_counters",
+	"exec_map_event_counters",
+	"exec_map_events",
+	"exec_map_exe",
 	"exec_map_faults",
-	"exec_map_gate",
+	"exec_map_probe",
 	"opaque_birth_failed_retired",
 	"opaque_birth_outcomes",
 	"opaque_birth_receipt_zero",

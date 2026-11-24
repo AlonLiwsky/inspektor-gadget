@@ -29,13 +29,27 @@ struct se_pin_ticket {
  * dev_t (MKDEV(0, minor), super_block->s_dev); both zero without an index.
  * The product publisher references the descriptor at PREPARE and releases
  * it when the record is reclaimed (full/shared_image_snapshot.h). */
+/* exec_map_flags: the executable-mapping gate of this binding
+ * (full/shared_exec_map.h), SE_EXEC_MAP_*. It changes with the policy and the
+ * image handle in one publish, so the gate is never on without the index it
+ * judges by. exec_map_reserved stays zero. */
+#define SE_EXEC_MAP_JUDGE 1U /* judge executable file mappings */
+#define SE_EXEC_MAP_DENY_ANON 2U /* also deny anonymous executable memory */
+/* Allow a mapping of the program file that the exec verdict judged for this
+ * process (the engine's own exec record, not mm->exe_file). Set by the
+ * publisher only when the policy can allow a program that is not from the
+ * image. */
+#define SE_EXEC_MAP_EXE_EXEMPT 4U
+#define SE_EXEC_MAP_KNOWN \
+	(SE_EXEC_MAP_JUDGE | SE_EXEC_MAP_DENY_ANON | SE_EXEC_MAP_EXE_EXEMPT)
 struct se_snapshot_metadata {
 	__u64 root_epochs[8], policy_uids[8], image_handle;
 	__u32 role_writers, required_known, container_length;
 	unsigned char container[256];
 	__u32 image_dev;
+	__u32 exec_map_flags, exec_map_reserved;
 };
-_Static_assert(sizeof(struct se_snapshot_metadata) == 408,
+_Static_assert(sizeof(struct se_snapshot_metadata) == 416,
 	       "scoped metadata wire");
 struct se_snapshot {
 	__u64 scope, serial, command_sequence, generation;
@@ -67,11 +81,19 @@ se_snapshot_metadata_valid(const struct se_snapshot_metadata *m, __u32 count,
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
 	    /* G020: a handle names exactly one anonymous overlay (major 0). */
 	    !m->image_handle != !m->image_dev || (m->image_dev >> 20) ||
+	    /* The mapping gate judges by the image index: JUDGE needs a
+	     * handle, and its options need JUDGE. */
+	    (m->exec_map_flags & ~SE_EXEC_MAP_KNOWN) ||
+	    ((m->exec_map_flags & SE_EXEC_MAP_JUDGE) && !m->image_handle) ||
+	    ((m->exec_map_flags &
+	      (SE_EXEC_MAP_DENY_ANON | SE_EXEC_MAP_EXE_EXEMPT)) &&
+	     !(m->exec_map_flags & SE_EXEC_MAP_JUDGE)) ||
 #else
 	    /* No image index outside the product publisher: the former
 	     * reserved word stays zero (IDENT objects unchanged). */
-	    m->image_dev ||
+	    m->image_dev || m->exec_map_flags ||
 #endif
+	    m->exec_map_reserved ||
 	    !m->container_length || m->container_length > 255 ||
 	    ((m->role_writers | m->required_known) >> count))
 		return 0;

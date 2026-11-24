@@ -85,8 +85,8 @@ static struct se_route_anchor *route_lookup(const __u32 *key)
 	return *key < 2 ? &routes[*key] : 0;
 }
 _Static_assert(sizeof(struct se_route_anchor) == 88, "route wire");
-_Static_assert(sizeof(struct se_shared_binding) == 1632, "payload wire");
-_Static_assert(sizeof(struct se_control_command) == 1112, "command wire");
+_Static_assert(sizeof(struct se_shared_binding) == 1648, "payload wire");
+_Static_assert(sizeof(struct se_control_command) == 1120, "command wire");
 static struct se_arena_cell cells[SE_PROFILE_CELLS];
 static __u64 admin = 22;
 static int have_admin = 1, object_lookups, paused;

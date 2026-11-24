@@ -310,11 +310,11 @@ func TestSharedSnapshotCandidateFixedAccounting(t *testing.T) {
 	p := sharedTestProfile()
 	r := newSharedObjectRegistry(p)
 	delta := uint64(unsafe.Sizeof(sharedSnapshotCandidateState{}))*uint64(len(r.records)) + uint64(unsafe.Sizeof(sharedSnapshotScopeState{}))*uint64(len(r.scopes)) + uint64(unsafe.Sizeof(r.scopes))
-	if delta != 4728 {
+	if delta != 4760 {
 		t.Fatalf("amd64 fixed snapshot ownership changed: %d", delta)
 	}
 	got, err := sharedObjectRegistryBytes(p)
-	if err != nil || got != 10160+delta {
+	if err != nil || got != 10224+delta {
 		t.Fatal("snapshot journals/counters uncharged", got, err)
 	}
 }

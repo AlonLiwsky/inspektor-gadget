@@ -469,6 +469,8 @@ func sharedCandidateFakeManifestWithoutCommands() *operators.NativeResources {
 	r.Maps[rootbarrier.CountersMap] = operators.NativeMapResource{Type: uint32(ebpf.PerCPUArray), KeySize: 4, ValueSize: 8, MaxEntries: 11}
 	r.Maps[rootbarrier.FaultsMap] = operators.NativeMapResource{Type: uint32(ebpf.PerCPUArray), KeySize: 4, ValueSize: 8, MaxEntries: 2}
 	r.Maps[rootbarrier.ProbeMap] = operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 40, MaxEntries: 1}
+	// The executable-mapping gate's fault counter (full/shared_exec_map.h).
+	r.Maps[sharedExecMapFaultsMap] = operators.NativeMapResource{Type: uint32(ebpf.PerCPUArray), KeySize: 4, ValueSize: 8, MaxEntries: 2}
 	return r
 }
 
@@ -514,7 +516,12 @@ type sharedFakeNativeHost struct {
 	rootBarrierVerified int
 	barrierFaults       uint64
 	barrierFaultsErr    error
-	failClosedCells     int
+	// The executable-mapping gate seams (verifyExecMap, execMapFaults).
+	execMapErr       error
+	execMapVerified  int
+	execMapFaultsN   uint64
+	execMapFaultsErr error
+	failClosedCells  int
 	// block, when set, makes the witness borrow close entered and wait for
 	// block to close.
 	block, entered chan struct{}
@@ -622,6 +629,24 @@ func (h *sharedFakeNativeHost) rootBarrierFaults(operators.GadgetContext) (share
 	}, nil
 }
 
+// verifyExecMap stands in for verifySharedExecMap: it counts its calls and
+// returns execMapErr.
+func (h *sharedFakeNativeHost) verifyExecMap(operators.GadgetContext) error {
+	h.exitMu.Lock()
+	defer h.exitMu.Unlock()
+	h.execMapVerified++
+	return h.execMapErr
+}
+
+// execMapFaults stands in for borrowSharedExecMapFaults (under exitMu).
+func (h *sharedFakeNativeHost) execMapFaults(operators.GadgetContext) (sharedRootBarrierFaultRead, error) {
+	return func() (uint64, error) {
+		h.exitMu.Lock()
+		defer h.exitMu.Unlock()
+		return h.execMapFaultsN, h.execMapFaultsErr
+	}, nil
+}
+
 // setFailClosed changes the fake fail-closed witness under its lock.
 func (h *sharedFakeNativeHost) setFailClosed(f func(*[FailClosedRateCounters]uint64, *[FailClosedRateAttempts]uint64, *error)) {
 	h.exitMu.Lock()
@@ -656,7 +681,7 @@ func (h *sharedFakeNativeHost) newReaper(_ operators.GadgetContext, config Reape
 
 // qualification is the test seam over this host.
 func (h *sharedFakeNativeHost) qualification(publisher func(operators.GadgetContext) (SharedRoutePublisher, error)) SharedNodeQualification {
-	return SharedNodeQualification{Run: h.run, Publisher: publisher, newReaper: h.newReaper, exitCredit: h.exitCredit, capsuleStats: h.capsuleStats, birthParkStats: h.birthParkStats, factStats: h.factStats, failClosed: h.failClosed, verdictCounters: h.verdictCounters, rootBarrier: h.verifyRootBarrier, rootBarrierFaults: h.rootBarrierFaults}
+	return SharedNodeQualification{Run: h.run, Publisher: publisher, newReaper: h.newReaper, exitCredit: h.exitCredit, capsuleStats: h.capsuleStats, birthParkStats: h.birthParkStats, factStats: h.factStats, failClosed: h.failClosed, verdictCounters: h.verdictCounters, rootBarrier: h.verifyRootBarrier, rootBarrierFaults: h.rootBarrierFaults, execMap: h.verifyExecMap, execMapFaults: h.execMapFaults}
 }
 
 func (h *sharedFakeNativeHost) run(ctx context.Context, opt gadgetcontext.Option) (func(context.Context) error, <-chan error, error) {

@@ -41,7 +41,8 @@ type sharedSnapshotMetadataWire struct {
 	ImageHandle                                 uint64
 	RoleWriters, RequiredKnown, ContainerLength uint32
 	Container                                   [256]byte
-	Reserved                                    uint32
+	ImageDev                                    uint32
+	ExecMapFlags, ExecMapReserved               uint32
 }
 type sharedCommandWire struct {
 	NodeCookie, Nonce, Sequence, Generation, Attempt, Scope, Serial, CgroupIdentity uint64
