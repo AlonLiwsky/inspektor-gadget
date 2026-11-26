@@ -180,20 +180,20 @@ type sharedProductImagePin struct {
 // reference (its tag) is not part of either digest.
 var sharedProductImagePins = []sharedProductImagePin{
 	{
-		Profile: "g19pkg64", ObjectSHA256: "f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba",
-		ManifestDigest: "sha256:6e74512e72cc37e8d33633aad94219b457d69700fffcee3a9c0861230357ae43", Index: "sha256:55a4c3c70f45711b9db23738a5c9d7ce996e557b9c6111a9df1b7f88d3fc5571",
+		Profile: "g19pkg64", ObjectSHA256: "d1c489ffabaaa499f45f0c0a9a18ade446d3de70e1f9807f2f24aa2dcd9b1575",
+		ManifestDigest: "sha256:918797ff8ba9d54af15adc5d525261028f2e915891c445b7af2de2ada6680a37", Index: "sha256:e4d5aee21a0bd669cd7c1e643a7efb723653c23cd76ec0ddce05351d9a15de6c",
 	},
 	{
-		Profile: "g19pkg128", ObjectSHA256: "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d",
-		ManifestDigest: "sha256:48b5584528ce98f2b05463470a64ae994a73134f7d1ccf9434c2110e3bf5a182", Index: "sha256:dce925ec18ddf01d74bf299a0ec1d8e23097f7ce3259bcd0832dde8b55b782c9",
+		Profile: "g19pkg128", ObjectSHA256: "0cfee88c94f2e13364e74817cf857e0404ec3ea33224674cc5176dcffe0dfd91",
+		ManifestDigest: "sha256:54e042346c3714cb3d7ae25d477851b340ba1d750788cb7e3dffb36e9f9e8c83", Index: "sha256:04d246ccac08d219197023ae40b1617a0e07cc71527b843abd20c186f84a74e9",
 	},
 	{
-		Profile: "g19pkg256", ObjectSHA256: "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e",
-		ManifestDigest: "sha256:d8a936ca27bb3f82abcbd09c3dc1841d31026c59d14b7612e88b5d759a4cc399", Index: "sha256:77866cfbafc68b6ccba44d0d03bd843e01675fbb175c7c8455bfb09c0b03e44f",
+		Profile: "g19pkg256", ObjectSHA256: "9026ed62a356c9e492a58209e54adeb834e6cdfaeae0fff020a1ff4cc73cce6d",
+		ManifestDigest: "sha256:f61400b534c35afc511fa5998276797f52eabd3516073671c3d797e0edf8f4e8", Index: "sha256:37c39f344d74a1851c7b70e49f6c9112f3656e9529cf350f8b75602ead9d3ca1",
 	},
 	{
-		Profile: "g19pkg512", ObjectSHA256: "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31",
-		ManifestDigest: "sha256:a0e166fa8405bc4acd2caef50b05031fc035f40cc5009cfd82dd6e1ddef0384b", Index: "sha256:ec6d35126c0ddb6bc46a020ae7bd06cf795f41a053c66bb830ed2a363f8dd7d6",
+		Profile: "g19pkg512", ObjectSHA256: "1a0a1887d99248ba200bd8bd4f692b838e0f7e92052521ff4ba36c6add1e7523",
+		ManifestDigest: "sha256:50b0b5c0f43cc87d54a191414567c11388547b5ea020e1a86252f55ebcd5f679", Index: "sha256:d24d1199d987d991bbc232d7754a5faeb94ef0d627389d87d092196e6c5ae732",
 	},
 }
 
