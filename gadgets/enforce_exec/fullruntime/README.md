@@ -145,8 +145,12 @@ byte up to `error`, then `exec_class`, `scope`, `exec_id`, `pass`,
   begin, a pending or terminal fault, a failed transfer) emits its one fault
   event from the `bprm_check_security` program; it usually has no receipt,
   so its `generation` and `scope` are 0 and the consumer attributes it by
-  `cgroup` to the binding's committed publication (SUB-10297). A fork
-  refusal emits no event.
+  `cgroup` to the binding's committed publication (SUB-10297). It carries
+  the exec file's path when known (best effort, for the report only:
+  `bpf_path_d_path` of `bprm->file`, absolute, at most 255 bytes, not
+  anchored or walked to the root like the pass facts; a deleted file keeps
+  the " (deleted)" suffix), else `path_result` -1. A fork refusal emits no
+  event.
 - **Verdict.** `deny && mode == 2` is exactly the LSM denial. `error` is
   0..3: an Audit UNKNOWN fact is `error 0` with `uncertain 1`; a Strict
   UNKNOWN fact (`error 2`) or role conflict (`error 3`) reports the class

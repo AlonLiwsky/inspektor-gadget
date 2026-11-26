@@ -285,8 +285,13 @@ func TestProductPublisherSourcePins(t *testing.T) {
 			"\t\treturn bpf_map_lookup_elem(&se_opaque_keys, &parent_key) ? -1 :\n\t\t\t\t\t\t\t\t\t   -3;\n\t}\n#else",
 		"if (result == -3) {\n\t\tSE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_ENTRY);\n\t\t(void)real_owner_child_release_claim(&claim);\n\t\treturn -1;\n\t}",
 		"if ((result & 6) != 6)\n\t\tresult |= 64;\n#endif\n\treturn result;\n}",
-		"if (result & 64)\n\t\t(void)se_verdict_emit(\n\t\t\tctx, 0, 0,\n\t\t\tSE_VERDICT_INFO(result & 1 ? 2 : 1, SE_VERDICT_FAULT,\n" +
+		"if (result & 64)\n\t\t(void)se_verdict_emit_unevaluated(\n\t\t\tctx, bprm,\n\t\t\tSE_VERDICT_INFO(result & 1 ? 2 : 1, SE_VERDICT_FAULT,\n" +
 			"\t\t\t\t\tSE_VERDICT_INFO_PASS_UNKNOWN));\n#endif\n\tif (result & 1) {",
+		// The unevaluated fault keeps only an absolute d_path of at most
+		// 255 bytes; anything else leaves path_result -1.
+		"int n = bpf_path_d_path(&file->f_path, event->path,\n\t\t\t\t\tsizeof(event->path));\n" +
+			"\t\tif (n > 1 && n <= (int)sizeof(event->path) &&\n\t\t    event->path[0] == '/') {\n\t\t\tevent->path_result = n;\n" +
+			"\t\t} else {\n\t\t\tevent->path_result = -1;\n\t\t\tevent->path[0] = 0;\n\t\t}",
 	} {
 		if !strings.Contains(verdict, squashSpace(pin)) {
 			t.Errorf("SUB-10297 pin missing: %q", pin)

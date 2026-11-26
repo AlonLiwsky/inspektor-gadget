@@ -25,8 +25,11 @@ An owned exec pass that never reaches a policy program (ENTRY, a failed open
 or reader begin, a pending or terminal fault, a failed transfer) emits one
 fault event from `bprm_check_security`: Strict `deny 1 mode 2 error 1`, Audit
 `deny 1 mode 1 error 1`, pass unknown. It usually has no exec receipt, so its
-`generation` and `scope` are 0; the consumer attributes it by `cgroup`. A fork
-refusal emits no event.
+`generation` and `scope` are 0; the consumer attributes it by `cgroup`. It
+carries the exec file's resolved path when known (best effort: absolute, at
+most 255 bytes, from the exec'ing task's root, not checked against the
+binding's root like the pass facts), else `path_result` -1. A fork refusal
+emits no event.
 
 Details: `gadgets/enforce_exec/fullruntime/README.md` (fail-closed rate and
 verdict events).
