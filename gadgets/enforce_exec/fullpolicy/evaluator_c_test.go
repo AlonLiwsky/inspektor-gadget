@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -561,14 +560,12 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 		"audit-deny-foreign-allow-default":          {1, 1},
 		"audit-deny-foreign-no-default":             {1, 1},
 	}
+	names := map[string]bool{}
+	for _, tc := range tests {
+		names[tc.name] = true
+	}
 	for name := range expected {
-		if !slices.ContainsFunc(tests, func(tc struct {
-			name     string
-			policies []Policy
-			facts    Facts
-		}) bool {
-			return tc.name == name
-		}) {
+		if !names[name] {
 			t.Fatalf("expected decision for unknown case %q", name)
 		}
 	}
