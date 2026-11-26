@@ -427,6 +427,23 @@ func (f *sharedFCEnv) entryExec() int {
 	return 0
 }
 
+// entryFork is entryExec with a fork: bash forks for a command that is not
+// the last of -c. In Strict the fork is refused (EPERM, bash 254).
+func (f *sharedFCEnv) entryFork() int {
+	f.t.Helper()
+	cmd := exec.Command("/bin/bash", "-c", `echo $$ > "$1/cgroup.procs" || exit 99; /bin/true; exit $?`, "ig15-g019-m4-fc-entry-fork", f.path)
+	err := cmd.Run()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return 0
+	case errors.As(err, &exit):
+		return exit.ExitCode()
+	}
+	f.t.Fatalf("entry fork: %v", err)
+	return 0
+}
+
 // run drives n births (or n ENTRY execs) of kind through the helper in
 // rounds of at most 3, settling after each round; it returns the exits.
 func (f *sharedFCEnv) run(k sharedFCKind, n int) map[int]int {
@@ -761,6 +778,16 @@ func TestSharedNodeFailClosedHealthAttached(t *testing.T) {
 		time.Sleep(2*cfg.interval + time.Second)
 		if h := f.requireHealth("entry", SharedFailClosedHealthy); h.Counters[FailClosedRateEntry] != 1 {
 			t.Fatalf("ENTRY %d, want 1", h.Counters[FailClosedRateEntry])
+		}
+		// SUB-10297: a fork of the same kind of task (a runtime exec
+		// entry that forks) is ENTRY too, never Total: refused (EPERM,
+		// bash 254) and the node stays Healthy.
+		if code := f.entryFork(); code != 254 {
+			t.Fatalf("Strict ENTRY fork exited %d, want 254", code)
+		}
+		time.Sleep(2*cfg.interval + time.Second)
+		if h := f.requireHealth("entry fork", SharedFailClosedHealthy); h.Counters[FailClosedRateEntry] != 2 || h.Counters[1] != 0 {
+			t.Fatalf("after the ENTRY fork: ENTRY %d (want 2), source refusals %d (want 0)", h.Counters[FailClosedRateEntry], h.Counters[1])
 		}
 		if exits := forkn(f, 1500, 8); exits[0] != 1500 {
 			t.Fatalf("warm-up exits %v", exits)

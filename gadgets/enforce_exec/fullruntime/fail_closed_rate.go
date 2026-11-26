@@ -42,9 +42,9 @@ import (
 // managed, TASK-carrying births and execs only.
 //
 // A product-publisher object (FailClosedRateCounters cells) closes the first
-// exclusion: that exec, and a fork by such a task, is FailClosedRateEntry, and an exec or fork admission
-// fault is FailClosedRateAdmission, both counted against an attempt and
-// reported outside Total. Its remaining exclusions are the fork path's
+// exclusion: that exec, and a fork by such a task, is FailClosedRateEntry,
+// and an exec or fork admission fault is FailClosedRateAdmission, both
+// counted against an attempt and reported outside Total. Its remaining exclusions are the fork path's
 // pending-receipt quarantine (a source refusal, as above) and another LSM's
 // earlier deny, which is not ours to count.
 const FailClosedRateClasses = 10
@@ -66,19 +66,21 @@ const (
 // WorkRetry is a subset already counted as a source or evaluation refusal
 // (or a refused terminal fallback). ENTRY counts an exec or a fork on an
 // OWNED route by a task with no TASK at all (no se_opaque_keys entry: a
-// runtime exec entry such as kubectl exec, or a migration in); a failed
-// open with a TASK present stays FailClosedRateOpenParent (exec) or a
-// source refusal (fork). Such a task is refused by design (Strict denies,
-// Audit leaves it unevaluated): it is not an enforcement fault of a managed
-// task, so it never counts toward Total (SUB-10297). ADMISSION counts every exec admission fault of
-// the exec reader (a STRICT, AUDIT or INVARIANT route-claim fault: a
-// latched/adopting/reserved route, a degraded exec-capsule admission, a
-// frozen-class mismatch); Strict and invariant faults deny, Audit faults
-// allow, and neither is silent any more. Each ADMISSION is also an exec
-// attempt, or, for a fork's admission fault (the task_alloc source's claim,
-// or the constructor target's re-admission), the birth attempt the source
-// counted: one class per attempt. ENTRY and ADMISSION are reported apart and never added to a
-// verdict's Total; ADMISSION degrades the node by its own rate.
+// runtime exec entry such as kubectl exec, or a migration in); a failed open
+// with a TASK present stays FailClosedRateOpenParent (exec) or a source
+// refusal (fork). Such a task is refused by design (Strict denies, Audit
+// leaves it unevaluated): it is not an enforcement fault of a managed task,
+// so it never counts toward Total (SUB-10297). Its exec still emits one
+// fault event (Strict deny, Audit would-deny), so it stays visible.
+// ADMISSION counts every exec admission fault of the exec reader (a STRICT,
+// AUDIT or INVARIANT route-claim fault: a latched/adopting/reserved route, a
+// degraded exec-capsule admission, a frozen-class mismatch); Strict and
+// invariant faults deny, Audit faults allow, and neither is silent any more.
+// Each ADMISSION is also an exec attempt, or, for a fork's admission fault
+// (the task_alloc source's claim, or the constructor target's re-admission),
+// the birth attempt the source counted: one class per attempt. ENTRY and
+// ADMISSION are reported apart and never added to a verdict's Total;
+// ADMISSION degrades the node by its own rate.
 const (
 	FailClosedRateWorkRetry      = FailClosedRateClasses
 	FailClosedRateEntry          = FailClosedRateClasses + 1
