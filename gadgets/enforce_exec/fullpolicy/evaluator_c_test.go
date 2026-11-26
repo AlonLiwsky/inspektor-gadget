@@ -331,6 +331,19 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 	multi("audit-deny-keeps-foreign-enforced-default", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Default: Deny, Rules: []Rule{{Name: "app", Action: Allow, Target: Target{Path: []string{"/app/**"}}}}}, {ID: "q", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "flag", Action: Deny, Target: Target{Path: []string{"/bin/tool"}}}}}})
 	multi("audit-deny-foreign-allow-beats-default", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Default: Deny}, {ID: "q", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "flag", Action: Deny}}}, {ID: "s", Revision: "r", Mode: Audit, Rules: []Rule{rule}}})
 	multi("audit-deny-own-default-replaced", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Default: Deny, Rules: []Rule{{Name: "flag", Action: Deny, Mode: Audit}}}, {ID: "q", Revision: "r", Mode: Audit, Default: Deny}})
+	eight := make([]Policy, 8)
+	for i := range eight {
+		eight[i] = Policy{ID: fmt.Sprintf("p%d", i), Revision: "r", Mode: Audit, Rules: []Rule{{Name: "flag", Action: Deny}}}
+	}
+	eight[7] = Policy{ID: "p7", Revision: "r", Mode: Enforce, Default: Deny}
+	multi("audit-deny-keeps-highest-policy-default", eight)
+	multi("enforced-deny-with-foreign-audit-default", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "block", Action: Deny}}}, {ID: "q", Revision: "r", Mode: Audit, Default: Deny}})
+	window := make([]Rule, 17)
+	window[0] = Rule{Name: "flag", Action: Deny}
+	for i := 1; i < len(window); i++ {
+		window[i] = Rule{Name: fmt.Sprintf("miss-%02d", i), Action: Allow, Target: Target{Path: []string{"/not/tool"}}}
+	}
+	multi("audit-deny-bits-survive-stage-window", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: window}, {ID: "q", Revision: "r", Mode: Enforce, Default: Deny}})
 	multi("conflicting-roles", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}}}})
 	multi("audit-conflicting-roles", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}}}, {ID: "q", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "grant", Action: Allow, Target: Target{SetRole: "known"}}}}})
 	multi("audit-conflict-then-enforced-grant", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}, {Name: "c", Action: Allow, Mode: Enforce, Target: Target{SetRole: "one"}}}}})
