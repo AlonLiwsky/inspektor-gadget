@@ -364,10 +364,10 @@ image runs on every kernel the product gate admits.
 
 | Profile | Image (local reference) | Manifest digest | Index digest |
 |---|---|---|---|
-| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:918797ff8ba9d54af15adc5d525261028f2e915891c445b7af2de2ada6680a37` | `sha256:e4d5aee21a0bd669cd7c1e643a7efb723653c23cd76ec0ddce05351d9a15de6c` |
-| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:54e042346c3714cb3d7ae25d477851b340ba1d750788cb7e3dffb36e9f9e8c83` | `sha256:04d246ccac08d219197023ae40b1617a0e07cc71527b843abd20c186f84a74e9` |
-| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:f61400b534c35afc511fa5998276797f52eabd3516073671c3d797e0edf8f4e8` | `sha256:37c39f344d74a1851c7b70e49f6c9112f3656e9529cf350f8b75602ead9d3ca1` |
-| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:50b0b5c0f43cc87d54a191414567c11388547b5ea020e1a86252f55ebcd5f679` | `sha256:d24d1199d987d991bbc232d7754a5faeb94ef0d627389d87d092196e6c5ae732` |
+| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:a56942425e1435da69fa9e4e8840758005ba376473bded88fb1bde60ce5803bf` | `sha256:d43dd868f425999ff3dec1deedac942e98526317b0fef6529244c80cab6db3c8` |
+| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:8f4d4ce1f4e6dd257bcfc674e29aaa815eaaa46791b0ea8258bc004da0c1e561` | `sha256:c19e7bbd9f47fcba28609230f1a33b3b3c578f6ed655c15a474f332c11c3fd22` |
+| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:002d242cb972194e22d46c10ea0a1b5fe5947ab55be0650036293a957f4dff77` | `sha256:5d6ef69a06d40cb4a7f811fba5e6fe7c5175bd0333dfc0b33341f52e9fb457d0` |
+| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:10df18554c587908083ed0a7c631654d36cf3ffda1a726e397247a24a30842e9` | `sha256:0347a9630181b5f6234471c7141611f99f5b6e3dc125a5f97fa7f6b74148ef2a` |
 
 The reference (tag) is not part of either digest.
 
