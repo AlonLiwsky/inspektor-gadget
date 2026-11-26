@@ -140,7 +140,13 @@ byte up to `error`, then `exec_class`, `scope`, `exec_id`, `pass`,
   informational only (pids are reused). `generation` and `scope` name the
   route publication (`SharedCompiled.Generation`); bit i of `matched_rules`
   is `SharedCompiled.Program.Rules[i]`. A fault event carries the exec's
-  identity when its receipt is still present, 0 otherwise.
+  identity when its receipt is still present, 0 otherwise. An owned exec
+  pass that never reaches a policy program (ENTRY, a failed open or reader
+  begin, a pending or terminal fault, a failed transfer) emits its one fault
+  event from the `bprm_check_security` program; it usually has no receipt,
+  so its `generation` and `scope` are 0 and the consumer attributes it by
+  `cgroup` to the binding's committed publication (SUB-10297). A fork
+  refusal emits no event.
 - **Verdict.** `deny && mode == 2` is exactly the LSM denial. `error` is
   0..3: an Audit UNKNOWN fact is `error 0` with `uncertain 1`; a Strict
   UNKNOWN fact (`error 2`) or role conflict (`error 3`) reports the class
@@ -1145,11 +1151,14 @@ thresholds in `fail_closed_rate.go`):
 - An unreadable or missing witness, or a counter that moved backwards, is
   **unknown**, never a zero rate.
 - Product-publisher objects (G019 M4) have a 13-cell witness:
-  - cell 11 is **ENTRY**: an exec on an OWNED route by a task that has no
-    TASK at all, such as a runtime exec entry or a migration into the cgroup.
-    It is reported apart, like the WORK retry subset, and is never added to
-    Total. A failed open while a TASK exists stays class 8 (open-parent) and
-    counts in Total.
+  - cell 11 is **ENTRY**: an exec or a fork on an OWNED route by a task
+    that has no TASK at all, such as a runtime exec entry (`kubectl exec`)
+    or a migration into the cgroup. It is reported apart, like the WORK
+    retry subset, and is never added to Total: such a task is refused by
+    design (Strict denies, Audit leaves it unevaluated), which is not an
+    enforcement fault of a managed task (SUB-10297). A failed open while a
+    TASK exists stays class 8 (open-parent, exec) or class 1 (source
+    refusal, fork) and counts in Total.
   - cell 12 is **ADMISSION**: every exec admission fault of the exec reader
     (a latched, adopting or reserved route, a degraded exec-capsule
     admission, a frozen-class mismatch). Strict and invariant faults deny,

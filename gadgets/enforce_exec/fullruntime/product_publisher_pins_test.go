@@ -273,8 +273,24 @@ func TestProductPublisherSourcePins(t *testing.T) {
 			t.Errorf("B6 pin missing: %q", pin)
 		}
 	}
-	if strings.Count(verdict, "REAL_OWNER_RATE_ENTRY") != 2 {
-		t.Error("ENTRY is attributed at exactly one site (the reader's failed open without a TASK key)")
+	if strings.Count(verdict, "REAL_OWNER_RATE_ENTRY") != 3 {
+		t.Error("ENTRY is attributed at exactly two sites (the reader's and the fork source's failed open without a TASK key)")
+	}
+	// SUB-10297: the fork source's failed open is ENTRY only without any
+	// TASK key (-3, refused as -1, counted once against the birth attempt),
+	// else a source refusal; an owned exec pass that reaches no policy
+	// program gets its one fault event from the LSM program (bit 64).
+	for _, pin := range []string{
+		"if (real_owner_child_open_parent(&parent) != SE_OL_OK) {\n\t\t__u64 parent_key = (__u64)bpf_get_current_task_btf();\n" +
+			"\t\treturn bpf_map_lookup_elem(&se_opaque_keys, &parent_key) ? -1 :\n\t\t\t\t\t\t\t\t\t   -3;\n\t}\n#else",
+		"if (result == -3) {\n\t\tSE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_ENTRY);\n\t\t(void)real_owner_child_release_claim(&claim);\n\t\treturn -1;\n\t}",
+		"if ((result & 6) != 6)\n\t\tresult |= 64;\n#endif\n\treturn result;\n}",
+		"if (result & 64)\n\t\t(void)se_verdict_emit(\n\t\t\tctx, 0, 0,\n\t\t\tSE_VERDICT_INFO(result & 1 ? 2 : 1, SE_VERDICT_FAULT,\n" +
+			"\t\t\t\t\tSE_VERDICT_INFO_PASS_UNKNOWN));\n#endif\n\tif (result & 1) {",
+	} {
+		if !strings.Contains(verdict, squashSpace(pin)) {
+			t.Errorf("SUB-10297 pin missing: %q", pin)
+		}
 	}
 	// G019 M4 ADMISSION [12]: every exec admission fault before the reader
 	// opens (Strict, Audit and invariant faults from se_cap_admit or
