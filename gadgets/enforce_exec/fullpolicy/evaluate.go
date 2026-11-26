@@ -112,9 +112,10 @@ func (p *Program) evaluate(f Facts, metadata *ReferenceMetadata) (Decision, erro
 	d := Decision{Action: Allow, Mode: Audit, SetRoles: map[string]string{}, AuditUnknown: map[string]bool{}, UncertainRoles: map[string]bool{}, RoleWrites: map[string]bool{}}
 	var evaluationError error
 	uncertainDeny, uncertainAllow := false, false
-	matched := false
+	matched, allowMatched := false, false
+	policyMatched := make([]bool, len(p.policies))
 	allowMode, denyMode := Audit, Audit
-	for _, policy := range p.policies {
+	for pi, policy := range p.policies {
 		ps := policy.source
 		role := f.Roles[ps.ID]
 		if role == "" && f.RoleBootstrap {
@@ -164,6 +165,7 @@ func (p *Program) evaluate(f Facts, metadata *ReferenceMetadata) (Decision, erro
 				continue
 			}
 			matched = true
+			policyMatched[pi] = true
 			d.Matches = append(d.Matches, Match{PolicyID: ps.ID, Revision: ps.Revision, Rule: r.Name, Origin: r.Origin, Action: r.Action, Mode: mode})
 			if metadata != nil {
 				metadata.RuleOrigins = append(metadata.RuleOrigins, RuleOriginMetadata{PolicyID: ps.ID, Rule: r.Name, Origins: originList(r.Origin, r.OriginPresent)})
@@ -175,6 +177,7 @@ func (p *Program) evaluate(f Facts, metadata *ReferenceMetadata) (Decision, erro
 					d.Block = true
 				}
 			} else {
+				allowMatched = true
 				if mode == Enforce {
 					allowMode = Enforce
 				}
@@ -230,6 +233,37 @@ func (p *Program) evaluate(f Facts, metadata *ReferenceMetadata) (Decision, erro
 			} else if mode == Enforce {
 				allowMode = Enforce
 			}
+		}
+		if metadata != nil {
+			for origin := range origins {
+				metadata.DefaultOrigins = append(metadata.DefaultOrigins, origin)
+			}
+			slices.Sort(metadata.DefaultOrigins)
+		}
+	}
+	// Merge contract rule 5: when the only matching rules are audit denies, they
+	// do not lift another policy's default deny. Each policy without a matching
+	// rule applies its default deny; a policy's own matching rule still replaces
+	// its own default, and any matching allow still beats a foreign default.
+	if matched && !allowMatched && denyMode == Audit {
+		origins := map[string]bool{}
+		for pi, policy := range p.policies {
+			ps := policy.source
+			if policyMatched[pi] || ps.Default != Deny {
+				continue
+			}
+			if ps.DefaultOriginPresent || ps.DefaultOrigin != "" {
+				origins[ps.DefaultOrigin] = true
+			}
+			mode := ps.DefaultMode
+			if mode == "" {
+				mode = ps.Mode
+			}
+			if mode == Enforce {
+				denyMode = Enforce
+				d.Block = true
+			}
+			d.Matches = append(d.Matches, Match{PolicyID: ps.ID, Revision: ps.Revision, Action: Deny, Mode: mode})
 		}
 		if metadata != nil {
 			for origin := range origins {

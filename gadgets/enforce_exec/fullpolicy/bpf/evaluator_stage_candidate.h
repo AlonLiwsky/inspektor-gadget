@@ -180,6 +180,11 @@ FE_INLINE int fe_stage_finish(void *blob_context, struct fe_scratch *s,
 				cursor->allow_mode = p->mode;
 		}
 	}
+	if (fe_foreign_default_deny(blob_context, cursor->policies,
+				    cursor->matched, &cursor->deny_mode) < 0) {
+		s->decision.error = FE_INVALID;
+		return -1;
+	}
 #ifdef FE_AUDIT_ISOLATION
 	if (!cursor->matched && cursor->uncertain_allow && s->decision.deny &&
 	    cursor->deny_mode == 1) {

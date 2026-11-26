@@ -41,7 +41,7 @@ separate authenticated successful-exec lifecycle test.
 | File | Groups / decisions | Cases |
 | --- | --- | --- |
 | `predicates.json` | 14 / 47 | Positive, negative and UNKNOWN for actor path/image/ancestor/role/UID/container; target path/image/filesystem; argv contains/prefix and stdin. Also full conjunction, filesystem OR, zero UID, explicit false booleans, ancestry depth/completeness, and foreign role isolation. |
-| `semantics.json` | 12 / 22 | Merged deny-wins, defaults suppressed by a matching foreign policy, audit/enforce interaction, unknown-fact grant suppression/isolation, explicit bootstrap, retained policy-local roles, missing/foreign roles, conflicting proposals, uncertain audit fallback and per-check argv relevance. |
+| `semantics.json` | 14 / 26 | Merged deny-wins, defaults suppressed by a matching foreign policy, a foreign default deny kept under audit-only denies, audit/enforce interaction, unknown-fact grant suppression/isolation, explicit bootstrap, retained policy-local roles, missing/foreign roles, conflicting proposals, uncertain audit fallback and per-check argv relevance. |
 | `capacity.json` | 1 / 7 | A literal 256-rule policy: rules 0, 8, 127, 128 and 255, a nonmember and UNKNOWN target. The last-rule vector is a semantic sentinel, **not proof of a native bitmap's bit 255**. |
 
 The Go test runs all 76 decisions in four policy/rule order combinations. Expected

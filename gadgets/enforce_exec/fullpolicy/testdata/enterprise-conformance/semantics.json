@@ -43,6 +43,37 @@
       ]
     },
     {
+      "name": "audit-deny-keeps-foreign-enforced-default",
+      "policies": [
+        {"ID": "a", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "deny", "Rules": [{"Name": "allow-app", "Origin": "authored", "Action": "allow", "Target": {"Path": ["/app/**"]}}]},
+        {"ID": "b", "Revision": "r1", "Mode": "audit", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "flag-shell", "Origin": "authored", "Action": "deny", "Target": {"Path": ["/bin/sh"]}}]}
+      ],
+      "cases": [
+        {"name": "audit-deny-does-not-lift-foreign-default",
+         "facts": {"TargetPath": "/bin/sh"},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "a", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "enforce"}, {"PolicyID": "b", "Revision": "r1", "Rule": "flag-shell", "Origin": "authored", "Action": "deny", "Mode": "audit"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "unmatched-default-is-enforced",
+         "facts": {"TargetPath": "/bin/bash"},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "a", "Revision": "r1", "Rule": "", "Origin": "", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "explicit-allow-unchanged",
+         "facts": {"TargetPath": "/app/run"},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [{"PolicyID": "a", "Revision": "r1", "Rule": "allow-app", "Origin": "authored", "Action": "allow", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
+      "name": "foreign-allow-beats-default-under-audit-deny",
+      "policies": [
+        {"ID": "a", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "deny", "Rules": []},
+        {"ID": "b", "Revision": "r1", "Mode": "audit", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "flag-shell", "Origin": "authored", "Action": "deny", "Target": {"Path": ["/bin/sh"]}}]},
+        {"ID": "c", "Revision": "r1", "Mode": "audit", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "allow-shell", "Origin": "authored", "Action": "allow", "Target": {"Path": ["/bin/sh"]}}]}
+      ],
+      "cases": [
+        {"name": "audit-allow-suppresses-foreign-default",
+         "facts": {"TargetPath": "/bin/sh"},
+         "want": {"decision": {"Action": "deny", "Mode": "audit", "Block": false, "Matches": [{"PolicyID": "b", "Revision": "r1", "Rule": "flag-shell", "Origin": "authored", "Action": "deny", "Mode": "audit"}, {"PolicyID": "c", "Revision": "r1", "Rule": "allow-shell", "Origin": "authored", "Action": "allow", "Mode": "audit"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}}
+      ]
+    },
+    {
       "name": "audit-unknown-grant-isolation",
       "policies": [
         {"ID": "a", "Revision": "r1", "Mode": "audit", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "unknown-grant", "Origin": "authored", "Action": "allow", "Actor": {"FromImage": true}, "Target": {"SetRole": "tool"}}]},

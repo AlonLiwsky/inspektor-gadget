@@ -1540,6 +1540,30 @@ FE_INLINE int fe_rule_match(struct fe_eval_context *e, const struct fe_rule *r,
 	return c.result;
 #endif
 }
+#define FE_MATCHED_ALLOW (1U << 8)
+/* Merge contract rule 5: when the only matching rules are audit denies, they
+ * do not lift another policy's default deny. Each policy without a matching
+ * rule applies its default deny; a policy's own matching rule still replaces
+ * its own default, and any matching allow beats a foreign default (rule 4).
+ * Only the mode can change: the decision is already a deny. */
+FE_INLINE int fe_foreign_default_deny(void *blob_context, fm_u32 policies,
+				      fm_u32 matched, fm_u32 *deny_mode)
+{
+	if (!matched || (matched & FE_MATCHED_ALLOW) || *deny_mode != 1)
+		return 0;
+	for (fm_u32 i = 0; i < 8; i++) {
+		if (i >= policies)
+			break;
+		if (matched & (1U << i))
+			continue;
+		const struct fe_policy *p = FE_POLICY_LOOKUP(blob_context, i);
+		if (!p || p->fallback > 2 || p->mode < 1 || p->mode > 2)
+			return -1;
+		if (p->fallback == 2 && p->mode > *deny_mode)
+			*deny_mode = p->mode;
+	}
+	return 0;
+}
 #ifdef FE_RULE_STEP_INLINE_DIAGNOSTIC
 __attribute__((always_inline))
 #endif
@@ -1602,7 +1626,9 @@ fe_rule_step(fm_u32 i, void *opaque)
 	}
 	if (!match)
 		return 0;
-	e->matched = 1;
+	/* Bit i: policy i has a matching rule; FE_MATCHED_ALLOW: an allow
+	 * matched. Nonzero means any rule matched. */
+	e->matched |= 1U << r->policy;
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
 	fm_u32 matched_word = (i >> 6) & 3U;
 	__asm__ __volatile__("" : "+r"(matched_word));
@@ -1619,6 +1645,7 @@ fe_rule_step(fm_u32 i, void *opaque)
 		if (r->mode > e->deny_mode)
 			e->deny_mode = r->mode;
 	} else {
+		e->matched |= FE_MATCHED_ALLOW;
 		if (r->mode > e->allow_mode)
 			e->allow_mode = r->mode;
 		fm_u32 index = r->policy;
@@ -1735,6 +1762,11 @@ FE_INLINE int fe_evaluate(void *blob_context, const struct fe_facts *f,
 			} else if (p->fallback == 1 && p->mode > e.allow_mode)
 				e.allow_mode = p->mode;
 		}
+	}
+	if (fe_foreign_default_deny(blob_context, h->policies, e.matched,
+				    &e.deny_mode) < 0) {
+		s->decision.error = FE_INVALID;
+		return -1;
 	}
 #ifdef FE_AUDIT_ISOLATION
 	if (!e.matched && e.uncertain_allow && s->decision.deny &&
