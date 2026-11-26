@@ -110,8 +110,8 @@ Rules support exact clean absolute paths or trailing `/**` directory patterns,
 allow/deny default, and audit/enforce/off mode. Denies override matching allows.
 Rule modes may inherit the policy mode or override it with audit/enforce. A matching
 enforced deny wins over audited denies and allows, independent of rule order.
-Defaults apply only when no rule matches; off policies cannot contain overrides.
-With several policies, when the only matching rules are audit denies, each policy
+With one policy, the default applies only when no rule matches; off policies cannot
+contain overrides. With several policies, when the only matching rules are audit denies, each policy
 without a matching rule still applies its default deny. So an audit deny in one
 policy never turns off another policy's enforced default deny. A matching allow
 from any policy still beats another policy's default deny.

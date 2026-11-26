@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -343,7 +344,20 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 	for i := 1; i < len(window); i++ {
 		window[i] = Rule{Name: fmt.Sprintf("miss-%02d", i), Action: Allow, Target: Target{Path: []string{"/not/tool"}}}
 	}
-	multi("audit-deny-bits-survive-stage-window", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: window}, {ID: "q", Revision: "r", Mode: Enforce, Default: Deny}})
+	// The enforce default-deny policy comes first, so a match mask that
+	// collapses to a boolean (bit 0) at a window boundary would wrongly mark it
+	// as matched and lift its default.
+	multi("audit-deny-bits-survive-stage-window", []Policy{{ID: "a", Revision: "r", Mode: Enforce, Default: Deny}, {ID: "b", Revision: "r", Mode: Audit, Rules: window}})
+	// The allow bit is set in the first window and must survive to the last
+	// window, where the audit deny matches. A lost mask would apply a's default.
+	allowWindow := append([]Rule(nil), window...)
+	allowWindow[0] = Rule{Name: "grant", Action: Allow}
+	allowWindow[16] = Rule{Name: "flag", Action: Deny}
+	multi("allow-bit-survives-stage-window", []Policy{{ID: "a", Revision: "r", Mode: Enforce, Default: Deny}, {ID: "b", Revision: "r", Mode: Audit, Rules: allowWindow}})
+	// Only a default deny is kept: an enforce policy with an allow default or no
+	// default does not raise a foreign audit deny to enforce.
+	multi("audit-deny-foreign-allow-default", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Default: Allow}, {ID: "q", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "flag", Action: Deny}}}})
+	multi("audit-deny-foreign-no-default", []Policy{{ID: "p", Revision: "r", Mode: Enforce}, {ID: "q", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "flag", Action: Deny}}}})
 	multi("conflicting-roles", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}}}})
 	multi("audit-conflicting-roles", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}}}, {ID: "q", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "grant", Action: Allow, Target: Target{SetRole: "known"}}}}})
 	multi("audit-conflict-then-enforced-grant", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}, {Name: "c", Action: Allow, Mode: Enforce, Target: Target{SetRole: "one"}}}}})
@@ -534,6 +548,30 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 			facts    Facts
 		}{"role-entry-" + tc.name, tc.policies, tc.facts})
 	}
+	// Expected {deny, mode} for the merge contract rule 5 cases (1 = audit,
+	// 2 = enforce). Parity alone passes a bug that Go and C share.
+	expected := map[string][2]uint64{
+		"audit-deny-keeps-foreign-enforced-default": {1, 2},
+		"audit-deny-foreign-allow-beats-default":    {1, 1},
+		"audit-deny-own-default-replaced":           {1, 1},
+		"audit-deny-keeps-highest-policy-default":   {1, 2},
+		"enforced-deny-with-foreign-audit-default":  {1, 2},
+		"audit-deny-bits-survive-stage-window":      {1, 2},
+		"allow-bit-survives-stage-window":           {1, 1},
+		"audit-deny-foreign-allow-default":          {1, 1},
+		"audit-deny-foreign-no-default":             {1, 1},
+	}
+	for name := range expected {
+		if !slices.ContainsFunc(tests, func(tc struct {
+			name     string
+			policies []Policy
+			facts    Facts
+		}) bool {
+			return tc.name == name
+		}) {
+			t.Fatalf("expected decision for unknown case %q", name)
+		}
+	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := CompileKernel(tc.policies, 1, "worker")
@@ -570,6 +608,9 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 			}
 			if got[1] != deny || got[2] != mode {
 				t.Fatalf("C %v want %+v", got, want)
+			}
+			if exp, ok := expected[tc.name]; ok && (deny != exp[0] || mode != exp[1]) {
+				t.Fatalf("decision {deny %d, mode %d}, expected {deny %d, mode %d}", deny, mode, exp[0], exp[1])
 			}
 			var bits [4]uint64
 			for i, meta := range p.Rules {

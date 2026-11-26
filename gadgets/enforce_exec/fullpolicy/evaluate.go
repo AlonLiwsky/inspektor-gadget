@@ -200,8 +200,9 @@ func (p *Program) evaluate(f Facts, metadata *ReferenceMetadata) (Decision, erro
 			d.SetRoles[ps.ID] = role
 		}
 	}
-	// Defaults merge strictly, but are consulted only when the entire merged rule
-	// union has no match. A default deny in one policy cannot shadow another's allow.
+	// When the merged rule union has no match, all defaults merge strictly. A
+	// default deny in one policy cannot shadow another's allow. Rule 5 below
+	// covers the case where the only matching rules are audit denies.
 	if !matched {
 		winner := Allow
 		for _, policy := range p.policies {
