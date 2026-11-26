@@ -1627,8 +1627,10 @@ fe_rule_step(fm_u32 i, void *opaque)
 	if (!match)
 		return 0;
 	/* Bit i: policy i has a matching rule; FE_MATCHED_ALLOW: an allow
-	 * matched. Nonzero means any rule matched. */
-	e->matched |= 1U << r->policy;
+	 * matched. Nonzero means any rule matched. One store keeps the rule
+	 * programs' stack frame unchanged (they are at the 512-byte limit). */
+	e->matched |= (1U << r->policy) |
+		      (r->deny ? 0U : FE_MATCHED_ALLOW);
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
 	fm_u32 matched_word = (i >> 6) & 3U;
 	__asm__ __volatile__("" : "+r"(matched_word));
@@ -1645,7 +1647,6 @@ fe_rule_step(fm_u32 i, void *opaque)
 		if (r->mode > e->deny_mode)
 			e->deny_mode = r->mode;
 	} else {
-		e->matched |= FE_MATCHED_ALLOW;
 		if (r->mode > e->allow_mode)
 			e->allow_mode = r->mode;
 		fm_u32 index = r->policy;
